@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "rarities": [
+    "Common",
+    "Uncommon",
+    "Rare",
+    "Epic",
+    "Legendary",
+    "Mythic",
+    "Cosmic",
+    "Secret",
+    "Eternal",
+    "Divine"
+  ],
+  "eggs": []
+}
