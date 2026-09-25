@@ -1,32 +1,14 @@
 {
   "name": "steal-an-egg-live-notifier",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
-  "description": "Production-oriented live egg spawn notifier with pluggable source adapters and Discord delivery.",
+  "description": "Steal An Egg live spawn Discord notifier",
   "type": "module",
   "engines": { "node": ">=20" },
-  "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js",
-    "test": "vitest run",
-    "test-notify": "tsx scripts/test-notify.ts",
-    "lint": "tsc --noEmit -p tsconfig.json"
-  },
+  "scripts": { "start": "node src/index.js" },
   "dependencies": {
     "discord.js": "^14.24.2",
     "dotenv": "^17.2.2",
-    "express": "^5.1.0",
-    "helmet": "^8.1.0",
-    "better-sqlite3": "^12.2.0",
-    "zod": "^4.1.5"
-  },
-  "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
-    "@types/express": "^5.0.3",
-    "@types/node": "^24.5.2",
-    "tsx": "^4.19.2",
-    "typescript": "^5.9.2",
-    "vitest": "^3.2.4"
+    "express": "^5.1.0"
   }
 }
