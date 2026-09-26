@@ -114,10 +114,36 @@ client.on("messageCreate", async (message) => {
   catch (err) { console.error("Live source forwarding failed:", err); }
 });
 
-client.once("ready", () => {
+client.once("clientReady", async () => {
   console.log("Steal An Egg notifier online as " + client.user.tag);
   console.log("Live source monitor:", MONITOR_ENABLED ? "enabled" : "disabled");
+  try {
+    const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_BOT_TOKEN);
+    if (DEV_GUILD_ID) {
+      await rest.put(Routes.applicationGuildCommands(client.user.id, DEV_GUILD_ID), { body: COMMANDS });
+      console.log("Slash commands registered in development guild.");
+    } else {
+      await rest.put(Routes.applicationCommands(client.user.id), { body: COMMANDS });
+      console.log("Slash commands registered globally.");
+    }
+  } catch (err) {
+    console.error("Slash command registration failed:", err);
+  }
 });
+
+client.on("error", err => console.error("Discord client error:", err));
+client.on("shardError", err => console.error("Discord shard error:", err));
+
+process.on("unhandledRejection", err => console.error("Unhandled rejection:", err));
+process.on("uncaughtException", err => console.error("Uncaught exception:", err));
+
+async function shutdown(signal) {
+  console.log("Received " + signal + ", shutting down gracefully...");
+  client.destroy();
+  process.exit(0);
+}
+process.once("SIGTERM", () => shutdown("SIGTERM"));
+process.once("SIGINT", () => shutdown("SIGINT"));
 
 client.login(process.env.DISCORD_BOT_TOKEN).catch(console.error);
 app.listen(PORT, () => console.log("HTTP server listening on " + PORT));
