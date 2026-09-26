@@ -66,3 +66,20 @@ test("parses a Secret egg when the same message also announces a Forbidden Exper
   assert.equal(event.rarity, "Secret");
   assert.equal(event.biome, "Titan Temple");
 });
+
+
+test("prioritizes the structured rarity when event text contains another rarity mention", () => {
+  const event = parseSpawn({
+    text:
+      "Forbidden Experiment appeared. Divine rewards are possible.",
+    fields: [
+      { name: "Rarity", value: "Secret" },
+      { name: "Egg", value: "Nightflame Egg" },
+      { name: "Location", value: "Titan Temple" }
+    ]
+  }, rarities);
+
+  assert.ok(event);
+  assert.equal(event.eggName, "Nightflame Egg");
+  assert.equal(event.rarity, "Secret");
+});
