@@ -2907,13 +2907,6 @@ async function getPetPngBuffer(petName) {
 
     const contentType = String(response.headers.get("content-type") || "").toLowerCase();
     if (!response.ok || contentType.includes("text/html") || contentType.includes("application/json")) {
-      console.warn(
-        "Pet image download rejected:",
-        entry.petName,
-        "status=" + response.status,
-        "contentType=" + (contentType || "missing"),
-        "source=" + sourceUrl
-      );
       return null;
     }
 
@@ -2941,12 +2934,6 @@ async function getPetPngBuffer(petName) {
       if (!pngBuffer?.length) {
         throw new Error("empty_png_output");
       }
-      console.log(
-        "Pet image converted:",
-        entry.petName,
-        "type=" + String(metadata?.format || contentType || "unknown"),
-        "size=" + input.length
-      );
     } catch (error) {
       console.warn(
         "Pet image conversion failed:",
