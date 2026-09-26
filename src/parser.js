@@ -172,7 +172,6 @@ export function parseSpawn(data, allowedRarities) {
   const structuredSignal = Boolean(getField("egg", "egg name", "egg type", "item", "item name"));
 
   if (!spawnSignal && !explicitRarityEggSignal && !structuredSignal) return null;
-  if (!spawnSignal && !structuredSignal) return null;
 
   const cleanedOptional = {};
   for (const [key, value] of Object.entries(optional)) {
