@@ -319,6 +319,7 @@ const AUTO_DISCOVERY_POLL_MS = Math.max(
 );
 
 let autoDiscoveryTimer = null;
+let experimentScheduleTimer = null;
 let imageWarmupInFlight = false;
 let autoDiscoveryLastFingerprint = "";
 let autoDiscoveredCount = 0;
@@ -2927,6 +2928,84 @@ async function runAutoDiscoverySweep() {
   );
 }
 
+
+function buildScheduledExperimentEvent(triggerAt = Date.now()) {
+  const appearedAt = Number(triggerAt);
+  return {
+    type: "experiment",
+    experimentName: "Dr. Scramble Experiment",
+    title: "A Forbidden Experiment Has Appeared",
+    appearedAt,
+    nextExperimentAt: appearedAt + EXPERIMENT_CYCLE_MINUTES * 60_000,
+    cycleMinutes: EXPERIMENT_CYCLE_MINUTES,
+    activeMinutes: EXPERIMENT_ACTIVE_MINUTES,
+    activeAreas: EXPERIMENT_ACTIVE_AREAS,
+    joinUrl: STEAL_AN_EGG_GAME_URL,
+    messageUrl: null,
+    sourceMessageId: "scheduled-" + appearedAt,
+    sourceName: "Scheduled Experiment Timer",
+    customEmojis: []
+  };
+}
+
+function startExperimentScheduler() {
+  if (!EVENT_ALERTS_ENABLED || !CHANNEL_ID) {
+    console.log("Experiment scheduler: disabled.");
+    return;
+  }
+
+  const cycleMs = EXPERIMENT_CYCLE_MINUTES * 60_000;
+  let lastScheduledAt = 0;
+
+  const run = async scheduledAt => {
+    if (!scheduledAt || scheduledAt <= lastScheduledAt) return;
+    lastScheduledAt = scheduledAt;
+
+    const event = buildScheduledExperimentEvent(scheduledAt);
+
+    try {
+      const sent = await sendExperimentAlert(event);
+      if (sent) {
+        console.log(
+          "Scheduled Experiment alert sent:",
+          "appearedAt=" + new Date(scheduledAt).toISOString()
+        );
+      }
+    } catch (error) {
+      monitorErrors++;
+      console.warn(
+        "Scheduled Experiment alert failed:",
+        error?.message || error
+      );
+      lastScheduledAt = scheduledAt - cycleMs;
+    }
+  };
+
+  const now = Date.now();
+  const nextBoundary = Math.ceil((now + 1) / cycleMs) * cycleMs;
+  const initialDelay = Math.max(1000, nextBoundary - now);
+
+  console.log(
+    "Experiment scheduler enabled:",
+    "next=" + new Date(nextBoundary).toISOString(),
+    "interval=" + EXPERIMENT_CYCLE_MINUTES + "m"
+  );
+
+  experimentScheduleTimer = setTimeout(() => {
+    run(nextBoundary).catch(error => {
+      monitorErrors++;
+      console.warn("Scheduled Experiment timer failed:", error?.message || error);
+    });
+
+    experimentScheduleTimer = setInterval(() => {
+      run(Date.now()).catch(error => {
+        monitorErrors++;
+        console.warn("Scheduled Experiment interval failed:", error?.message || error);
+      });
+    }, cycleMs);
+  }, initialDelay);
+}
+
 function startAutoDiscovery() {
   if (!AUTO_DISCOVERY_ENABLED) return;
 
@@ -4894,6 +4973,8 @@ client.once("clientReady", async () => {
   console.log("Auto discovery:", AUTO_DISCOVERY_ENABLED ? "enabled" : "disabled");
   console.log("Event alerts:", EVENT_ALERTS_ENABLED ? "enabled" : "disabled");
 
+  startExperimentScheduler();
+
   if (CHANNEL_ID) {
     try {
       alertChannel = await client.channels.fetch(CHANNEL_ID);
@@ -5681,6 +5762,12 @@ async function shutdown(signal) {
   if (stateSaveTimer) {
     clearTimeout(stateSaveTimer);
     stateSaveTimer = null;
+  }
+
+  if (experimentScheduleTimer) {
+    clearTimeout(experimentScheduleTimer);
+    clearInterval(experimentScheduleTimer);
+    experimentScheduleTimer = null;
   }
 
   client.destroy();
