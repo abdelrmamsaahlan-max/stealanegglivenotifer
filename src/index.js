@@ -685,6 +685,9 @@ const SOURCE_IMAGE_ALPHA_ONLY =
   (process.env.SOURCE_IMAGE_ALPHA_ONLY || "true").toLowerCase() === "true";
 
 let liveFeedPollInFlight = false;
+const liveFeedProcessedEvents = new Map();
+const LIVE_FEED_EVENT_DEDUP_MS =
+  Math.max(60, Number(process.env.LIVE_FEED_EVENT_DEDUP_SECONDS || 900)) * 1000;
 
 let eggImageCatalog = [];
 try {
@@ -2113,9 +2116,11 @@ async function pollLiveFeed() {
 
             if (!response.ok) {
               const status = Number(response.status) || 0;
+
               if (status === 404) {
                 coolDownLiveFeedEndpoint(url, 404);
               }
+
               updateLiveFeedEndpointHealth(url, {
                 status: status === 404 ? "HTTP_404" : "HTTP_ERROR",
                 httpStatus: status,
@@ -2123,32 +2128,32 @@ async function pollLiveFeed() {
                   (liveFeedEndpointHealth.get(index + 1)?.failures || 0) + 1,
                 lastErrorAt: new Date().toISOString()
               });
+
               return { ok: false, index, url, status };
             }
 
-        let payload = body;
-        const contentType = response.headers.get("content-type") || "";
+            let payload = body;
+            const contentType = response.headers.get("content-type") || "";
 
-        if (contentType.includes("application/json")) {
-          try {
-            payload = JSON.parse(body);
-          } catch {
-            payload = body;
-          }
-        } else {
-          try {
-            payload = JSON.parse(body);
-          } catch {
-            // Keep HTML/text for the fallback parser below.
-          }
-        }
+            if (contentType.includes("application/json")) {
+              try {
+                payload = JSON.parse(body);
+              } catch {
+                payload = body;
+              }
+            } else {
+              try {
+                payload = JSON.parse(body);
+              } catch {
+                // Keep HTML/text for the fallback parser below.
+              }
+            }
 
-        syncLastSeenFromFeedPayload(payload);
+            syncLastSeenFromFeedPayload(payload);
 
-        const candidate =
-          typeof payload === "object" && payload !== null
-            ? pickLatestEggFromFeed(payload)
-            : null;
+            const candidates = typeof payload === "object" && payload !== null
+              ? collectEggCandidates(payload)
+              : [];
 
             updateLiveFeedEndpointHealth(url, {
               status: "ACTIVE",
@@ -2158,7 +2163,14 @@ async function pollLiveFeed() {
               lastErrorAt: null
             });
 
-            return { ok: true, index, url, status: response.status, payload, candidate };
+            return {
+              ok: true,
+              index,
+              url,
+              status: response.status,
+              payload,
+              candidates
+            };
           } catch (error) {
             coolDownLiveFeedEndpoint(url);
             updateLiveFeedEndpointHealth(url, {
@@ -2180,12 +2192,11 @@ async function pollLiveFeed() {
           successful.push(result.value);
         } else {
           liveFeedErrors++;
+
           const message =
             "Live feed endpoint returned HTTP " + result.value.status +
             " (endpoint " + (result.value.index + 1) + ").";
 
-          // 404 endpoints are already cooled down and are expected to be skipped
-          // for a while; keep them out of error-level runtime logs.
           if (Number(result.value.status) === 404) {
             console.log(message);
           } else {
@@ -2211,156 +2222,178 @@ async function pollLiveFeed() {
     liveFeedLastSuccessAt = new Date().toISOString();
     updateLiveFeedHealth();
 
-    const candidates = successful
-      .filter(result =>
-        result.candidate &&
-        result.candidate.eggName &&
-        result.candidate.spawnedAt &&
-        !feedStateLooksOffline(result.payload)
-      )
-      .map(result => ({
-        ...result,
-        eventTime: Date.parse(result.candidate.spawnedAt)
-      }))
-      .filter(result => Number.isFinite(result.eventTime))
+    const now = Date.now();
+
+    for (const [fingerprint, seenAt] of liveFeedProcessedEvents) {
+      if (now - seenAt > LIVE_FEED_EVENT_DEDUP_MS) {
+        liveFeedProcessedEvents.delete(fingerprint);
+      }
+    }
+
+    const candidateMap = new Map();
+
+    for (const result of successful) {
+      for (const candidate of result.candidates || []) {
+        if (!candidate?.eggName || !candidate?.rarity || !candidate?.spawnedAt) {
+          continue;
+        }
+
+        const rarityKey = normalizeFeedKey(candidate.rarity);
+        if (!["secret", "eternal", "divine"].includes(rarityKey)) {
+          continue;
+        }
+
+        const eventTime = Date.parse(candidate.spawnedAt);
+        if (!Number.isFinite(eventTime)) continue;
+
+        const ageMs = now - eventTime;
+        if (ageMs < -60_000 || ageMs > LIVE_FEED_MAX_AGE_MS) continue;
+        if (feedStateLooksOffline(result.payload)) continue;
+        if (!resolveAlertEntry(candidate)) continue;
+
+        const sourceEventId = candidate.sourceEventId
+          ? String(candidate.sourceEventId)
+          : "";
+
+        const fingerprint = [
+          sourceEventId,
+          rarityKey,
+          normalizeFeedKey(candidate.eggName),
+          normalizeFeedKey(candidate.biome),
+          candidate.spawnedAt
+        ].join("|");
+
+        const existing = candidateMap.get(fingerprint);
+
+        if (!existing || candidate.score > existing.candidate.score) {
+          candidateMap.set(fingerprint, {
+            candidate,
+            eventTime,
+            ageMs,
+            url: result.url,
+            index: result.index,
+            fingerprint
+          });
+        }
+      }
+    }
+
+    const candidates = [...candidateMap.values()]
       .sort((a, b) => {
-        if (b.eventTime !== a.eventTime) return b.eventTime - a.eventTime;
-        if (b.candidate.score !== a.candidate.score) return b.candidate.score - a.candidate.score;
-        return a.index - b.index;
+        if (a.eventTime !== b.eventTime) return a.eventTime - b.eventTime;
+        return b.candidate.score - a.candidate.score;
       });
 
-    const best = candidates.find(result => resolveAlertEntry(result.candidate));
+    if (!candidates.length) {
+      return;
+    }
 
-    if (!best) {
-      const fallback = successful
-        .map(result => result.candidate)
-        .filter(candidate => candidate?.eggName && candidate?.spawnedAt)
-        .sort((a, b) => (Date.parse(b.spawnedAt) || 0) - (Date.parse(a.spawnedAt) || 0))[0];
+    let acceptedThisPoll = 0;
 
-      if (fallback) {
-        liveFeedEventsReceived++;
-        liveFeedLastEventAt = fallback.spawnedAt;
-        liveFeedLastFingerprint = [
-          fallback.sourceEventId ? String(fallback.sourceEventId) : "",
-          normalizeFeedKey(fallback.eggName),
-          normalizeFeedKey(fallback.rarity),
-          normalizeFeedKey(fallback.biome),
-          fallback.spawnedAt
-        ].join("|");
-        liveFeedPrimed = true;
+    for (const item of candidates) {
+      const { candidate, eventTime, ageMs, url, index, fingerprint } = item;
+
+      liveFeedEventsReceived++;
+      liveFeedLastUrl = url;
+      liveFeedLastEventAt = candidate.spawnedAt;
+
+      if (!liveFeedPrimed) {
+        liveFeedProcessedEvents.set(fingerprint, now);
+        continue;
       }
 
-      return;
+      if (liveFeedProcessedEvents.has(fingerprint)) {
+        continue;
+      }
+
+      liveFeedProcessedEvents.set(fingerprint, now);
+
+      const event = {
+        live: true,
+        eggName: candidate.eggName,
+        displayName: candidate.eggName,
+        rarity: candidate.rarity,
+        biome: candidate.biome || "Unknown",
+        spawnedAt: candidate.spawnedAt,
+        imageUrl: candidate.imageUrl || null,
+        source: "Live Feed",
+        sourceEventId: candidate.sourceEventId || null
+      };
+
+      const semanticKey = [
+        event.rarity.toLowerCase(),
+        normalizeFeedKey(event.eggName),
+        normalizeFeedKey(event.biome)
+      ].join("|");
+
+      const previousSeen = seen.get(semanticKey) || 0;
+
+      // A different spawn of the same egg/area is allowed when it has a new
+      // timestamp; only suppress a rapid duplicate announcement.
+      if (now - previousSeen < SEMANTIC_DEDUP_WINDOW_MS) {
+        continue;
+      }
+
+      seen.set(semanticKey, now);
+      inFlightKeys.add(semanticKey);
+
+      try {
+        recordSpawnHistory(event, "Live Feed");
+        await sendAlert(event, ageMs >= 0 ? ageMs : null);
+        liveFeedEventsAccepted++;
+        acceptedThisPoll++;
+
+        console.log(
+          "Forwarded Live feed event:",
+          semanticKey,
+          "latencyMs=" + (ageMs >= 0 ? ageMs : "unknown"),
+          "sourceEndpoint=" + (index + 1),
+          "image=" + (candidate.imageUrl ? "attached" : "background")
+        );
+      } catch (error) {
+        liveFeedProcessedEvents.delete(fingerprint);
+        seen.delete(semanticKey);
+        liveFeedErrors++;
+        console.error(
+          "Live source alert forwarding failed:",
+          candidate.eggName,
+          error
+        );
+      } finally {
+        inFlightKeys.delete(semanticKey);
+      }
     }
 
-    const { candidate, payload, url, index } = best;
-    liveFeedEventsReceived++;
-    liveFeedLastUrl = url;
-    liveFeedLastEventAt = candidate.spawnedAt;
-
-    const fingerprint = [
-      candidate.sourceEventId ? String(candidate.sourceEventId) : "",
-      normalizeFeedKey(candidate.eggName),
-      normalizeFeedKey(candidate.rarity),
-      normalizeFeedKey(candidate.biome),
-      candidate.spawnedAt
-    ].join("|");
-
+    // Startup baseline: mark every currently visible event as seen without
+    // sending a burst of historical alerts. Future polls deliver every new
+    // candidate independently.
     if (!liveFeedPrimed) {
       liveFeedPrimed = true;
-      liveFeedLastFingerprint = fingerprint;
-      console.log(
-        "Live feed primed:",
-        candidate.rarity,
-        candidate.eggName,
-        "area=" + candidate.biome,
-        "spawnedAt=" + candidate.spawnedAt,
-        "endpoint=" + (index + 1),
-        "catalogSource=" + (findCatalogEgg(candidate.eggName) ? "available" : "none")
-      );
-      return;
-    }
+      liveFeedLastFingerprint =
+        candidates[candidates.length - 1]?.fingerprint || null;
 
-    if (fingerprint === liveFeedLastFingerprint) return;
-    liveFeedLastFingerprint = fingerprint;
-
-    const eventTime = best.eventTime;
-    const ageMs = Date.now() - eventTime;
-
-    if (ageMs < -60_000 || ageMs > LIVE_FEED_MAX_AGE_MS) {
-      console.log(
-        "Live feed changed but event is stale:",
-        candidate.rarity,
-        candidate.eggName,
-        "ageMs=" + ageMs
-      );
-      return;
-    }
-
-    const feedEventKey = [
-      "feed",
-      candidate.rarity.toLowerCase(),
-      normalizeFeedKey(candidate.eggName),
-      normalizeFeedKey(candidate.biome),
-      Math.floor(eventTime / 1000)
-    ].join("|");
-
-    if (Date.now() - (seen.get(feedEventKey) || 0) < SEEN_TTL_MS) return;
-    seen.set(feedEventKey, Date.now());
-
-    const event = {
-      live: true,
-      eggName: candidate.eggName,
-      displayName: candidate.eggName,
-      rarity: candidate.rarity,
-      biome: candidate.biome || "Unknown",
-      spawnedAt: candidate.spawnedAt,
-      imageUrl: candidate.imageUrl || null,
-      source: "Live Feed",
-      sourceEventId: candidate.sourceEventId || null
-    };
-
-    const existingKey = [
-      event.rarity.toLowerCase(),
-      normalizeFeedKey(event.eggName),
-      normalizeFeedKey(event.biome)
-    ].join("|");
-
-    const now = Date.now();
-    const previousSeen = seen.get(existingKey) || 0;
-    if (now - previousSeen < SEMANTIC_DEDUP_WINDOW_MS) return;
-
-    seen.set(existingKey, now);
-    inFlightKeys.add(existingKey);
-
-    try {
-      recordSpawnHistory(event, "Live Feed");
-      await sendAlert(event, ageMs >= 0 ? ageMs : null);
-      liveFeedEventsAccepted++;
-
-      const additionalSent = await processAdditionalLiveCandidates(payload, candidate, url);
-
-      if (additionalSent > 0) {
+      const newest = candidates[candidates.length - 1];
+      if (newest) {
         console.log(
-          "Multi-egg announcement:",
-          candidate.eggName,
-          "+" + additionalSent + " additional rare eggs"
+          "Live feed primed:",
+          newest.candidate.rarity,
+          newest.candidate.eggName,
+          "area=" + newest.candidate.biome,
+          "spawnedAt=" + newest.candidate.spawnedAt,
+          "eventsInPayload=" + candidates.length,
+          "endpoint=" + (newest.index + 1)
         );
       }
 
+      return;
+    }
+
+    if (acceptedThisPoll > 1) {
       console.log(
-        "Forwarded Live feed event:",
-        existingKey,
-        "latencyMs=" + (ageMs >= 0 ? ageMs : "unknown"),
-        "image=" + (candidate.imageUrl ? "attached" : "background")
+        "Multi-egg announcement:",
+        "sent=" + acceptedThisPoll,
+        "candidates=" + candidates.length
       );
-    } catch (error) {
-      liveFeedErrors++;
-      seen.delete(feedEventKey);
-      seen.delete(existingKey);
-      console.error("Live source alert forwarding failed:", error);
-    } finally {
-      inFlightKeys.delete(existingKey);
     }
   } finally {
     liveFeedPollInFlight = false;
