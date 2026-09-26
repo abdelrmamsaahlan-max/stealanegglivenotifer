@@ -130,7 +130,7 @@ const LIVE_FEED_URLS = [
   .filter((value, index, array) => array.indexOf(value) === index);
 
 const LIVE_FEED_POLL_MS =
-  Math.max(500, Number(process.env.LIVE_FEED_POLL_MS || 800));
+  Math.min(800, Math.max(500, Number(process.env.LIVE_FEED_POLL_MS || 800)));
 
 const LIVE_FEED_TIMEOUT_MS =
   Math.max(1000, Number(process.env.LIVE_FEED_TIMEOUT_MS || 5000));
