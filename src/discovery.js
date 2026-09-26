@@ -458,21 +458,61 @@ export function chooseBestUpdate(snapshots, sourceRanks = {}) {
   const valid = (snapshots || []).filter(item => item?.title);
   if (!valid.length) return null;
 
-  const sorted = [...valid].sort((a, b) => {
-    const aNumber = Number.isFinite(a.updateNumber) ? a.updateNumber : -1;
-    const bNumber = Number.isFinite(b.updateNumber) ? b.updateNumber : -1;
+  const groups = new Map();
 
-    if (bNumber !== aNumber) return bNumber - aNumber;
+  for (const item of valid) {
+    const number = Number.isFinite(item.updateNumber) ? item.updateNumber : -1;
+    const title = cleanText(item.title).toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    const key = [number, title].join("|");
 
-    const aRank = Number(sourceRanks[a.source] || 0);
-    const bRank = Number(sourceRanks[b.source] || 0);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  }
 
-    if (bRank !== aRank) return bRank - aRank;
+  const candidates = [...groups.values()].map(items => {
+    const sources = new Set(
+      items.map(item => item.source || "unknown")
+    );
+    const maxRank = Math.max(
+      ...items.map(item => Number(sourceRanks[item.source] || 0)),
+      0
+    );
+    const newestDate = items
+      .map(item => item.date || "")
+      .sort()
+      .pop() || "";
 
-    const aDate = a.date || "";
-    const bDate = b.date || "";
-    return bDate.localeCompare(aDate);
+    return {
+      item: [...items].sort((a, b) =>
+        Number(sourceRanks[b.source] || 0) - Number(sourceRanks[a.source] || 0)
+      )[0],
+      sourceCount: sources.size,
+      maxRank,
+      confidence: sourceConfidenceScore(maxRank, sources.size),
+      newestDate
+    };
   });
 
-  return sorted[0];
+  candidates.sort((a, b) => {
+    const aNumber = Number.isFinite(a.item.updateNumber) ? a.item.updateNumber : -1;
+    const bNumber = Number.isFinite(b.item.updateNumber) ? b.item.updateNumber : -1;
+
+    if (bNumber !== aNumber) return bNumber - aNumber;
+    if (b.sourceCount !== a.sourceCount) return b.sourceCount - a.sourceCount;
+    if (b.confidence !== a.confidence) return b.confidence - a.confidence;
+    if (b.maxRank !== a.maxRank) return b.maxRank - a.maxRank;
+    return b.newestDate.localeCompare(a.newestDate);
+  });
+
+  const best = candidates[0]?.item || null;
+  if (!best) return null;
+
+  return {
+    ...best,
+    evidenceSourceCount: candidates[0].sourceCount,
+    evidenceConfidence: candidates[0].confidence
+  };
 }
