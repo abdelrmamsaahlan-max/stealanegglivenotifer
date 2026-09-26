@@ -1641,10 +1641,8 @@ async function getPetPngBuffer(petName) {
         .resize({
           width: 1024,
           height: 1024,
-          fit: "contain",
-          withoutEnlargement: false,
-          kernel: sharp.kernel.lanczos3,
-          background: { r: 0, g: 0, b: 0, alpha: 0 }
+          fit: "inside",
+          withoutEnlargement: true
         })
         .png({
           compressionLevel: 9,
@@ -1657,10 +1655,8 @@ async function getPetPngBuffer(petName) {
         .resize({
           width: 1024,
           height: 1024,
-          fit: "contain",
-          withoutEnlargement: false,
-          kernel: sharp.kernel.lanczos3,
-          background: { r: 0, g: 0, b: 0, alpha: 0 }
+          fit: "inside",
+          withoutEnlargement: true
         })
         .png({
           compressionLevel: 9,
