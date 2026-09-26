@@ -18,7 +18,17 @@ import {
   PermissionFlagsBits
 } from "discord.js";
 import { extractMessageData, parseSpawn } from "./parser.js";
-import { hydrateRuntimeStateFile, persistRuntimeState } from "./database.js";
+import {
+  hydrateRuntimeStateFile,
+  persistRuntimeState,
+  persistSpawnRecord,
+  persistGameEvent,
+  persistRiftEvent,
+  persistCatalog,
+  persistAlertDelivery,
+  persistSourceHealth,
+  persistenceStats
+} from "./database.js";
 import {
   buildRiftActionRow,
   buildRiftAlertEmbed,
@@ -1032,6 +1042,9 @@ function ensureCatalogEgg(eggName, rarity, area = "Unknown") {
         existing.biome = String(area).trim();
       }
 
+      persistCatalog([existing]).catch(error => {
+        recordMonitorError("storage", error, "Supabase catalog persistence failed");
+      });
       scheduleStateSave();
       return existing;
     }
@@ -1057,6 +1070,9 @@ function ensureCatalogEgg(eggName, rarity, area = "Unknown") {
       return eggIdentityKey(rawName) === canonicalIdentity;
     }) || dynamic;
 
+  persistCatalog([canonicalEntry]).catch(error => {
+    recordMonitorError("storage", error, "Supabase catalog persistence failed");
+  });
   scheduleStateSave();
 
   if (canonicalEntry !== dynamic) {
@@ -3133,6 +3149,9 @@ function recordSpawnHistory(event, source = "Live Feed") {
   if (spawnHistory.length > MAX_HISTORY) spawnHistory.length = MAX_HISTORY;
 
   recordLastSeen(event);
+  persistSpawnRecord(record).catch(error => {
+    recordMonitorError("storage", error, "Supabase spawn persistence failed");
+  });
   scheduleStateSave();
   return record;
 }
@@ -3164,12 +3183,15 @@ function recordGameEvent(event) {
     gameEventHistory.length = MAX_EVENT_HISTORY;
   }
 
+  persistGameEvent(record).catch(error => {
+    recordMonitorError("storage", error, "Supabase game event persistence failed");
+  });
   scheduleStateSave();
   return record;
 }
 
 function updateDiscoverySourceHealth(source, patch = {}) {
-  autoDiscoverySourceHealth.set(source.key, {
+  const next = {
     key: source.key,
     name: source.name,
     url: source.url,
@@ -3182,6 +3204,11 @@ function updateDiscoverySourceHealth(source, patch = {}) {
     error: null,
     ...autoDiscoverySourceHealth.get(source.key),
     ...patch
+  };
+
+  autoDiscoverySourceHealth.set(source.key, next);
+  persistSourceHealth(next).catch(error => {
+    recordMonitorError("storage", error, "Supabase discovery health persistence failed");
   });
 }
 
@@ -5403,6 +5430,12 @@ function recordRiftHistory(event, test = false) {
     };
   }
 
+  persistRiftEvent({
+    ...event,
+    source: event.sourceName || "Discord Source"
+  }).catch(error => {
+    recordMonitorError("storage", error, "Supabase Rift persistence failed");
+  });
   scheduleStateSave();
 }
 
@@ -5830,6 +5863,19 @@ async function sendAlert(event, latencyMs = null) {
 
   if (recentSpawns.length > 25) recentSpawns.length = 25;
 
+  persistAlertDelivery(
+    deliveryKeys.map(deliveryKey => ({
+      deliveryKey,
+      channelId: sentMessage?.channelId || CHANNEL_ID || null,
+      discordMessageId: sentMessage?.id || null,
+      status: "sent",
+      attempts: 1,
+      sentAt: new Date().toISOString()
+    }))
+  ).catch(error => {
+    recordMonitorError("storage", error, "Supabase alert delivery persistence failed");
+  });
+
   releaseAlertDelivery(deliveryKeys, true);
   return true;
 }
@@ -6083,6 +6129,7 @@ app.get("/health", (_req, res) => {
     liveFeedErrors,
     publicPngProxy: Boolean(PUBLIC_BASE_URL),
     sourceImageAlphaOnly: SOURCE_IMAGE_ALPHA_ONLY,
+    persistence: persistenceStats(),
 
     autoDiscoveryEnabled: AUTO_DISCOVERY_ENABLED,
     autoDiscoveredCount,
@@ -6140,6 +6187,10 @@ app.get("/health", (_req, res) => {
     experimentCustomEmojiCount: experimentCustomEmojiCache.size,
     cachedPetImages: [...imageFallbackCache.keys()].filter(key => key.startsWith("pet:") && imageFallbackCache.get(key)?.url).length
   });
+});
+
+app.get("/api/persistence", (_req, res) => {
+  res.json(persistenceStats());
 });
 
 app.get("/api/history", (_req, res) => {
