@@ -534,7 +534,7 @@ function loadRuntimeState() {
             typeof record.petName === "string" &&
             typeof record.spawnedAt === "string"
           ) {
-            lastSeenByRarity[rarity].set(eggKey, {
+            lastSeenByRarity[rarity].set(eggIdentityKey(record.eggName), {
               eggName: record.eggName,
               petName: record.petName,
               area: record.area || "Unknown",
@@ -2049,7 +2049,7 @@ function syncLastSeenFromFeedPayload(payload) {
 
     if (!entry || !isLastSeenEligibleEntry(entry)) continue;
 
-    const key = normalizeFeedKey(entry.eggName);
+    const key = eggIdentityKey(entry.eggName);
     const existing = lastSeenByRarity[rarity].get(key);
     const existingTime = existing ? Date.parse(existing.spawnedAt || "") : NaN;
 
@@ -2809,6 +2809,10 @@ async function runAutoDiscoverySweep() {
       autoDiscoveredCount++;
       newlyAdded.push(entry);
 
+      // Immediately warm the newly discovered pet/egg artwork. The image
+      // pipeline converts remote artwork to a transparent PNG before Discord
+      // ever receives it, so newly discovered entries get the same image
+      // treatment as the built-in catalogue.
       getPetPngBuffer(entry.petName)
         .then(buffer => {
           if (buffer) {
@@ -2945,6 +2949,8 @@ async function runAutoDiscoverySweep() {
       });
 
       if (eventRecord) {
+        // Intentionally silent: ordinary game/version/bug-fix updates
+        // must never generate a Discord notification.
         await sendGameUpdateAlert(
           {
             title: bestUpdate.title,
@@ -3638,7 +3644,7 @@ function getLastSeenEntries(rarity) {
       continue;
     }
 
-    const key = normalizeFeedKey(entry.eggName);
+    const key = eggIdentityKey(entry.eggName);
     if (!key || unique.has(key)) continue;
 
     unique.set(key, {
@@ -3935,7 +3941,7 @@ function buildLastSeenEmbed(rarity) {
         ? record.area
         : entry.biome || "Unknown";
 
-    const renderedKey = normalizeFeedKey(entry.eggName || entry.petName);
+    const renderedKey = eggIdentityKey(entry.eggName || entry.petName);
     if (!renderedEggs.has(renderedKey)) {
       renderedEggs.add(renderedKey);
       lines.push(
@@ -3951,7 +3957,7 @@ function buildLastSeenEmbed(rarity) {
     lines.push("", "**Not seen yet**");
 
     for (const { entry } of neverEntries) {
-      const renderedKey = normalizeFeedKey(entry.eggName || entry.petName);
+      const renderedKey = eggIdentityKey(entry.eggName || entry.petName);
       if (renderedEggs.has(renderedKey)) continue;
 
       renderedEggs.add(renderedKey);
@@ -4196,7 +4202,7 @@ function recordLastSeen(event) {
       ? event.biome
       : entry?.biome || "Unknown";
 
-  lastSeenByRarity[rarity].set(normalizeFeedKey(canonical), {
+  lastSeenByRarity[rarity].set(eggIdentityKey(canonical), {
     eggName: canonical,
     petName,
     area: eventArea,
@@ -4218,7 +4224,7 @@ async function rebuildLastSeenFromHistory() {
     const entry = findCatalogEgg(eggName);
     if (!isLastSeenEligibleEntry(entry)) continue;
 
-    const mapKey = normalizeFeedKey(entry.eggName);
+    const mapKey = eggIdentityKey(entry.eggName);
     if (!lastSeenByRarity[key].has(mapKey)) {
       lastSeenByRarity[key].set(mapKey, {
         eggName: entry.eggName,
