@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Game-only event and update discovery rules for Steal An Egg.",
+  "sources": [
+    "https://robloxstealanegg.wiki/",
+    "https://eggwatcher.com/guides/how-the-live-feed-works"
+  ],
+  "eventTypes": {
+    "game_update": {
+      "keywords": ["update #", "new update", "game update", "update released", "update is live"]
+    },
+    "limited_event": {
+      "keywords": ["event", "limited event", "dr. scramble", "admin abuse", "light vs darkness", "angels vs demons"]
+    }
+  }
+}
