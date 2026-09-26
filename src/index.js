@@ -76,6 +76,7 @@ import {
   timestampGuard,
   transitionEventState
 } from "./reliability.js";
+import { shouldProcessLiveFeedCandidate } from "./live-feed-gate.js";
 
 const app = express();
 
@@ -730,6 +731,28 @@ function loadRuntimeState() {
       }
     }
 
+    if (state.liveFeed && typeof state.liveFeed === "object") {
+      liveFeedLastFingerprint =
+        typeof state.liveFeed.lastFingerprint === "string"
+          ? state.liveFeed.lastFingerprint
+          : null;
+      liveFeedLastEventAt =
+        typeof state.liveFeed.lastEventAt === "string"
+          ? state.liveFeed.lastEventAt
+          : null;
+      liveFeedPrimed = state.liveFeed.primed === true;
+
+      for (const [key, value] of Object.entries(state.liveFeed.processedEvents || {})) {
+        if (
+          key &&
+          Number.isFinite(Number(value)) &&
+          Number(value) > Date.now() - LIVE_FEED_EVENT_DEDUP_MS
+        ) {
+          liveFeedProcessedEvents.set(key, Number(value));
+        }
+      }
+    }
+
     if (state.alertedMessageIds && typeof state.alertedMessageIds === "object") {
       for (const [key, value] of Object.entries(state.alertedMessageIds)) {
         if (key && Number.isFinite(Number(value))) {
@@ -849,7 +872,7 @@ function saveRuntimeState() {
     fs.mkdirSync(stateDir, { recursive: true });
 
     const payload = {
-      version: 4,
+      version: 5,
       savedAt: new Date().toISOString(),
       lastUpdateFingerprint,
       lastUpdateTitle,
@@ -887,6 +910,16 @@ function saveRuntimeState() {
         [...seenExperimentAlerts.entries()]
           .slice(-300)
       ),
+      liveFeed: {
+        primed: liveFeedPrimed,
+        lastFingerprint: liveFeedLastFingerprint,
+        lastEventAt: liveFeedLastEventAt,
+        processedEvents: Object.fromEntries(
+          [...liveFeedProcessedEvents.entries()]
+            .filter(([, seenAt]) => Number(seenAt) > Date.now() - LIVE_FEED_EVENT_DEDUP_MS)
+            .slice(-500)
+        )
+      },
       reliability: {
         evidence: Object.fromEntries(
           [...reliabilityEvidence.entries()]
@@ -3435,6 +3468,9 @@ async function pollLiveFeed() {
     updateLiveFeedHealth();
 
     const now = Date.now();
+    const startupBaselineAt = liveFeedLastEventAt
+      ? Date.parse(liveFeedLastEventAt)
+      : null;
 
     for (const [fingerprint, seenAt] of liveFeedProcessedEvents) {
       if (now - seenAt > LIVE_FEED_EVENT_DEDUP_MS) {
@@ -3509,12 +3545,19 @@ async function pollLiveFeed() {
       liveFeedLastUrl = url;
       liveFeedLastEventAt = candidate.spawnedAt;
 
-      if (!liveFeedPrimed) {
-        liveFeedProcessedEvents.set(fingerprint, now);
-        continue;
-      }
+      const feedGate = shouldProcessLiveFeedCandidate({
+        eventTime,
+        fingerprint,
+        primed: liveFeedPrimed,
+        startupBaselineAt,
+        processedEvents: liveFeedProcessedEvents,
+        now
+      });
 
-      if (liveFeedProcessedEvents.has(fingerprint)) {
+      if (!feedGate.process) {
+        if (feedGate.reason === "startup_prime") {
+          liveFeedProcessedEvents.set(fingerprint, now);
+        }
         continue;
       }
 
@@ -3614,6 +3657,8 @@ async function pollLiveFeed() {
       liveFeedPrimed = true;
       liveFeedLastFingerprint =
         candidates[candidates.length - 1]?.fingerprint || null;
+
+      scheduleStateSave();
 
       const newest = candidates[candidates.length - 1];
       if (newest) {
