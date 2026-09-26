@@ -135,16 +135,16 @@ export function parseRiftChange(data) {
   const lower = normalize(combined);
 
   const bannerMatch = combined.match(
-    /\b(Riftborn|Riftbeasts|Shattered\s+Rift)\b[^\n]{0,120}?\b(?:is\s+now\s+active|is\s+active|active\s+now|went\s+live|live\s+now|became\s+active)\b/i
+    /\b(Riftborn|Riftbeasts|Shattered\s+Rift)\b[^\n]{0,180}?\b(?:is\s+now\s+active|is\s+active|active\s+now|went\s+live|live\s+now|became\s+active|current|selected|shifted)\b/i
   );
 
   const shiftedMatch = combined.match(
-    /\bThe\s+Rift\s+shifted\b[^\n]{0,120}?\b(Riftborn|Riftbeasts|Shattered\s+Rift)\b/i
+    /\b(?:The\s+)?Rift\s+(?:shifted|changed|switched)\b[^\n]{0,180}?\b(Riftborn|Riftbeasts|Shattered\s+Rift)\b/i
   );
 
   const directBanner = combined.match(/\b(Riftborn|Riftbeasts|Shattered\s+Rift)\b/i);
   const rotationSignal =
-    /\b(?:Changed|Next\s+Change|Rotation\s+Chance|Current\s+Egg)\b/i.test(combined);
+    /\b(?:Rift|Changed|Change|Next\s+Change|Rotation\s+Chance|Current\s+Egg|Current\s+Rift|Active\s+Banner|Banner)\b/i.test(combined);
 
   const bannerKey = toRiftKey(
     bannerMatch?.[1] ||
@@ -153,9 +153,10 @@ export function parseRiftChange(data) {
   );
 
   const bossSignal =
-    /\babyss\s+overlord\b[\s\S]{0,160}\b(?:spawned|started|open|opened|active)\b/i.test(lower) ||
+    /\babyss\s+overlord\b[\s\S]{0,220}\b(?:spawned|started|open|opened|active|appeared|live)\b/i.test(lower) ||
     /\brift\s+has\s+been\s+opened\b/i.test(lower) ||
-    /\bboss\s+fight\b[\s\S]{0,80}\b(?:started|live|active)\b/i.test(lower);
+    /\bboss\s+fight\b[\s\S]{0,120}\b(?:started|live|active|opened|began)\b/i.test(lower) ||
+    /\babyss\s+overlord\b/i.test(lower) && /\b(?:rift|boss|fight|active|live)\b/i.test(lower);
 
   if (bossSignal && !bannerKey) {
     return {
