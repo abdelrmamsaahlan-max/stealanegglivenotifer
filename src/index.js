@@ -151,6 +151,8 @@ const AUTO_DISCOVERY_URLS = [
 
 let autoDiscoveryTimer = null;
 let imageWarmupInFlight = false;
+let autoDiscoveryLastFingerprint = "";
+let autoDiscoveredCount = 0;
 
 function normalizePublicBaseUrl(value) {
   const raw = String(value || "").trim();
@@ -1192,6 +1194,61 @@ async function pollEggWatch() {
   }
 }
 
+function decodeHtmlText(value) {
+  return String(value || "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&#39;/gi, "'")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#x27;/gi, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractSupportedEggsFromGuide(html) {
+  const text = decodeHtmlText(
+    String(html || "")
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<[^>]+>/g, "\n")
+  );
+
+  const sections = [
+    ["Secret", text.match(/###\s*Secret([\s\S]*?)(?=###\s*Eternal|$)/i)?.[1] || ""],
+    ["Eternal", text.match(/###\s*Eternal([\s\S]*?)(?=###\s*Divine|$)/i)?.[1] || ""],
+    ["Divine", text.match(/###\s*Divine([\s\S]*?)(?=###|$)/i)?.[1] || ""]
+  ];
+
+  const found = [];
+
+  for (const [rarity, section] of sections) {
+    const lines = section
+      .split(/\n+/)
+      .map(line => decodeHtmlText(line))
+      .map(line => line.replace(/^[*\-•]\s*/, "").trim())
+      .filter(Boolean);
+
+    for (const line of lines) {
+      const match = line.match(
+        /^(.+?)\s+(Jungle|Snow|Volcano|Abyss Ocean|Prehistoric|Cosmic|Cherry Blossom|Titan Temple|Angels and Demons|Area not listed)$/i
+      );
+
+      if (!match) continue;
+
+      const name = match[1].replace(/\s+Egg$/i, "").trim();
+      if (!name) continue;
+
+      found.push({
+        eggName: name + " Egg",
+        rarity,
+        area: match[2]
+      });
+    }
+  }
+
+  return found;
+}
+
 async function scanForGameUpdates() {
   if (!AUTO_DISCOVERY_ENABLED) return;
 
@@ -1202,10 +1259,15 @@ async function scanForGameUpdates() {
       const { response, body } = await fetchLiveFeed(url);
       if (!response.ok) continue;
 
+      if (url.includes("/guides/how-the-live-feed-works")) {
+        discovered.push(...extractSupportedEggsFromGuide(body));
+        continue;
+      }
+
       const plain = String(body)
         .replace(/<script[\s\S]*?<\/script>/gi, " ")
         .replace(/<style[\s\S]*?<\/style>/gi, " ")
-        .replace(/<[^>]+>/g, " ")
+        .replace(/<[^>]+>/g, "\n")
         .replace(/&(?:nbsp|amp);/gi, " ")
         .replace(/\s+/g, " ")
         .trim();
@@ -1214,17 +1276,58 @@ async function scanForGameUpdates() {
         /\b(?:secret|eternal|divine)\b.{0,80}\begg\b/gi
       ) || [];
 
-      for (const match of rareMatches) discovered.push(match);
+      for (const match of rareMatches) {
+        discovered.push({ text: match });
+      }
     } catch (error) {
       console.warn("Update discovery fetch failed:", url, error?.message || error);
     }
   }
 
-  if (discovered.length) {
+  let added = 0;
+
+  for (const item of discovered) {
+    if (!item?.eggName || !item?.rarity) continue;
+
+    const before = findCatalogEgg(item.eggName);
+    const entry = ensureCatalogEgg(item.eggName, item.rarity, item.area || "Unknown");
+
+    if (entry && !before) {
+      added++;
+      autoDiscoveredCount++;
+
+      // Start preparing the transparent character PNG immediately.
+      getPetPngBuffer(entry.petName)
+        .then(buffer => {
+          if (buffer) {
+            console.log(
+              "Pre-cached new egg character PNG:",
+              entry.rarity,
+              entry.petName
+            );
+          }
+        })
+        .catch(error => {
+          console.warn(
+            "New egg image preparation failed for " + entry.petName + ":",
+            error?.message || error
+          );
+        });
+    }
+  }
+
+  const fingerprint = discovered
+    .filter(item => item?.eggName && item?.rarity)
+    .map(item => item.rarity + ":" + item.eggName)
+    .sort()
+    .join("|");
+
+  if (fingerprint && fingerprint !== autoDiscoveryLastFingerprint) {
+    autoDiscoveryLastFingerprint = fingerprint;
     console.log(
-      "Update discovery scan:",
-      discovered.length,
-      "rare-egg references found."
+      "Auto catalogue sync:",
+      discovered.filter(item => item?.eggName && item?.rarity).length,
+      "supported rare eggs; new=" + added
     );
   }
 }
@@ -1232,9 +1335,11 @@ async function scanForGameUpdates() {
 function startAutoDiscovery() {
   if (!AUTO_DISCOVERY_ENABLED) return;
 
-  scanForGameUpdates().catch(error => {
-    console.warn("Initial update discovery failed:", error);
-  });
+  setTimeout(() => {
+    scanForGameUpdates().catch(error => {
+      console.warn("Initial update discovery failed:", error);
+    });
+  }, 2500);
 
   autoDiscoveryTimer = setInterval(() => {
     scanForGameUpdates().catch(error => {
@@ -1515,27 +1620,35 @@ function buildActionRow(event) {
 }
 
 async function enrichAlertEvent(event) {
-  const entry = findCatalogEgg(event.eggName || event.displayName);
+  const entry =
+    findCatalogEgg(event.eggName || event.displayName) ||
+    ensureCatalogEgg(event.eggName || event.displayName, event.rarity, event.biome);
+
   if (!entry) return event;
 
   event.eggName = entry.eggName;
   event.displayName = entry.petName || entry.displayName || entry.eggName;
   event.biome = event.biome || entry.biome || "Unknown";
-  event.imageUrl = event.imageUrl || await resolveImageUrl(entry.eggName);
 
-  // Use an already-cached transparent PNG immediately. On a cache miss,
-  // generate it in the background and let the current alert use the verified
-  // source image instead of blocking the live alert.
   const imageKey = normalizeFeedKey(entry.petName);
   const cachedPng = petPngBufferCache.get(imageKey);
+
   if (cachedPng && Date.now() - cachedPng.at < PET_PNG_CACHE_TTL_MS) {
     event.imageBuffer = cachedPng.buffer;
   } else {
-    getPetPngBuffer(entry.petName).then(buffer => {
-      if (buffer) {
-        console.log("Transparent PNG ready:", entry.petName);
-      }
-    }).catch(() => {});
+    // Do not block a live alert on neural-network/background processing.
+    // The catalog/update sync and startup warmer prepare images ahead of time.
+    getPetPngBuffer(entry.petName)
+      .then(buffer => {
+        if (buffer) {
+          console.log("Transparent PNG ready:", entry.petName);
+        }
+      })
+      .catch(() => {});
+  }
+
+  if (!event.imageUrl && PUBLIC_BASE_URL) {
+    event.imageUrl = publicPetImageUrl(entry.petName);
   }
 
   return event;
@@ -1756,6 +1869,8 @@ app.get("/health", (_req, res) => {
     liveFeedErrors,
     publicPngProxy: Boolean(PUBLIC_BASE_URL),
     backgroundRemovalEnabled: BACKGROUND_REMOVAL_ENABLED,
+    autoDiscoveryEnabled: AUTO_DISCOVERY_ENABLED,
+    autoDiscoveredCount,
     cachedPetImages: [...imageFallbackCache.keys()].filter(key => key.startsWith("pet:") && imageFallbackCache.get(key)?.url).length
   });
 });
@@ -1876,6 +1991,7 @@ client.on("interactionCreate", async interaction => {
         "📡 Discord source: " + sourceHealth(),
         "🌐 EggWatch feed: " + liveFeedHealth(),
         "🖼️ Character PNG: " + (BACKGROUND_REMOVAL_ENABLED ? "ENABLED" : "SOURCE ONLY"),
+        "🔄 Auto catalog: " + (AUTO_DISCOVERY_ENABLED ? "ENABLED" : "DISABLED") + " (" + autoDiscoveredCount + " new)" ,
         "🥚 Alerts sent: " + alertCount,
         "🔎 Detected: " + detectedCount,
         "⚡ Average latency: " + (latencySamples
@@ -1930,6 +2046,8 @@ client.on("interactionCreate", async interaction => {
             : "N/A"),
           "🛠️ Errors: " + monitorErrors,
           "📡 Source: " + sourceHealth(),
+          "🌐 EggWatch: " + liveFeedHealth(),
+          "🔄 Auto catalog: " + (AUTO_DISCOVERY_ENABLED ? "ON" : "OFF"),
           "⏱️ Uptime: " + hours + "h " + minutes + "m",
           "💾 Cache: " + seen.size
         ].join("\n"),
