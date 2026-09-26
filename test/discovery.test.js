@@ -51,6 +51,45 @@ test("extracts supported rare eggs from structured rarity sections", () => {
   );
 });
 
+test("extracts rare pets from current table-style discovery rows", () => {
+  const html = `
+    <table>
+      <tr><th>Pet</th><th>Rarity</th><th>Biome</th><th>Income</th></tr>
+      <tr><td>Image: King SnakeKing Snake</td><td>Secret</td><td>Jungle</td><td>$3.5M/s</td></tr>
+      <tr><td>Yeti</td><td>Secret</td><td>Snow</td><td>$5M/s</td></tr>
+      <tr><td>Nightflame</td><td>Divine</td><td>Titan Temple</td><td>$3B/s</td></tr>
+    </table>
+  `;
+
+  const eggs = extractSupportedEggsFromDiscovery(html);
+
+  assert.deepEqual(
+    eggs.map(item => [item.rarity, item.eggName, item.area]),
+    [
+      ["Secret", "King Snake Egg", "Jungle"],
+      ["Secret", "Yeti Egg", "Snow"],
+      ["Divine", "Nightflame Egg", "Titan Temple"]
+    ]
+  );
+});
+
+test("extracts rare pets from pipe-delimited rendered rows", () => {
+  const html = `
+    Image: CerberusCerberus | Secret | Volcano | $8M/s | calc
+    Image: Gorilla KingGorilla King | Eternal | Titan Temple | $880M/s | calc
+  `;
+
+  const eggs = extractSupportedEggsFromDiscovery(html);
+
+  assert.deepEqual(
+    eggs.map(item => [item.rarity, item.eggName, item.area]),
+    [
+      ["Secret", "Cerberus Egg", "Volcano"],
+      ["Eternal", "Gorilla King Egg", "Titan Temple"]
+    ]
+  );
+});
+
 test("extracts high-value event signals", () => {
   const html = `
     <p>Dr. Scramble's Revenge is scheduled for September 26.</p>
