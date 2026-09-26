@@ -76,7 +76,13 @@ export function parseScrambleBoss(data) {
 
   // Update/patch notes can mention the boss without indicating a live spawn.
   const looksLikeUpdateNotes =
-    /\bupdate\s*#?\s*6\b|\bpatch\s+notes?\b|\bcoming\s+soon\b/i.test(combined);
+    /\bupdate\s*#?\s*6\b|\bpatch\s+notes?\b|\bnew\s+content\b|\bcheck\s+it\s+out\s+now\b/i.test(combined);
+
+  const patchNotePayload =
+    looksLikeUpdateNotes &&
+    /\bevery\s+30\s+minutes\b|\b3\s+new\s+banners\b|\b15\s+new\s+pets\b|\bextinction\s+egg\b|\b100[- ]tier\s+boss\s+milestone\b|\bsecret\s+boss\s+drop\b/i.test(combined);
+
+  if (patchNotePayload) return null;
 
   if (!liveSignal && !(mechaSignal && (sampleSignal || bossSignal) && !looksLikeUpdateNotes)) {
     return null;
