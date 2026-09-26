@@ -2484,21 +2484,68 @@ async function getLastSeenChannel() {
   return channel;
 }
 
+async function findExistingLastSeenMessage(channel, rarity) {
+  const expectedTitle = "🕒 " + lastSeenLabel(rarity) + " • Last Seen";
+
+  if (lastSeenMessageIds[rarity]) {
+    try {
+      const saved = await channel.messages.fetch(lastSeenMessageIds[rarity]);
+      if (
+        saved &&
+        saved.author?.id === client.user?.id &&
+        saved.embeds?.[0]?.title === expectedTitle
+      ) {
+        return saved;
+      }
+    } catch {
+      // Saved message ID may be stale after a restart or manual deletion.
+    }
+  }
+
+  try {
+    const recent = await channel.messages.fetch({ limit: 100 });
+    const matches = [...recent.values()]
+      .filter(message =>
+        message.author?.id === client.user?.id &&
+        message.embeds?.[0]?.title === expectedTitle
+      )
+      .sort((a, b) => Number(a.id) - Number(b.id));
+
+    if (!matches.length) return null;
+
+    const primary = matches[0];
+    lastSeenMessageIds[rarity] = primary.id;
+
+    // Remove duplicate Last Seen messages created by previous restarts.
+    for (const duplicate of matches.slice(1)) {
+      try {
+        await duplicate.delete();
+        console.log("Removed duplicate Last Seen message:", rarity, duplicate.id);
+      } catch (error) {
+        console.warn(
+          "Could not remove duplicate Last Seen message for " + rarity + ":",
+          error?.message || error
+        );
+      }
+    }
+
+    return primary;
+  } catch (error) {
+    console.warn(
+      "Last Seen message lookup failed for " + rarity + ":",
+      error?.message || error
+    );
+    return null;
+  }
+}
+
 async function ensureLastSeenMessages() {
   const channel = await getLastSeenChannel();
   if (!channel) return false;
 
   for (const rarity of LAST_SEEN_RARITIES) {
     const embed = buildLastSeenEmbed(rarity);
-    let message = null;
-
-    if (lastSeenMessageIds[rarity]) {
-      try {
-        message = await channel.messages.fetch(lastSeenMessageIds[rarity]);
-      } catch {
-        message = null;
-      }
-    }
+    const message = await findExistingLastSeenMessage(channel, rarity);
 
     if (message) {
       await message.edit({ embeds: [embed] });
