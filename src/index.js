@@ -115,7 +115,7 @@ const COMMANDS = [
     ),
   new SlashCommandBuilder()
     .setName("health-check")
-    .setDescription("Run a full health check for Discord, EggWatch, Rift, alerts, images, memory, and storage."),
+    .setDescription("Run a full health check for Discord, live feeds, Rift, alerts, images, memory, and storage."),
   new SlashCommandBuilder()
     .setName("role-test")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
@@ -216,15 +216,11 @@ const SEEN_TTL_MS =
 const SOURCE_STALE_AFTER_MS =
   Math.max(30, Number(process.env.SOURCE_STALE_AFTER_SECONDS || 180)) * 1000;
 
-
 const LIVE_FEED_ENABLED =
   (process.env.LIVE_FEED_ENABLED || "true").toLowerCase() === "true";
 
 const LIVE_FEED_URLS = [
-  ...(process.env.LIVE_FEED_URLS || "").split(","),
-  process.env.LIVE_FEED_URL || "",
-  "https://eggwatcher.com/api/mobile-sync",
-  "https://eggwatcher.com/mobile-sync"
+  ...(process.env.LIVE_SOURCE_URLS || "").split(",")
 ]
   .map(value => value.trim())
   .filter(Boolean)
@@ -289,69 +285,33 @@ const STATE_FILE = path.resolve(
   "data/runtime-state.json"
 );
 
-const AUTO_DISCOVERY_SOURCES = [
-  {
-    key: "official-roblox",
-    name: "Official Roblox Game",
-    url: "https://www.roblox.com/games/107778070777162/Steal-An-Egg",
-    rank: 10,
-    parseUpdates: false,
-    parseEggs: false,
-    parseEvents: true,
-    followLinks: false
-  },
-  {
-    key: "roblox-wiki",
-    name: "Roblox Steal An Egg Wiki",
-    url: "https://robloxstealanegg.wiki/",
-    rank: 8,
-    parseUpdates: true,
-    parseEggs: true,
-    parseEvents: true,
-    followLinks: true
-  },
-  {
-    key: "eggipedia",
-    name: "Eggipedia Updates",
-    url: "https://eggipedia.com/updates",
-    rank: 8,
-    parseUpdates: true,
-    parseEggs: true,
-    parseEvents: true,
-    followLinks: true
-  },
-  {
-    key: "event-hub",
-    name: "Steal An Egg Event Hub",
-    url: "https://stealanegg.store/events",
-    rank: 7,
-    parseUpdates: false,
-    parseEggs: false,
-    parseEvents: true,
-    followLinks: true
-  },
-  {
-    key: "eggwatch-guide",
-    name: "EggWatch Live Feed Guide",
-    url: "https://eggwatcher.com/guides/how-the-live-feed-works",
-    rank: 6,
-    parseUpdates: true,
-    parseEggs: true,
-    parseEvents: true,
-    followLinks: false
-  },
-  {
-    key: "status-hub",
-    name: "Steal An Egg Status Hub",
-    url: "https://stealanegg.store/game-status",
-    rank: 9,
-    parseUpdates: false,
-    parseEggs: false,
-    parseEvents: true,
-    followLinks: true
-  }
-];
+function loadDiscoverySources() {
+  const raw = String(process.env.DISCOVERY_SOURCES_JSON || "").trim();
+  if (!raw) return [];
 
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed
+      .filter(item => item && typeof item.url === "string" && /^https?:\/\//i.test(item.url))
+      .map((item, index) => ({
+        key: String(item.key || "source-" + (index + 1)),
+        name: String(item.name || "Source " + (index + 1)),
+        url: String(item.url).trim(),
+        rank: Math.max(0, Math.min(10, Number(item.rank ?? 5))),
+        parseUpdates: item.parseUpdates !== false,
+        parseEggs: item.parseEggs !== false,
+        parseEvents: item.parseEvents !== false,
+        followLinks: item.followLinks === true
+      }));
+  } catch (error) {
+    console.warn("Discovery source configuration is invalid:", error?.message || error);
+    return [];
+  }
+}
+
+const AUTO_DISCOVERY_SOURCES = loadDiscoverySources();
 const AUTO_DISCOVERY_LINK_LIMIT = 3;
 const AUTO_DISCOVERY_POLL_MS = Math.max(
   45_000,
@@ -372,6 +332,8 @@ let discoveryCatalogSnapshot = {};
 let discoveryChangelog = [];
 let discoveryLastDecision = null;
 let discoveryScanSequence = 0;
+const PUBLIC_LIVE_SOURCE_LABEL = "Live Feed";
+const PUBLIC_DISCOVERY_SOURCE_LABEL = "Auto Discovery";
 const MAX_DISCOVERY_CHANGELOG = 50;
 const spawnHistory = [];
 const gameEventHistory = [];
@@ -613,7 +575,7 @@ function loadRuntimeState() {
       for (const entry of state.dynamicEggs.slice(0, 50)) {
         if (
           entry &&
-          entry.source === "EggWatch live auto-discovery" &&
+          entry.source === "Auto Discovery" &&
           entry.eggName &&
           entry.petName &&
           ["Secret", "Eternal", "Divine"].includes(entry.rarity) &&
@@ -666,7 +628,7 @@ function saveRuntimeState() {
         ])
       ),
       dynamicEggs: eggImageCatalog
-        .filter(entry => entry?.source === "EggWatch live auto-discovery")
+        .filter(entry => entry?.source === "Auto Discovery")
         .slice(0, 50)
     };
 
@@ -765,7 +727,7 @@ function buildDynamicCatalogEntry(eggName, rarity, area = "Unknown") {
     sourcePage: "https://robloxstealanegg.wiki/eggs/" + slugify(cleanEgg.replace(/\s+Egg$/i, "")) + "-egg/",
     active: true,
     discoveredAt: new Date().toISOString(),
-    source: "EggWatch live auto-discovery",
+    source: "Auto Discovery",
     _runtimeOnlyKey: normalized
   };
 }
@@ -867,7 +829,6 @@ function eggNameMatchesTarget(value, targetName) {
 
   return left.replace(/\begg\b/g, "").trim() === right.replace(/\begg\b/g, "").trim();
 }
-
 
 function extractTagAttributes(tag) {
   const attrs = {};
@@ -1054,8 +1015,6 @@ const PET_PAGE_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const PET_PNG_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const MAX_REMOTE_IMAGE_BYTES = 6 * 1024 * 1024;
 const MAX_REMOTE_TEXT_BYTES = 2 * 1024 * 1024;
-
-
 
 function findCatalogPet(input) {
   const wanted = normalizeFeedKey(input);
@@ -1753,7 +1712,7 @@ function feedStateLooksOffline(payload) {
   }
 }
 
-function parseEggWatchHtml(html) {
+function parseLive sourceHtml(html) {
   const rawHtml = String(html || "");
   const text = rawHtml
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
@@ -1826,7 +1785,7 @@ async function fetchLiveFeed(url) {
   }
 }
 
-async function processAdditionalEggWatchCandidates(payload, primaryCandidate, url) {
+async function processAdditionalLive sourceCandidates(payload, primaryCandidate, url) {
   const all = collectEggCandidates(payload);
   const primaryTime = Date.parse(primaryCandidate.spawnedAt);
   if (!Number.isFinite(primaryTime)) return 0;
@@ -1867,28 +1826,28 @@ async function processAdditionalEggWatchCandidates(payload, primaryCandidate, ur
       biome: candidate.biome || "Unknown",
       spawnedAt: candidate.spawnedAt,
       imageUrl: null,
-      source: "EggWatch Global Feed",
+      source: "Live Feed",
       sourceEventId: candidate.sourceEventId || null
     };
 
     try {
       seen.set(feedEventKey, Date.now());
-      recordSpawnHistory(event, "EggWatch Global Feed");
+      recordSpawnHistory(event, "Live Feed");
       await sendAlert(event, Math.max(0, Date.now() - primaryTime));
       liveFeedEventsAccepted++;
       sent++;
       console.log(
-        "Forwarded additional EggWatch feed event:",
+        "Forwarded additional Live feed event:",
         candidate.rarity,
         candidate.eggName,
         "area=" + candidate.biome,
-        "url=" + url
+        "endpointCount=" + LIVE_FEED_URLS.length
       );
     } catch (error) {
       seen.delete(feedEventKey);
       liveFeedErrors++;
       console.warn(
-        "Additional EggWatch candidate failed:",
+        "Additional Live source candidate failed:",
         candidate.eggName,
         error?.message || error
       );
@@ -1898,7 +1857,7 @@ async function processAdditionalEggWatchCandidates(payload, primaryCandidate, ur
   return sent;
 }
 
-async function pollEggWatch() {
+async function pollLive source() {
   if (!LIVE_FEED_ENABLED || !LIVE_FEED_URLS.length) return;
   if (liveFeedPollInFlight) return;
 
@@ -1934,7 +1893,7 @@ async function pollEggWatch() {
         }
       }
 
-      // EggWatch can keep prior detections in the same feed payload.
+      // Live source can keep prior detections in the same feed payload.
       // Sync those saved detections into Last Seen without sending alerts.
       syncLastSeenFromFeedPayload(payload);
 
@@ -1986,7 +1945,7 @@ async function pollEggWatch() {
         liveFeedPrimed = true;
         liveFeedLastFingerprint = fingerprint;
         console.log(
-          "EggWatch feed primed:",
+          "Live feed primed:",
           candidate.rarity,
           candidate.eggName,
           "area=" + candidate.biome,
@@ -2007,7 +1966,7 @@ async function pollEggWatch() {
       const ageMs = Date.now() - eventTime;
       if (ageMs < -60_000 || ageMs > LIVE_FEED_MAX_AGE_MS) {
         console.log(
-          "EggWatch feed changed but event is stale:",
+          "Live feed changed but event is stale:",
           candidate.rarity,
           candidate.eggName,
           "ageMs=" + ageMs
@@ -2016,7 +1975,7 @@ async function pollEggWatch() {
       }
 
       if (feedStateLooksOffline(payload)) {
-        console.log("EggWatch feed changed while watcher is explicitly offline; trying next feed endpoint.");
+        console.log("Live feed changed while watcher is explicitly offline; trying next feed endpoint.");
         continue;
       }
 
@@ -2048,12 +2007,12 @@ async function pollEggWatch() {
         biome: candidate.biome || "Unknown",
         spawnedAt: candidate.spawnedAt,
         imageUrl,
-        source: "EggWatch Global Feed",
+        source: "Live Feed",
         sourceEventId: candidate.sourceEventId || null
       };
 
       try {
-        recordSpawnHistory(event, "EggWatch Global Feed");
+        recordSpawnHistory(event, "Live Feed");
 
         const existingKey = [
           event.rarity.toLowerCase(),
@@ -2074,7 +2033,7 @@ async function pollEggWatch() {
         await sendAlert(event, ageMs >= 0 ? ageMs : null);
         liveFeedEventsAccepted++;
 
-        const additionalSent = await processAdditionalEggWatchCandidates(
+        const additionalSent = await processAdditionalLive sourceCandidates(
           payload,
           candidate,
           url
@@ -2089,14 +2048,14 @@ async function pollEggWatch() {
         }
 
         console.log(
-          "Forwarded EggWatch feed event:",
+          "Forwarded Live feed event:",
           existingKey,
           "latencyMs=" + (ageMs >= 0 ? ageMs : "unknown"),
           "image=" + (imageUrl ? "attached" : "not-found")
         );
       } catch (error) {
         liveFeedErrors++;
-        console.error("EggWatch alert forwarding failed:", error);
+        console.error("Live source alert forwarding failed:", error);
       } finally {
         inFlightKeys.delete([
           event.rarity.toLowerCase(),
@@ -2108,7 +2067,7 @@ async function pollEggWatch() {
       return;
     } catch (error) {
       liveFeedErrors++;
-      console.error("EggWatch feed poll failed:", url, error?.message || error);
+      console.error("Live feed poll failed:", url, error?.message || error);
     }
     }
   } finally {
@@ -2127,7 +2086,7 @@ function decodeHtmlText(value) {
     .trim();
 }
 
-function recordSpawnHistory(event, source = "EggWatch Global Feed") {
+function recordSpawnHistory(event, source = "Live Feed") {
   const timestamp = Date.parse(event?.spawnedAt);
   const record = {
     id: event?.sourceEventId || [
@@ -2173,7 +2132,10 @@ function recordGameEvent(event) {
     title: String(event.title || "Game Event").slice(0, 200),
     description: String(event.description || "").slice(0, 800),
     date: event.date || null,
-    source: event.source || "Game Update Discovery",
+    source:
+      event.source === "Manual Test"
+        ? "Manual Test"
+        : PUBLIC_DISCOVERY_SOURCE_LABEL,
     detectedAt: new Date().toISOString()
   };
 
@@ -2204,18 +2166,84 @@ function updateDiscoverySourceHealth(source, patch = {}) {
 }
 
 function discoverySummary() {
-  return [...autoDiscoverySourceHealth.values()].map(item => ({
-    key: item.key,
-    name: item.name,
-    url: item.url,
+  return [...autoDiscoverySourceHealth.values()].map((item, index) => ({
+    id: "source-" + (index + 1),
+    label: PUBLIC_DISCOVERY_SOURCE_LABEL + " #" + (index + 1),
     status: item.status,
     checkedAt: item.checkedAt,
     httpStatus: item.httpStatus,
     updateFound: item.updateFound,
     eggCount: item.eggCount,
     eventCount: item.eventCount,
-    error: item.error
+    error: item.error ? "source_error" : null
   }));
+}
+
+async function sendGameUpdateAlert(update, newEggs = [], changes = null) {
+  if (!EVENT_ALERTS_ENABLED || !CHANNEL_ID || !update?.title) return;
+
+  try {
+    const channel = await getAlertChannel();
+    const addedNames = (changes?.added || newEggs || [])
+      .slice(0, 10)
+      .map(item => item?.petName || item?.eggName || item?.title)
+      .filter(Boolean);
+
+    const changedNames = (changes?.changed || [])
+      .slice(0, 6)
+      .map(item => {
+        const name = item?.after?.eggName || item?.before?.eggName || "Unknown";
+        const before = item?.before?.area || "Unknown";
+        const after = item?.after?.area || "Unknown";
+        return name + " (" + before + " → " + after + ")";
+      });
+
+    const sections = [];
+    if (addedNames.length) {
+      sections.push("**Added:** " + addedNames.join(", "));
+    }
+    if (changedNames.length) {
+      sections.push("**Changed:** " + changedNames.join(", "));
+    }
+
+    const description =
+      "**" + String(update.title).slice(0, 180) + "**\n" +
+      String(update.description || "A game update was detected.").slice(0, 750) +
+      (sections.length ? "\n\n" + sections.join("\n") : "");
+
+    const embed = new EmbedBuilder()
+      .setColor(0x3b82f6)
+      .setTitle("🆕 Steal An Egg Update")
+      .setDescription(description.slice(0, 3900))
+      .addFields(
+        { name: "🎮 Game", value: "Steal An Egg", inline: true },
+        {
+          name: "🧠 Evidence",
+          value:
+            String(update.evidenceConfidence ?? "N/A") +
+            "% • " +
+            String(update.evidenceSourceCount ?? 1) +
+            " sources",
+          inline: true
+        },
+        {
+          name: "🕒 Detected",
+          value: "<t:" + Math.floor(Date.now() / 1000) + ":R>",
+          inline: true
+        }
+      )
+      .setFooter({ text: "Steal An Egg • Auto Discovery" })
+      .setTimestamp();
+
+    await channel.send({
+      content: "🆕 **Steal An Egg update detected!**",
+      embeds: [embed],
+      allowedMentions: { parse: [] }
+    });
+  } catch (error) {
+    monitorErrors++;
+    console.warn("Game update alert failed:", error?.message || error);
+  }
 }
 
 async function scanForGameUpdates() {
@@ -2496,7 +2524,7 @@ async function runAutoDiscoverySweep() {
       console.log(
         "Auto discovery primed:",
         bestUpdate.title,
-        "source=" + bestUpdate.source,
+        "evidenceSources=" + (bestUpdate.evidenceSourceCount || 1),
         "fingerprint=" + nextUpdateFingerprint
       );
     } else if (nextUpdateFingerprint !== previousFingerprint) {
@@ -2628,26 +2656,23 @@ function startAutoDiscovery() {
   }, AUTO_DISCOVERY_POLL_MS);
 }
 
-function startEggWatchPoller() {
+function startLive sourcePoller() {
   if (!LIVE_FEED_ENABLED) {
-    console.log("EggWatch direct feed: disabled.");
+    console.log("Live feed: disabled.");
     return;
   }
 
-  console.log(
-    "EggWatch direct feed enabled. Candidate URLs:",
-    LIVE_FEED_URLS.join(", ")
-  );
+  console.log("Live feed enabled. Configured private endpoints:", LIVE_FEED_URLS.length);
 
-  pollEggWatch().catch(error => {
+  pollLive source().catch(error => {
     liveFeedErrors++;
-    console.error("Initial EggWatch poll failed:", error);
+    console.error("Initial Live source poll failed:", error);
   });
 
   setInterval(() => {
-    pollEggWatch().catch(error => {
+    pollLive source().catch(error => {
       liveFeedErrors++;
-      console.error("EggWatch poll cycle failed:", error);
+      console.error("Live source poll cycle failed:", error);
     });
   }, LIVE_FEED_POLL_MS);
 }
@@ -2862,12 +2887,12 @@ function updateLiveFeedHealth() {
 
     if (current === "STALE") {
       console.warn(
-        "EggWatch feed is stale. Last successful response:",
+        "Live feed is stale. Last successful response:",
         liveFeedLastSuccessAt || "never"
       );
     } else if (current === "ACTIVE") {
       console.log(
-        "EggWatch feed health:",
+        "Live feed health:",
         "ACTIVE",
         "lastSuccessAt=" + liveFeedLastSuccessAt
       );
@@ -3631,7 +3656,7 @@ function buildAlertEmbed(event, _latencyMs = null, includeImage = true) {
       eggName.slice(0, 200) + "** in **" + area.slice(0, 200) + "**."
     )
     .addFields(fields)
-    .setFooter({ text: "Steal An Egg • Live Spawn • EggWatch" })
+    .setFooter({ text: "Steal An Egg • Live Spawn" })
     .setTimestamp(Number.isFinite(timestamp) ? new Date(timestamp) : new Date());
 
   if (includeImage) {
@@ -4014,7 +4039,6 @@ async function sendAlert(event, latencyMs = null) {
   return true;
 }
 
-
 async function processSpawnMessage(message) {
   if (!MONITOR_ENABLED || !message) return;
   if (message.author?.id === client.user?.id) return;
@@ -4262,6 +4286,7 @@ app.get("/api/discovery", (_req, res) => {
   res.json({
     enabled: AUTO_DISCOVERY_ENABLED,
     pollMs: AUTO_DISCOVERY_POLL_MS,
+    sourceCount: AUTO_DISCOVERY_SOURCES.length,
     sources: discoverySummary(),
     summary: autoDiscoveryLastSummary,
     lastDecision: discoveryLastDecision,
@@ -4291,7 +4316,7 @@ app.post("/api/discovery/scan", async (_req, res) => {
     console.error("Manual discovery scan failed:", error);
     return res.status(500).json({
       error: "discovery_scan_failed",
-      detail: String(error?.message || error).slice(0, 200)
+      detail: "scan_failed"
     });
   }
 });
@@ -4403,7 +4428,7 @@ setInterval(() => {
   cleanupCaches();
 }, 60_000);
 
-startEggWatchPoller();
+startLive sourcePoller();
 startAutoDiscovery();
 
 setInterval(() => {
@@ -4441,7 +4466,7 @@ setInterval(() => {
     "Heartbeat:",
     "ready=" + client.isReady(),
     "source=" + sourceHealth(),
-    "eggWatch=" + liveFeedHealth(),
+    "liveFeed=" + liveFeedHealth(),
     "detected=" + detectedCount,
     "alerts=" + alertCount,
     "errors=" + monitorErrors,
@@ -4489,7 +4514,7 @@ client.on("interactionCreate", async interaction => {
       );
       checks.push(
         (liveFeedHealth() === "ACTIVE" ? "✅" : liveFeedHealth() === "WAITING" ? "🟡" : "❌") +
-        " EggWatch feed: " + liveFeedHealth()
+        " Live feed: " + liveFeedHealth()
       );
       checks.push(
         (AUTO_DISCOVERY_ENABLED ? "✅" : "🟡") +
@@ -4588,7 +4613,7 @@ client.on("interactionCreate", async interaction => {
         "🕒 **Last Seen channel:** " + (LAST_SEEN_CHANNEL_ID ? "CONFIGURED" : "NOT CONFIGURED"),
         "🔔 **Role ping:** " + ALERT_MENTION_MODE.toUpperCase(),
         "📡 **Discord source:** " + sourceHealth(),
-        "🌐 **EggWatch feed:** " + liveFeedHealth(),
+        "🌐 **Live feed:** " + liveFeedHealth(),
         "🖼️ **Character PNG:** " + (SOURCE_IMAGE_ALPHA_ONLY ? "ENABLED" : "NORMALIZE"),
         "🔄 **Auto catalog:** " + (AUTO_DISCOVERY_ENABLED ? "ENABLED" : "DISABLED") + " (" + autoDiscoveredCount + " new)",
         "🎮 **Event alerts:** " + (EVENT_ALERTS_ENABLED ? "ON" : "OFF"),
@@ -4669,8 +4694,9 @@ client.on("interactionCreate", async interaction => {
     }
 
     if (interaction.commandName === "discovery-status") {
-      const active = [...autoDiscoverySourceHealth.values()]
-        .filter(item => item.status === "ACTIVE").length;
+      const active = AUTO_DISCOVERY_SOURCES.filter(source =>
+        autoDiscoverySourceHealth.get(source.key)?.status === "ACTIVE"
+      ).length;
 
       const lines = [
         "🔎 **Auto Discovery Status**",
@@ -4679,28 +4705,17 @@ client.on("interactionCreate", async interaction => {
         "Last scan: " + (lastUpdateCheckAt
           ? "<t:" + Math.floor(new Date(lastUpdateCheckAt).getTime() / 1000) + ":R>"
           : "Never"),
-        "Confidence: " + (discoveryLastDecision?.confidence != null
-          ? discoveryLastDecision.confidence + "%"
-          : "N/A"),
-        "Catalog changes: " +
+        "Evidence confidence: " +
+          (discoveryLastDecision?.confidence != null
+            ? discoveryLastDecision.confidence + "%"
+            : "N/A"),
+        "Latest changes: " +
           (discoveryLastDecision
             ? discoveryLastDecision.added + " added • " +
               discoveryLastDecision.changed + " changed • " +
               discoveryLastDecision.removed + " possible removed"
-            : "N/A"),
-        ""
+            : "N/A")
       ];
-
-      for (const source of AUTO_DISCOVERY_SOURCES) {
-        const state = autoDiscoverySourceHealth.get(source.key);
-        lines.push(
-          (state?.status === "ACTIVE" ? "🟢" : state?.status === "HTTP_ERROR" ? "🟠" : "🔴") +
-          " **" + source.name + "** — " +
-          (state?.status || "WAITING") +
-          " • eggs=" + (state?.eggCount ?? 0) +
-          " • events=" + (state?.eventCount ?? 0)
-        );
-      }
 
       return await interaction.reply({
         content: lines.join("\n").slice(0, 3900),
