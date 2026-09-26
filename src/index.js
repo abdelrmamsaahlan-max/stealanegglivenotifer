@@ -1123,8 +1123,13 @@ function parseImgCandidates(html, pageUrl, targetPetName) {
     if (metadata.includes(normalizeFeedKey(targetPetName))) score += 35;
     if (/\b(avatar|pet)\b/i.test(alt + " " + title)) score += 20;
     if (/\/images\/pets\//i.test(src)) score += 50;
+    if (/\/images\/pets\/[^/]*-art\//i.test(src)) score += 220;
+    if (/\/images\/pets\/[^/]+\/[^/]*-art\//i.test(src)) score += 200;
     if (/\.(?:webp|png)(?:\?|$)/i.test(src)) score += 10;
 
+    // Prefer clean pet artwork over the larger update card images that contain
+    // text, rarity labels, and income values.
+    if (/\/images\/pets\/update-\d+(?:\.|\/)/i.test(src)) score -= 180;
     if (/\b(og|hero|banner|logo|site-header|favicon|sprite)\b/i.test(metadata)) score -= 250;
     if (/\b(article|author|profile|icon|thumbnail)\b/i.test(metadata)) score -= 100;
 
@@ -1180,6 +1185,37 @@ async function resolvePetImageSource(petName) {
     const ttl = cached.url ? IMAGE_CACHE_TTL_MS : IMAGE_NEGATIVE_CACHE_TTL_MS;
     if (Date.now() - cached.at < ttl) return cached.url;
     imageFallbackCache.delete("pet:" + key);
+  }
+
+  // Try the clean artwork paths first. These are model-only images, unlike
+  // update cards that contain text overlays.
+  const directArtBases = [
+    "https://robloxstealanegg.wiki/images/pets/update-4-art/",
+    "https://robloxstealanegg.wiki/images/pets/update-5-art/",
+    "https://robloxstealanegg.wiki/images/pets/art/"
+  ];
+
+  const directArtUrls = [];
+  const slug = petSlugForEntry(entry);
+
+  for (const base of directArtBases) {
+    directArtUrls.push(
+      base + encodeURIComponent(slug) + ".webp",
+      base + encodeURIComponent(slug) + ".png"
+    );
+  }
+
+  for (const url of directArtUrls) {
+    if (!isTrustedPetImageUrl(url)) continue;
+
+    try {
+      const { response } = await fetchLiveFeed(url);
+      if (response.ok) {
+        imageFallbackCache.set("pet:" + key, { url, at: Date.now() });
+        console.log("Pet artwork source found:", entry.petName);
+        return url;
+      }
+    } catch {}
   }
 
   const page = await fetchPetPage(entry.petName);
@@ -1488,6 +1524,7 @@ async function warmPetImageCache(options = {}) {
   const maxWorkers = Math.max(1, Number(options.workers || 1));
   const entries = eggImageCatalog.filter(isLastSeenEligibleEntry);
   let warmed = 0;
+  let failed = [];
   let cursor = 0;
 
   async function worker() {
@@ -1504,10 +1541,19 @@ async function warmPetImageCache(options = {}) {
         const buffer = await getPetPngBuffer(entry.petName);
         if (buffer) warmed++;
       } catch (error) {
+        failed.push(entry.petName);
         console.warn(
           "Image warm-up failed for " + entry.petName + ":",
           error?.message || error
         );
+      }
+
+      if (!petPngBufferCache.has(normalizeFeedKey(entry.petName))) {
+        const key = normalizeFeedKey(entry.petName);
+        failed.push(entry.petName);
+        if (!imageFallbackCache.get("pet:" + key)?.url) {
+          console.warn("No usable pet image source found:", entry.petName);
+        }
       }
     }
   }
@@ -1520,11 +1566,18 @@ async function warmPetImageCache(options = {}) {
       )
     );
 
+    failed = [...new Set(failed)];
     console.log(
       "Pet image cache warm:",
       warmed + "/" + entries.length,
       "(transparent PNG cache)"
     );
+    if (failed.length) {
+      console.warn(
+        "Pet images still missing:",
+        failed.join(", ")
+      );
+    }
   } finally {
     imageWarmupInFlight = false;
   }
