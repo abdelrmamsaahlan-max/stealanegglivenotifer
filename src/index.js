@@ -633,7 +633,7 @@ async function pollEggWatch() {
           "area=" + candidate.biome,
           "spawnedAt=" + candidate.spawnedAt,
           "url=" + url,
-          "catalogImage=" + (catalogImageForEgg(candidate.eggName) ? "available" : "none")
+          "catalogSource=" + (findCatalogEgg(candidate.eggName) ? "available" : "none")
         );
         return;
       }
