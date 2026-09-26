@@ -1599,7 +1599,7 @@ const liveFeedHealthPersistedAt = new Map();
 let liveFeedConsecutiveFailures = 0;
 let liveFeedRecoveryCount = 0;
 let liveFeedPrimaryUrl = null;
-const LIVE_FEED_404_COOLDOWN_MS = 5 * 60 * 1000;
+const LIVE_FEED_404_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const LIVE_FEED_ERROR_COOLDOWN_MS = 15 * 1000;
 
 function updateLiveFeedEndpointHealth(url, patch = {}) {
@@ -3519,7 +3519,7 @@ async function pollLiveFeed() {
           a.index - b.index
         );
       })
-      .filter(item => !liveFeedEndpointCoolingDown(item.url));
+      .filter(item =>\n        !liveFeedEndpointCoolingDown(item.url) &&\n        liveFeedEndpointHealth.get(item.index + 1)?.status !== "DISABLED"\n      );
 
     const results = await Promise.allSettled(
       orderedLiveFeedTargets
@@ -3609,18 +3609,12 @@ async function pollLiveFeed() {
       if (result.status === "fulfilled") {
         if (result.value.ok) {
           successful.push(result.value);
-        } else {
+        } else if (Number(result.value.status) !== 404) {
           liveFeedErrors++;
-
           const message =
             "Live feed endpoint returned HTTP " + result.value.status +
             " (endpoint " + (result.value.index + 1) + ").";
-
-          if (Number(result.value.status) === 404) {
-            console.log(message);
-          } else {
-            console.warn(message);
-          }
+          console.warn(message);
         }
       } else {
         liveFeedErrors++;
@@ -5909,13 +5903,32 @@ async function getLastSeenChannel() {
   if (!LAST_SEEN_CHANNEL_ID) return null;
   if (lastSeenChannel?.isTextBased()) return lastSeenChannel;
 
-  const channel = await client.channels.fetch(LAST_SEEN_CHANNEL_ID);
-  if (!channel || !channel.isTextBased()) {
-    throw new Error("last_seen_channel_unavailable");
+  try {
+    const channel = await client.channels.fetch(LAST_SEEN_CHANNEL_ID);
+    if (channel?.isTextBased()) {
+      lastSeenChannel = channel;
+      return channel;
+    }
+  } catch {
+    // The configured ID may be stale or inaccessible; recover by channel name.
   }
 
-  lastSeenChannel = channel;
-  return channel;
+  const normalizedNames = new Set(["last-seen", "last seen", "last_seen"]);
+  for (const guild of client.guilds.cache.values()) {
+    const matches = [...guild.channels.cache.values()].filter(channel => {
+      if (!channel?.isTextBased()) return false;
+      const name = String(channel.name || "").trim().toLowerCase();
+      return normalizedNames.has(name);
+    });
+
+    if (matches.length) {
+      lastSeenChannel = matches[0];
+      console.log("Last Seen channel recovered by name:", lastSeenChannel.id);
+      return lastSeenChannel;
+    }
+  }
+
+  return null;
 }
 
 async function findExistingLastSeenMessage(channel, rarity) {
