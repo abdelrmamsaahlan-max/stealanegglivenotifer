@@ -31,17 +31,32 @@ function htmlToLines(html) {
 function parseDateText(value) {
   const raw = cleanText(value);
 
-  const long = raw.match(/\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(\d{1,2})(?:st|nd|rd|th)?[,]?\s+(20\d{2})\b/i);
+  const long = raw.match(
+    /\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(\d{1,2})(?:st|nd|rd|th)?[,]?\s+(20\d{2})\b/i
+  );
+
   if (long) {
     const month = MONTHS[long[1].slice(0, 3).toLowerCase()];
-    const date = new Date(Date.UTC(Number(long[3]), month, Number(long[2])));
-    return Number.isFinite(date.getTime()) ? date.toISOString().slice(0, 10) : null;
+    const date = new Date(Date.UTC(
+      Number(long[3]),
+      month,
+      Number(long[2])
+    ));
+    return Number.isFinite(date.getTime())
+      ? date.toISOString().slice(0, 10)
+      : null;
   }
 
   const slash = raw.match(/\b(\d{1,2})\/(\d{1,2})\/(20\d{2})\b/);
   if (slash) {
-    const date = new Date(Date.UTC(Number(slash[3]), Number(slash[1]) - 1, Number(slash[2])));
-    return Number.isFinite(date.getTime()) ? date.toISOString().slice(0, 10) : null;
+    const date = new Date(Date.UTC(
+      Number(slash[3]),
+      Number(slash[1]) - 1,
+      Number(slash[2])
+    ));
+    return Number.isFinite(date.getTime())
+      ? date.toISOString().slice(0, 10)
+      : null;
   }
 
   const iso = raw.match(/\b(20\d{2}-\d{2}-\d{2})\b/);
@@ -49,7 +64,9 @@ function parseDateText(value) {
 }
 
 function extractUpdateNumber(text) {
-  const match = cleanText(text).match(/\b(?:update|version)\s*#?\s*(\d{1,3})\b/i);
+  const match = cleanText(text).match(
+    /\b(?:update|version)\s*#?\s*(\d{1,3})\b/i
+  );
   return match ? Number(match[1]) : null;
 }
 
@@ -79,7 +96,10 @@ export function extractSupportedEggsFromDiscovery(html) {
 
     if (!match) continue;
 
-    const name = cleanText(match[1]).replace(/\s+Egg$/i, "").trim();
+    const name = cleanText(match[1])
+      .replace(/\s+Egg$/i, "")
+      .trim();
+
     if (!name || name.length > 90) continue;
 
     found.push({
@@ -90,6 +110,26 @@ export function extractSupportedEggsFromDiscovery(html) {
   }
 
   return dedupeEggs(found);
+}
+
+function dedupeEggs(items) {
+  const map = new Map();
+
+  for (const item of items || []) {
+    if (!item?.eggName || !item?.rarity) continue;
+
+    const key = [
+      cleanText(item.rarity).toLowerCase(),
+      cleanText(item.eggName).toLowerCase(),
+      cleanText(item.area || "Unknown").toLowerCase()
+    ].join("|");
+
+    if (!map.has(key)) {
+      map.set(key, item);
+    }
+  }
+
+  return [...map.values()];
 }
 
 export function normalizeDiscoveryEggName(value) {
@@ -103,18 +143,26 @@ export function normalizeDiscoveryEggName(value) {
 export function sourceConfidenceScore(sourceRank, sourceCount = 1) {
   const rank = Math.max(0, Math.min(10, Number(sourceRank || 0)));
   const count = Math.max(1, Number(sourceCount || 1));
-  return Math.min(99, Math.round(35 + rank * 4 + Math.min(3, count - 1) * 10));
+  return Math.min(
+    99,
+    Math.round(35 + rank * 4 + Math.min(3, count - 1) * 10)
+  );
 }
 
 export function calculateEvidenceConfidence(observations = []) {
-  const valid = observations.filter(item => item?.name || item?.source);
+  const valid = observations.filter(
+    item => item?.name || item?.source || item?.sourceKey
+  );
+
   if (!valid.length) return 0;
 
   const uniqueSources = new Map();
+
   for (const item of valid) {
     const key = item.sourceKey || item.source || "unknown";
-    const current = uniqueSources.get(key);
     const rank = Number(item.sourceRank || 0);
+    const current = uniqueSources.get(key);
+
     if (!current || rank > current.rank) {
       uniqueSources.set(key, { rank });
     }
@@ -122,13 +170,14 @@ export function calculateEvidenceConfidence(observations = []) {
 
   const ranks = [...uniqueSources.values()].map(item => item.rank);
   const maxRank = Math.max(...ranks, 0);
+
   return sourceConfidenceScore(maxRank, uniqueSources.size);
 }
 
 export function mergeEggObservations(observations = []) {
   const groups = new Map();
 
-  for (const item of observations) {
+  for (const item of observations || []) {
     if (!item?.eggName || !item?.rarity) continue;
 
     const key =
@@ -136,7 +185,10 @@ export function mergeEggObservations(observations = []) {
       "|" +
       normalizeDiscoveryEggName(item.eggName);
 
-    if (!groups.has(key)) groups.set(key, []);
+    if (!groups.has(key)) {
+      groups.set(key, []);
+    }
+
     groups.get(key).push(item);
   }
 
@@ -175,7 +227,7 @@ export function mergeEggObservations(observations = []) {
 export function snapshotEggs(items = []) {
   const snapshot = {};
 
-  for (const item of items) {
+  for (const item of items || []) {
     if (!item?.key) continue;
 
     snapshot[item.key] = {
@@ -224,63 +276,43 @@ export function detectCatalogChanges(previous = {}, current = {}) {
   return { added, removed, changed };
 }
 
-function dedupeEggs(items) {
-
-  for (const item of items || []) {
-    if (!item?.eggName || !item?.rarity) continue;
-
-    const key = [
-      cleanText(item.rarity).toLowerCase(),
-      cleanText(item.eggName).toLowerCase()
-    ].join("|");
-
-    if (!map.has(key)) map.set(key, item);
-  }
-
-  return [...map.values()];
-}
-
 export function extractUpdateSnapshot(html, source = "Auto Discovery") {
   const lines = htmlToLines(html);
-  const rawText = lines.join("\n");
   if (!lines.length) return null;
 
-  let index = lines.findIndex(line =>
+  const headerIndex = lines.findIndex(line =>
     /^(?:latest update|game update|what's new|whats new)$/i.test(line)
   );
 
+  const updateIndex = lines.findIndex(line =>
+    /\b(?:update|version)\s*#?\s*\d{1,3}\b/i.test(line)
+  );
+
   let title = null;
-  let description = "";
   let updateNumber = null;
   let date = null;
+  let contextStart = -1;
 
-  const updateHeaderIndex = lines.findIndex(line => /\b(?:update|version)\s*#?\s*\d{1,3}\b/i.test(line));
-
-  if (updateHeaderIndex >= 0) {
-    const header = lines[updateHeaderIndex];
+  if (updateIndex >= 0) {
+    const header = lines[updateIndex];
     updateNumber = extractUpdateNumber(header);
     date = parseDateText(header);
+    contextStart = updateIndex;
 
-    const candidates = lines.slice(updateHeaderIndex + 1, updateHeaderIndex + 5)
-      .filter(line =>
-        !/^dr\.?.*$/i.test(line) ||
-        /scramble/i.test(line)
-      )
-      .filter(line =>
-        !/^\d{1,2}[:.]\d{2}/.test(line) &&
-        !/^update\b/i.test(line)
-      );
+    const candidates = lines.slice(updateIndex + 1, updateIndex + 7);
 
     title =
       candidates.find(line =>
-        /dr\.?.*scramble|angels?.*demons?|rifts?|cherry blossom|titan temple|sammy|event/i.test(line)
+        /dr\.?\s*scramble|angels?.*demons?|rifts?|event|sammy|darkness|titan|cherry/i.test(line)
       ) ||
-      candidates[0] ||
+      candidates.find(line =>
+        line.length >= 4 &&
+        !/^update\b/i.test(line) &&
+        !/^\d{1,2}[:.]\d{2}/.test(line)
+      ) ||
       header;
-  }
-
-  if (!title && index >= 0) {
-    const window = lines.slice(index, index + 20);
+  } else if (headerIndex >= 0) {
+    const window = lines.slice(headerIndex, headerIndex + 20);
     const titleIndex = window.findIndex((line, offset) =>
       offset > 0 &&
       /(?:update|scramble|angels|demons|rift|event|egg|sammy)/i.test(line)
@@ -288,6 +320,7 @@ export function extractUpdateSnapshot(html, source = "Auto Discovery") {
 
     if (titleIndex >= 0) {
       title = window[titleIndex];
+      contextStart = headerIndex + titleIndex;
       updateNumber = extractUpdateNumber(window.join(" "));
       date = parseDateText(window.join(" "));
     }
@@ -295,21 +328,23 @@ export function extractUpdateSnapshot(html, source = "Auto Discovery") {
 
   if (!title) {
     const fallback = lines.find(line =>
-      /^update\s*#?\d+/i.test(line) ||
-      /^(?:dr\.?\s*scramble|angels?\s*(?:vs|and)\s*demons?|the rifts?)$/i.test(line)
+      /^update\s*#?\d+/i.test(line)
     );
 
     if (fallback) {
       title = fallback;
       updateNumber = extractUpdateNumber(fallback);
       date = parseDateText(fallback);
+      contextStart = lines.indexOf(fallback);
     }
   }
 
-  if (!title || title.length < 2) return null;
+  if (!title) return null;
 
-  const titleIndex = lines.indexOf(title);
-  const nearby = lines.slice(Math.max(0, titleIndex), Math.max(0, titleIndex) + 8);
+  const nearby = lines.slice(
+    Math.max(0, contextStart),
+    Math.max(0, contextStart) + 8
+  );
 
   return {
     title: cleanText(title).slice(0, 200),
@@ -322,8 +357,7 @@ export function extractUpdateSnapshot(html, source = "Auto Discovery") {
 
 export function extractDiscoveryEvents(html, source = "Auto Discovery") {
   const lines = htmlToLines(html);
-  const found = [];
-
+  const text = lines.join("\n");
   const patterns = [
     {
       type: "official_event",
@@ -331,7 +365,7 @@ export function extractDiscoveryEvents(html, source = "Auto Discovery") {
     },
     {
       type: "experiment_event",
-      re: /\b(?:Dr\.?\s*Scramble|Forbidden\s+Experiment|Experiment\s+Shop|Samples)\b[^\n]{0,260}/i
+      re: /\b(?:Forbidden\s+Experiment|Experiment\s+Shop|Samples)\b[^\n]{0,260}/i
     },
     {
       type: "limited_event",
@@ -351,13 +385,14 @@ export function extractDiscoveryEvents(html, source = "Auto Discovery") {
     }
   ];
 
-  const text = lines.join("\n");
+  const found = [];
 
   for (const pattern of patterns) {
     const match = text.match(pattern.re);
     if (!match?.[0]) continue;
 
     const snippet = cleanText(match[0]);
+
     found.push({
       type: pattern.type,
       title: snippet.slice(0, 200),
@@ -382,7 +417,9 @@ function dedupeEvents(items) {
       item.date || ""
     ].join("|");
 
-    if (!map.has(key)) map.set(key, item);
+    if (!map.has(key)) {
+      map.set(key, item);
+    }
   }
 
   return [...map.values()];
@@ -393,8 +430,7 @@ const ALLOWED_DISCOVERY_HOSTS = new Set([
   "www.roblox.com",
   "robloxstealanegg.wiki",
   "eggwatcher.com",
-  "eggipedia.com",
-  "stealanegg.store"
+  "eggipedia.com"
 ]);
 
 export function extractRelevantLinks(html, baseUrl, maxLinks = 4) {
@@ -405,29 +441,38 @@ export function extractRelevantLinks(html, baseUrl, maxLinks = 4) {
     /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi
   )) {
     const href = cleanText(match[1]);
-    const label = cleanText(match[2].replace(/<[^>]+>/g, " "));
+    const label = cleanText(
+      match[2].replace(/<[^>]+>/g, " ")
+    );
+
     if (!href) continue;
 
     try {
       const url = new URL(href, baseUrl).href;
       const parsed = new URL(url);
+
       if (!/^https?:$/i.test(parsed.protocol)) continue;
       if (!ALLOWED_DISCOVERY_HOSTS.has(parsed.hostname.toLowerCase())) continue;
 
       const lower = (url + " " + label).toLowerCase();
-      if (!/(update|event|scramble|rift|darkness|angel|demon|news)/i.test(lower)) continue;
+
+      if (!/(update|event|scramble|rift|darkness|angel|demon|news|experiment)/i.test(lower)) {
+        continue;
+      }
+
       if (seen.has(url)) continue;
 
       seen.add(url);
+
       found.push({
         url,
         label: label.slice(0, 160),
         score:
           (/(update|news)/i.test(lower) ? 4 : 0) +
-          (/(event|scramble|rift)/i.test(lower) ? 2 : 0)
+          (/(event|scramble|rift|experiment)/i.test(lower) ? 2 : 0)
       });
     } catch {
-      // Ignore malformed links.
+      // Ignore malformed URLs.
     }
 
     if (found.length >= maxLinks * 3) break;
@@ -446,7 +491,8 @@ export function discoveryFingerprint(snapshot) {
     : "";
 
   const date = snapshot.date || "";
-  const title = cleanText(snapshot.title).toLowerCase()
+  const title = cleanText(snapshot.title)
+    .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -461,53 +507,72 @@ export function chooseBestUpdate(snapshots, sourceRanks = {}) {
   const groups = new Map();
 
   for (const item of valid) {
-    const number = Number.isFinite(item.updateNumber) ? item.updateNumber : -1;
-    const title = cleanText(item.title).toLowerCase()
+    const number = Number.isFinite(item.updateNumber)
+      ? item.updateNumber
+      : -1;
+
+    const title = cleanText(item.title)
+      .toLowerCase()
       .replace(/[^a-z0-9]+/g, " ")
       .replace(/\s+/g, " ")
       .trim();
+
     const key = [number, title].join("|");
 
-    if (!groups.has(key)) groups.set(key, []);
+    if (!groups.has(key)) {
+      groups.set(key, []);
+    }
+
     groups.get(key).push(item);
   }
 
   const candidates = [...groups.values()].map(items => {
-    const sources = new Set(
+    const sourceSet = new Set(
       items.map(item => item.source || "unknown")
     );
+
     const maxRank = Math.max(
       ...items.map(item => Number(sourceRanks[item.source] || 0)),
       0
     );
+
     const newestDate = items
       .map(item => item.date || "")
       .sort()
       .pop() || "";
 
+    const selected = [...items].sort(
+      (a, b) =>
+        Number(sourceRanks[b.source] || 0) -
+        Number(sourceRanks[a.source] || 0)
+    )[0];
+
     return {
-      item: [...items].sort((a, b) =>
-        Number(sourceRanks[b.source] || 0) - Number(sourceRanks[a.source] || 0)
-      )[0],
-      sourceCount: sources.size,
+      item: selected,
+      sourceCount: sourceSet.size,
+      confidence: sourceConfidenceScore(maxRank, sourceSet.size),
       maxRank,
-      confidence: sourceConfidenceScore(maxRank, sources.size),
       newestDate
     };
   });
 
   candidates.sort((a, b) => {
-    const aNumber = Number.isFinite(a.item.updateNumber) ? a.item.updateNumber : -1;
-    const bNumber = Number.isFinite(b.item.updateNumber) ? b.item.updateNumber : -1;
+    const aNumber = Number.isFinite(a.item.updateNumber)
+      ? a.item.updateNumber
+      : -1;
+    const bNumber = Number.isFinite(b.item.updateNumber)
+      ? b.item.updateNumber
+      : -1;
 
     if (bNumber !== aNumber) return bNumber - aNumber;
     if (b.sourceCount !== a.sourceCount) return b.sourceCount - a.sourceCount;
     if (b.confidence !== a.confidence) return b.confidence - a.confidence;
     if (b.maxRank !== a.maxRank) return b.maxRank - a.maxRank;
+
     return b.newestDate.localeCompare(a.newestDate);
   });
 
-  const best = candidates[0]?.item || null;
+  const best = candidates[0]?.item;
   if (!best) return null;
 
   return {
