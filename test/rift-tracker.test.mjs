@@ -47,3 +47,30 @@ test("keeps the static Rift pool available when pet rows are absent", () => {
   assert.equal(data.pets.length, 5);
   assert.equal(data.pets[4].name, "Shattered Colossus");
 });
+
+
+test("detects the separate Abyss Overlord Rift boss event", () => {
+  const event = parseRiftChange({
+    text: "The Rift has been opened. Abyss Overlord is now active! Join Game: Click Here",
+    fields: [],
+    linkUrls: [
+      "https://www.roblox.com/games/start?placeId=107778070777162&gameId=boss"
+    ],
+    createdTimestamp: 0
+  });
+
+  assert.ok(event);
+  assert.equal(event.type, "boss");
+  assert.equal(event.bossName, "Abyss Overlord");
+  assert.equal(event.joinUrl.includes("roblox.com/games/start"), true);
+});
+
+test("does not turn a normal Rift mention into a rotation alert", () => {
+  const event = parseRiftChange({
+    text: "Riftborn Egg is available in the Rift shop.",
+    fields: [],
+    linkUrls: []
+  });
+
+  assert.equal(event, null);
+});
