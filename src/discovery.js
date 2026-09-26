@@ -492,7 +492,11 @@ export function extractDiscoveryEvents(html, source = "Auto Discovery") {
     // Known high-signal events.
     {
       type: "official_event",
-      re: /\bDr\.?\s*Scramble['’]s\s+Revenge\b[^\n]{0,260}/i
+      re: /\bDr\.?\s*Scramble['’]s\s+Revenge\b[^\n]{0,360}/i
+    },
+    {
+      type: "official_event",
+      re: /\bDr\.?\s*Scramble\b[^\n]{0,260}\b(?:final\s+showdown|much\s+bigger|targets?\s+Ben)\b[^\n]{0,260}/i
     },
     {
       type: "experiment_event",
@@ -546,7 +550,7 @@ export function extractDiscoveryEvents(html, source = "Auto Discovery") {
     if (!title || /^event$/i.test(title) || /^events$/i.test(title)) continue;
 
     found.push({
-      type: "generic_event",
+      type: "generic_event_hint",
       title: title.slice(0, 200),
       description: title.slice(0, 800),
       date: parseDateText(title),
