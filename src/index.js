@@ -868,7 +868,7 @@ async function trimImageCaches() {
   }
 }
 
-function imageHasTransparentPixels(input) {
+async function imageHasTransparentPixels(input) {
   try {
     const { data, info } = await sharp(input)
       .ensureAlpha()
