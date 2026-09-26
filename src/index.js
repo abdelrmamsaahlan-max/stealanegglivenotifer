@@ -220,7 +220,10 @@ const ALERT_QUEUE_MAX =
   Math.max(20, Number(process.env.ALERT_QUEUE_MAX || 100));
 
 const ALERT_QUEUE_WORKERS =
-  Math.max(1, Math.min(6, Number(process.env.ALERT_QUEUE_WORKERS || 3)));
+  Math.max(1, Math.min(6, Number(process.env.ALERT_QUEUE_WORKERS || 5)));
+
+const ALERT_QUEUE_RESERVED_LIVE_SLOTS =
+  Math.max(1, Math.min(25, Number(process.env.ALERT_QUEUE_RESERVED_LIVE_SLOTS || 15)));
 
 const ALERT_RETRY_LIMIT =
   Math.max(0, Math.min(3, Number(process.env.ALERT_RETRY_LIMIT || 2)));
@@ -474,6 +477,42 @@ const eggCustomEmojiSetupState = {
   ready: false,
   lastError: null
 };
+
+const adminCommandUsage = new Map();
+const ADMIN_COMMAND_MAX_PER_MINUTE = 15;
+const ADMIN_COMMAND_WINDOW_MS = 60_000;
+const ADMIN_COMMAND_COOLDOWN_MS = 3_000;
+
+function consumeAdminCommandRateLimit(userId, commandName) {
+  const key = String(userId || "unknown") + "|" + String(commandName || "unknown");
+  const now = Date.now();
+  const previous = adminCommandUsage.get(key) || [];
+  const recent = previous.filter(at => now - at < ADMIN_COMMAND_WINDOW_MS);
+
+  if (
+    recent.length >= ADMIN_COMMAND_MAX_PER_MINUTE ||
+    (recent.length && now - recent[recent.length - 1] < ADMIN_COMMAND_COOLDOWN_MS)
+  ) {
+    adminCommandUsage.set(key, recent);
+    return false;
+  }
+
+  recent.push(now);
+  adminCommandUsage.set(key, recent);
+  return true;
+}
+
+function cleanupAdminCommandUsage(now = Date.now()) {
+  for (const [key, timestamps] of adminCommandUsage) {
+    const recent = timestamps.filter(at => now - at < ADMIN_COMMAND_WINDOW_MS);
+
+    if (recent.length) {
+      adminCommandUsage.set(key, recent);
+    } else {
+      adminCommandUsage.delete(key);
+    }
+  }
+}
 
 function loadRuntimeState() {
   try {
@@ -1309,14 +1348,27 @@ async function deliverQueuedAlert(job) {
   }
 }
 
+function alertQueuePriority(event) {
+  const rarityScore = rarityPriority(event?.rarity) * 100;
+  const sourceScore =
+    event?.source === "Live Feed"
+      ? 40
+      : event?.source === "Signed API"
+        ? 10
+        : 25;
+
+  return rarityScore + sourceScore;
+}
+
 function dequeueNextAlert() {
   if (!alertQueue.length) return null;
 
   let bestIndex = 0;
-  let bestPriority = rarityPriority(alertQueue[0].event?.rarity);
+  let bestPriority = alertQueuePriority(alertQueue[0].event);
 
   for (let i = 1; i < alertQueue.length; i++) {
-    const priority = rarityPriority(alertQueue[i].event?.rarity);
+    const priority = alertQueuePriority(alertQueue[i].event);
+
     if (priority > bestPriority) {
       bestPriority = priority;
       bestIndex = i;
@@ -1369,7 +1421,12 @@ function enqueueAlert(event, latencyMs = null) {
     return { queued: false, duplicate: true, full: false };
   }
 
-  if (alertQueue.length >= ALERT_QUEUE_MAX) {
+  const isApiIngress = event?.source === "Signed API";
+  const queueLimit = isApiIngress
+    ? Math.max(1, ALERT_QUEUE_MAX - ALERT_QUEUE_RESERVED_LIVE_SLOTS)
+    : ALERT_QUEUE_MAX;
+
+  if (alertQueue.length >= queueLimit) {
     alertMetrics.queueRejected++;
     console.error(
       "Alert queue full; rejecting new alert:",
@@ -5235,7 +5292,8 @@ app.get("/health", (_req, res) => {
       alertQueueMax: ALERT_QUEUE_MAX,
       alertQueueWorkers: ALERT_QUEUE_WORKERS,
       alertQueueRejected: alertMetrics.queueRejected,
-      alertQueueRetried: alertMetrics.queueRetried
+      alertQueueRetried: alertMetrics.queueRetried,
+      alertQueueReservedLiveSlots: ALERT_QUEUE_RESERVED_LIVE_SLOTS
     },
     ingestGlobalPerSecond: INGEST_GLOBAL_PER_SECOND,
     monitorErrors,
@@ -5505,6 +5563,7 @@ client.once("clientReady", async () => {
 
 setInterval(() => {
   cleanupCaches();
+  cleanupAdminCommandUsage();
 }, 60_000);
 
 startLiveFeedPoller();
@@ -5576,6 +5635,16 @@ client.on("interactionCreate", async interaction => {
   ) {
     return await interaction.reply({
       content: "⛔ You need the **Manage Server** permission to use this command.",
+      flags: MessageFlags.Ephemeral
+    });
+  }
+
+  if (
+    ADMIN_COMMANDS.has(interaction.commandName) &&
+    !consumeAdminCommandRateLimit(interaction.user?.id, interaction.commandName)
+  ) {
+    return await interaction.reply({
+      content: "⏳ Too many admin requests. Please wait a few seconds before trying this command again.",
       flags: MessageFlags.Ephemeral
     });
   }
