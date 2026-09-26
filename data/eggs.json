@@ -1,13 +1,7 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
+  "purpose": "Curated egg-image source map. The notifier matches EggWatch's exact spawned egg name, then extracts the egg image from the mapped source page. Pet images/banners are never used as fallbacks.",
   "rarities": [
-    "Common",
-    "Uncommon",
-    "Rare",
-    "Epic",
-    "Legendary",
-    "Mythic",
-    "Cosmic",
     "Secret",
     "Eternal",
     "Divine"
@@ -22,10 +16,218 @@
         "Secret Gargoyle Egg",
         "Gargoyle"
       ],
+      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/gargoyle-egg/",
       "active": true,
-      "image": "https://steal-an-egg-roblox.wiki/images/egg/Gargoyle%20Egg.png",
-      "lastVerified": "2026-09-26",
-      "source": "Steal An Egg Wiki"
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "King Snake Egg",
+      "displayName": "King Snake Egg",
+      "rarity": "Secret",
+      "biome": "Jungle",
+      "aliases": [
+        "Secret King Snake Egg",
+        "King Snake"
+      ],
+      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/king-snake-egg/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Yeti Egg",
+      "displayName": "Yeti Egg",
+      "rarity": "Secret",
+      "biome": "Snow",
+      "aliases": [
+        "Secret Yeti Egg",
+        "Yeti"
+      ],
+      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/yeti-egg/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Cerberus Egg",
+      "displayName": "Cerberus Egg",
+      "rarity": "Secret",
+      "biome": "Volcano",
+      "aliases": [
+        "Secret Cerberus Egg",
+        "Cerberus"
+      ],
+      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/cerberus-egg/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Kraken Egg",
+      "displayName": "Kraken Egg",
+      "rarity": "Secret",
+      "biome": "Abyss Ocean",
+      "aliases": [
+        "Secret Kraken Egg",
+        "Kraken"
+      ],
+      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/kraken-egg/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "T-Rex Egg",
+      "displayName": "T-Rex Egg",
+      "rarity": "Secret",
+      "biome": "Prehistoric",
+      "aliases": [
+        "Secret T-Rex Egg",
+        "T-Rex",
+        "Trex Egg"
+      ],
+      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/t-rex-egg/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Tralaledon Egg",
+      "displayName": "Tralaledon Egg",
+      "rarity": "Secret",
+      "biome": "Prehistoric",
+      "aliases": [
+        "Secret Tralaledon Egg",
+        "Tralaledon"
+      ],
+      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/tralaledon-egg/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Cosmic Dragon Egg",
+      "displayName": "Cosmic Dragon Egg",
+      "rarity": "Secret",
+      "biome": "Cosmic",
+      "aliases": [
+        "Secret Cosmic Dragon Egg",
+        "Cosmic Dragon"
+      ],
+      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/cosmic-dragon-egg/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Cosmic Skeleton Boss Egg",
+      "displayName": "Cosmic Skeleton Boss Egg",
+      "rarity": "Secret",
+      "biome": "Cosmic",
+      "aliases": [
+        "Secret Cosmic Skeleton Boss Egg",
+        "Cosmic Skeleton Boss"
+      ],
+      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/cosmic-skeleton-boss-egg/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Stag Egg",
+      "displayName": "Stag Egg",
+      "rarity": "Secret",
+      "biome": "Cherry Blossom",
+      "aliases": [
+        "Secret Stag Egg",
+        "Stag"
+      ],
+      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/stag-egg/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Mutant Shark Egg",
+      "displayName": "Mutant Shark Egg",
+      "rarity": "Secret",
+      "biome": "Titan Temple",
+      "aliases": [
+        "Secret Mutant Shark Egg",
+        "Mutant Shark"
+      ],
+      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/mutant-shark-egg/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Bomboclat Crocolat Egg",
+      "displayName": "Bomboclat Crocolat Egg",
+      "rarity": "Secret",
+      "biome": "Event",
+      "aliases": [
+        "Secret Bomboclat Crocolat Egg",
+        "Bomboclat Crocolat"
+      ],
+      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/bomboclat-crocolat-egg/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Abyss Overlord Egg",
+      "displayName": "Abyss Overlord Egg",
+      "rarity": "Secret",
+      "biome": "Rift",
+      "aliases": [
+        "Secret Abyss Overlord Egg",
+        "Abyss Overlord"
+      ],
+      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/abyss-overlord-egg/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Wendigo Egg",
+      "displayName": "Wendigo Egg",
+      "rarity": "Secret",
+      "biome": "Rift",
+      "aliases": [
+        "Secret Wendigo Egg",
+        "Wendigo"
+      ],
+      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/wendigo-egg/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Mawbreaker Egg",
+      "displayName": "Mawbreaker Egg",
+      "rarity": "Secret",
+      "biome": "Rift",
+      "aliases": [
+        "Secret Mawbreaker Egg",
+        "Mawbreaker"
+      ],
+      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/mawbreaker-egg/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Shardwing Egg",
+      "displayName": "Shardwing Egg",
+      "rarity": "Secret",
+      "biome": "Rift",
+      "aliases": [
+        "Secret Shardwing Egg",
+        "Shardwing"
+      ],
+      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/shardwing-egg/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Ice Dragon Egg",
+      "displayName": "Ice Dragon Egg",
+      "rarity": "Eternal",
+      "biome": "Snow",
+      "aliases": [
+        "Eternal Ice Dragon Egg",
+        "Ice Dragon"
+      ],
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/ice-dragon/",
+      "active": true,
+      "lastVerified": "2026-09-26"
     },
     {
       "eggName": "Phoenix Egg",
@@ -36,38 +238,153 @@
         "Eternal Phoenix Egg",
         "Phoenix"
       ],
+      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/phoenix-egg/",
       "active": true,
-      "image": "https://stealanegg.app/images/official-media/media-5.png",
-      "lastVerified": "2026-09-26",
-      "source": "StealAnEgg.app"
+      "lastVerified": "2026-09-26"
     },
     {
-      "eggName": "Kitsune Egg",
-      "displayName": "Kitsune Egg",
-      "rarity": "Divine",
+      "eggName": "Lava Dragon Egg",
+      "displayName": "Lava Dragon Egg",
+      "rarity": "Eternal",
+      "biome": "Volcano",
+      "aliases": [
+        "Eternal Lava Dragon Egg",
+        "Lava Dragon"
+      ],
+      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/lava-dragon-egg/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "El Maja Egg",
+      "displayName": "El Maja Egg",
+      "rarity": "Eternal",
+      "biome": "Abyss Ocean",
+      "aliases": [
+        "Eternal El Maja Egg",
+        "El Maja"
+      ],
+      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/el-maja-egg/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Mosasaurus Egg",
+      "displayName": "Mosasaurus Egg",
+      "rarity": "Eternal",
+      "biome": "Prehistoric",
+      "aliases": [
+        "Eternal Mosasaurus Egg",
+        "Mosasaurus"
+      ],
+      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/mosasaurus-egg/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Eternal Lunar Dragon Egg",
+      "displayName": "Eternal Lunar Dragon Egg",
+      "rarity": "Eternal",
+      "biome": "Cosmic",
+      "aliases": [
+        "Eternal Eternal Lunar Dragon Egg",
+        "Eternal Lunar Dragon",
+        "Lunar Dragon Egg"
+      ],
+      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/eternal-lunar-dragon-egg/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Oni Tiger Egg",
+      "displayName": "Oni Tiger Egg",
+      "rarity": "Eternal",
       "biome": "Cherry Blossom",
       "aliases": [
-        "Divine Kitsune Egg",
-        "Kitsune"
+        "Eternal Oni Tiger Egg",
+        "Oni Tiger"
       ],
+      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/oni-tiger-egg/",
       "active": true,
-      "image": "https://stealanegg-hub.wiki/images/eggs/egg-136779412524244-768w.webp",
-      "lastVerified": "2026-09-26",
-      "source": "Steal An Egg Hub"
+      "lastVerified": "2026-09-26"
     },
     {
-      "eggName": "Nightflame Egg",
-      "displayName": "Nightflame Egg",
-      "rarity": "Divine",
+      "eggName": "Gorilla King Egg",
+      "displayName": "Gorilla King Egg",
+      "rarity": "Eternal",
       "biome": "Titan Temple",
       "aliases": [
-        "Divine Nightflame Egg",
-        "Nightflame"
+        "Eternal Gorilla King Egg",
+        "Gorilla King"
       ],
+      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/gorilla-king-egg/",
       "active": true,
-      "image": "https://stealanegg-hub.wiki/images/eggs/egg-134762388111337-512w.webp",
-      "lastVerified": "2026-09-26",
-      "source": "Steal An Egg Hub"
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Strawberry Elephant Egg",
+      "displayName": "Strawberry Elephant Egg",
+      "rarity": "Eternal",
+      "biome": "Event",
+      "aliases": [
+        "Eternal Strawberry Elephant Egg",
+        "Strawberry Elephant"
+      ],
+      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/strawberry-elephant-egg/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Void Dragon Egg",
+      "displayName": "Void Dragon Egg",
+      "rarity": "Eternal",
+      "biome": "Rift",
+      "aliases": [
+        "Eternal Void Dragon Egg",
+        "Void Dragon"
+      ],
+      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/void-dragon-egg/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Void Serpent Egg",
+      "displayName": "Void Serpent Egg",
+      "rarity": "Eternal",
+      "biome": "Rift",
+      "aliases": [
+        "Eternal Void Serpent Egg",
+        "Void Serpent"
+      ],
+      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/void-serpent-egg/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "World Eater Egg",
+      "displayName": "World Eater Egg",
+      "rarity": "Eternal",
+      "biome": "Rift",
+      "aliases": [
+        "Eternal World Eater Egg",
+        "World Eater"
+      ],
+      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/world-eater-egg/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Shattered Drake Egg",
+      "displayName": "Shattered Drake Egg",
+      "rarity": "Eternal",
+      "biome": "Rift",
+      "aliases": [
+        "Eternal Shattered Drake Egg",
+        "Shattered Drake"
+      ],
+      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/shattered-drake-egg/",
+      "active": true,
+      "lastVerified": "2026-09-26"
     },
     {
       "eggName": "Unicorn Egg",
@@ -78,10 +395,48 @@
         "Divine Unicorn Egg",
         "Unicorn"
       ],
+      "sourcePage": "https://stealaneggwiki.net/secret-divine-eggs",
       "active": true,
-      "image": "https://stealanegg-hub.wiki/images/eggs/egg-126240842939586-542w.webp",
-      "lastVerified": "2026-09-26",
-      "source": "Steal An Egg Hub"
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Kitsune Egg",
+      "displayName": "Kitsune Egg",
+      "rarity": "Divine",
+      "biome": "Cherry Blossom",
+      "aliases": [
+        "Divine Kitsune Egg",
+        "Kitsune"
+      ],
+      "sourcePage": "https://stealaneggwiki.net/secret-divine-eggs",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Nightflame Egg",
+      "displayName": "Nightflame Egg",
+      "rarity": "Divine",
+      "biome": "Titan Temple",
+      "aliases": [
+        "Divine Nightflame Egg",
+        "Nightflame"
+      ],
+      "sourcePage": "https://stealaneggwiki.net/secret-divine-eggs",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Shattered Colossus Egg",
+      "displayName": "Shattered Colossus Egg",
+      "rarity": "Divine",
+      "biome": "Rift",
+      "aliases": [
+        "Divine Shattered Colossus Egg",
+        "Shattered Colossus"
+      ],
+      "sourcePage": "https://stealanegghub.com/steal-an-egg-secret-pets",
+      "active": true,
+      "lastVerified": "2026-09-26"
     }
   ]
 }
