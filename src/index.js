@@ -1028,6 +1028,76 @@ async function fetchLiveFeed(url) {
   }
 }
 
+async function processAdditionalEggWatchCandidates(payload, primaryCandidate, url) {
+  const all = collectEggCandidates(payload);
+  const primaryTime = Date.parse(primaryCandidate.spawnedAt);
+  if (!Number.isFinite(primaryTime)) return 0;
+
+  const candidates = all
+    .filter(candidate => {
+      const candidateTime = Date.parse(candidate.spawnedAt);
+      return (
+        candidateTime === primaryTime &&
+        normalizeFeedKey(candidate.eggName) !== normalizeFeedKey(primaryCandidate.eggName) &&
+        Date.now() - candidateTime >= -60_000 &&
+        Date.now() - candidateTime <= LIVE_FEED_MAX_AGE_MS
+      );
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 10);
+
+  let sent = 0;
+
+  for (const candidate of candidates) {
+    const feedEventKey = [
+      "feed",
+      candidate.rarity.toLowerCase(),
+      normalizeFeedKey(candidate.eggName),
+      normalizeFeedKey(candidate.biome),
+      Math.floor(primaryTime / 1000)
+    ].join("|");
+
+    if (seen.has(feedEventKey)) continue;
+
+    const event = {
+      live: true,
+      eggName: candidate.eggName,
+      displayName: candidate.eggName,
+      rarity: candidate.rarity,
+      biome: candidate.biome || "Unknown",
+      spawnedAt: candidate.spawnedAt,
+      imageUrl: null,
+      source: "EggWatch Global Feed",
+      sourceEventId: candidate.sourceEventId || null
+    };
+
+    try {
+      seen.set(feedEventKey, Date.now());
+      recordSpawnHistory(event, "EggWatch Global Feed");
+      await sendAlert(event, Math.max(0, Date.now() - primaryTime));
+      liveFeedEventsAccepted++;
+      sent++;
+      console.log(
+        "Forwarded additional EggWatch feed event:",
+        candidate.rarity,
+        candidate.eggName,
+        "area=" + candidate.biome,
+        "url=" + url
+      );
+    } catch (error) {
+      seen.delete(feedEventKey);
+      liveFeedErrors++;
+      console.warn(
+        "Additional EggWatch candidate failed:",
+        candidate.eggName,
+        error?.message || error
+      );
+    }
+  }
+
+  return sent;
+}
+
 async function pollEggWatch() {
   if (!LIVE_FEED_ENABLED || !LIVE_FEED_URLS.length) return;
   if (liveFeedPollInFlight) return;
@@ -1180,6 +1250,20 @@ async function pollEggWatch() {
         await sendAlert(event, ageMs >= 0 ? ageMs : null);
         liveFeedEventsAccepted++;
 
+        const additionalSent = await processAdditionalEggWatchCandidates(
+          payload,
+          candidate,
+          url
+        );
+
+        if (additionalSent > 0) {
+          console.log(
+            "Multi-egg announcement:",
+            candidate.eggName,
+            "+" + additionalSent + " additional rare eggs"
+          );
+        }
+
         console.log(
           "Forwarded EggWatch feed event:",
           existingKey,
@@ -1326,8 +1410,10 @@ function recordGameEvent(event) {
 }
 
 function extractLatestUpdateFromHomepage(html) {
+  const rawHtml = String(html || "");
+
   const text = decodeHtmlText(
-    String(html || "")
+    rawHtml
       .replace(/<script[\s\S]*?<\/script>/gi, " ")
       .replace(/<style[\s\S]*?<\/style>/gi, " ")
       .replace(/<[^>]+>/g, "\n")
@@ -1347,10 +1433,28 @@ function extractLatestUpdateFromHomepage(html) {
 
   if (!title) return null;
 
+  let updateUrl = null;
+
+  for (const match of rawHtml.matchAll(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
+    const anchorText = decodeHtmlText(match[2]);
+    if (
+      normalizeFeedKey(anchorText).includes(normalizeFeedKey(title)) ||
+      (/\bupdate\b/i.test(title) && /\bupdate\b/i.test(anchorText))
+    ) {
+      try {
+        updateUrl = new URL(match[1], "https://robloxstealanegg.wiki/").href;
+      } catch {
+        updateUrl = null;
+      }
+      if (updateUrl) break;
+    }
+  }
+
   return {
     title: title.slice(0, 200),
-    description: windowLines.slice(1, 5).join(" ").slice(0, 800),
-    source: "robloxstealanegg.wiki"
+    description: windowLines.slice(1, 7).join(" ").slice(0, 800),
+    source: "robloxstealanegg.wiki",
+    url: updateUrl
   };
 }
 
@@ -2283,6 +2387,7 @@ client.on("interactionCreate", async interaction => {
         "🌐 EggWatch feed: " + liveFeedHealth(),
         "🖼️ Character PNG: " + (BACKGROUND_REMOVAL_ENABLED ? "ENABLED" : "SOURCE ONLY"),
         "🔄 Auto catalog: " + (AUTO_DISCOVERY_ENABLED ? "ENABLED" : "DISABLED") + " (" + autoDiscoveredCount + " new)",
+        "🎮 Event alerts: " + (EVENT_ALERTS_ENABLED ? "ON" : "OFF"),
         "🆕 Last update: " + (lastUpdateTitle || "Unknown"),
         "🧾 Spawn history: " + spawnHistory.length,
         "🎮 Game events: " + gameEventHistory.length,
