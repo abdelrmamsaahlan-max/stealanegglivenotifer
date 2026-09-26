@@ -800,11 +800,15 @@ function isTrustedPetImageUrl(value) {
     const host = url.hostname.toLowerCase();
     const pathName = url.pathname.toLowerCase();
 
-    return (
-      host === "robloxstealanegg.wiki" &&
-      /\/images\/pets\//.test(pathName) &&
-      /\.(?:png|webp)(?:$)/.test(pathName)
-    );
+    const trustedHost =
+      host === "robloxstealanegg.wiki" ||
+      host === "steal-an-egg-roblox.wiki";
+
+    const petPath = /\/images\/pets\//.test(pathName);
+    const imageExtension = /\.(?:png|webp|jpe?g)(?:$)/.test(pathName);
+    const blockedPath = /(?:\/og\/|\/hero\/|\/banner\/|\/logo\/|\/favicon|sprite)/i.test(pathName);
+
+    return trustedHost && petPath && imageExtension && !blockedPath;
   } catch {
     return false;
   }
