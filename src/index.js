@@ -2887,10 +2887,6 @@ async function resolveAlertRoleId(rarity) {
 
   if (!["secret", "eternal", "divine"].includes(rarityKey)) return "";
 
-  if (ALERT_ROLE_IDS[rarityKey]) {
-    return ALERT_ROLE_IDS[rarityKey];
-  }
-
   const cached = resolvedRoleCache.get(rarityKey);
   if (cached && Date.now() - cached.at < ROLE_CACHE_TTL_MS) {
     return cached.id;
@@ -2898,32 +2894,48 @@ async function resolveAlertRoleId(rarity) {
 
   if (!alertChannel?.guild) return "";
 
+  const roleNames = {
+    secret: "SECRET ALERT",
+    eternal: "ETERNAL ALERT",
+    divine: "DIVINE ALERT"
+  };
+
+  const roleColors = {
+    secret: 0x7c3aed,
+    eternal: 0xf59e0b,
+    divine: 0xef4444
+  };
+
   try {
     const roles = await alertChannel.guild.roles.fetch();
-
-    const exactRole = roles.find(candidate =>
-      normalizeFeedKey(candidate?.name || "") === rarityKey
+    let role = roles.find(candidate =>
+      normalizeFeedKey(candidate?.name || "") === normalizeFeedKey(roleNames[rarityKey])
     );
 
-    const looseRole = exactRole || roles.find(candidate => {
-      const name = normalizeFeedKey(candidate?.name || "");
-      return (
-        name === rarityKey ||
-        name.startsWith(rarityKey + " ") ||
-        name.endsWith(" " + rarityKey) ||
-        name.includes(" " + rarityKey + " ")
-      );
-    });
+    if (role) {
+      if (!role.editable) {
+        console.warn("Alert role is not editable by bot:", role.name);
+        resolvedRoleCache.set(rarityKey, { id: role.id, at: Date.now() });
+        return role.id;
+      }
 
-    if (looseRole) {
-      resolvedRoleCache.set(rarityKey, { id: looseRole.id, at: Date.now() });
-      console.log(
-        "Auto-resolved alert role:",
-        rarityKey,
-        looseRole.name,
-        looseRole.id
-      );
-      return looseRole.id;
+      // These roles are strictly mention-only: zero permissions, no hoist.
+      const needsPermissionsReset = role.permissions.bitfield !== 0n;
+      const needsMentionable = !role.mentionable;
+
+      if (needsPermissionsReset || needsMentionable || role.hoist) {
+        await role.edit({
+          permissions: [],
+          mentionable: true,
+          hoist: false,
+          reason: "Steal An Egg rarity alert role • mention-only • zero permissions"
+        });
+        role = await alertChannel.guild.roles.fetch(role.id);
+      }
+
+      resolvedRoleCache.set(rarityKey, { id: role.id, at: Date.now() });
+      console.log("Rarity alert role ready:", rarityKey, role.name);
+      return role.id;
     }
 
     const autoCreateRoles =
@@ -2934,25 +2946,13 @@ async function resolveAlertRoleId(rarity) {
       return "";
     }
 
-    const roleNames = {
-      secret: "SECRET",
-      eternal: "ETERNAL",
-      divine: "DIVINE"
-    };
-
-    const roleColors = {
-      secret: 0x7c3aed,
-      eternal: 0xf59e0b,
-      divine: 0xef4444
-    };
-
     if (!alertChannel.guild.members.me?.permissions?.has(PermissionFlagsBits.ManageRoles)) {
-      console.warn("Cannot auto-create alert role; Manage Roles permission is missing:", rarityKey);
+      console.warn("Cannot create rarity alert role; Manage Roles permission is missing:", rarityKey);
       resolvedRoleCache.set(rarityKey, { id: "", at: Date.now() });
       return "";
     }
 
-    const created = await alertChannel.guild.roles.create({
+    role = await alertChannel.guild.roles.create({
       name: roleNames[rarityKey],
       color: roleColors[rarityKey],
       permissions: [],
@@ -2961,19 +2961,12 @@ async function resolveAlertRoleId(rarity) {
       reason: "Steal An Egg rarity alert role • mention-only • zero permissions"
     });
 
-    resolvedRoleCache.set(rarityKey, { id: created.id, at: Date.now() });
-
-    console.log(
-      "Auto-created alert role:",
-      rarityKey,
-      created.name,
-      created.id
-    );
-
-    return created.id;
+    resolvedRoleCache.set(rarityKey, { id: role.id, at: Date.now() });
+    console.log("Created rarity alert role:", rarityKey, role.name, role.id);
+    return role.id;
   } catch (error) {
     console.warn(
-      "Automatic role lookup/create failed for " + rarityKey + ":",
+      "Rarity alert role setup failed for " + rarityKey + ":",
       error?.message || error
     );
     resolvedRoleCache.set(rarityKey, { id: "", at: Date.now() });
