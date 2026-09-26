@@ -711,7 +711,7 @@ function dedupeCatalogEntries() {
       (entry.petName ? entry.petName + " Egg" : "")
     ).trim();
 
-    const key = normalizeFeedKey(rawName);
+    const key = eggIdentityKey(rawName);
 
     if (!key) continue;
 
@@ -767,14 +767,28 @@ rebuildLastSeenFromHistory().catch(error => {
   console.warn("Last Seen history rebuild failed:", error?.message || error);
 });
 
+function eggIdentityKey(value) {
+  return normalizeFeedKey(value)
+    .replace(/^(?:secret|eternal|divine)\s+/, "")
+    .replace(/\s+egg$/i, "")
+    .trim();
+}
+
+const verifiedCatalogByIdentity = new Map(
+  eggImageCatalog
+    .filter(entry => entry?.source !== "Auto Discovery")
+    .map(entry => [eggIdentityKey(entry.eggName || entry.displayName || entry.petName), entry])
+    .filter(([key]) => Boolean(key))
+);
+
 function findCatalogEgg(input) {
   const wanted = normalizeFeedKey(input);
   if (!wanted) return null;
 
-  const identity = wanted
-    .replace(/^(?:secret|eternal|divine)\s+/, "")
-    .replace(/\s+egg$/i, "")
-    .trim();
+  const identity = eggIdentityKey(wanted);
+  const verified = verifiedCatalogByIdentity.get(identity);
+
+  if (verified) return verified;
 
   return eggImageCatalog.find(entry => {
     const names = [
@@ -786,10 +800,7 @@ function findCatalogEgg(input) {
 
     return names.some(name => {
       const normalized = normalizeFeedKey(name);
-      const normalizedIdentity = normalized
-        .replace(/^(?:secret|eternal|divine)\s+/, "")
-        .replace(/\s+egg$/i, "")
-        .trim();
+      const normalizedIdentity = eggIdentityKey(normalized);
 
       return normalized === wanted || normalizedIdentity === identity;
     });
