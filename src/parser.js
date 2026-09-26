@@ -82,18 +82,6 @@ export function parseSpawn(data, allowedRarities) {
     .filter(Boolean)
     .join("\n");
 
-  const explicitRarity = getField("rarity", "tier", "rarity name");
-  const rarityMatch = explicitRarity
-    ? explicitRarity.match(/\b(secret|eternal|divine)\b/i)
-    : combined.match(/\b(secret|eternal|divine)\b/i);
-
-  if (!rarityMatch) return null;
-
-  const rarityKey = rarityMatch[1].toLowerCase();
-  if (allowedRarities && !allowedRarities.has(rarityKey)) return null;
-
-  const rarity = rarityKey[0].toUpperCase() + rarityKey.slice(1);
-
   const getField = (...names) => {
     const wantedNames = names.map(normalizeLabel);
 
@@ -114,6 +102,18 @@ export function parseSpawn(data, allowedRarities) {
 
     return "";
   };
+
+  const explicitRarity = getField("rarity", "tier", "rarity name");
+  const rarityMatch = explicitRarity
+    ? explicitRarity.match(/\b(secret|eternal|divine)\b/i)
+    : combined.match(/\b(secret|eternal|divine)\b/i);
+
+  if (!rarityMatch) return null;
+
+  const rarityKey = rarityMatch[1].toLowerCase();
+  if (allowedRarities && !allowedRarities.has(rarityKey)) return null;
+
+  const rarity = rarityKey[0].toUpperCase() + rarityKey.slice(1);
 
   let eggName = getField(
     "egg",
