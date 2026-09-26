@@ -200,6 +200,21 @@ function loadRuntimeState() {
       lastUpdateTitle = state.lastUpdateTitle;
     }
 
+    if (Array.isArray(state.dynamicEggs)) {
+      for (const entry of state.dynamicEggs.slice(0, 50)) {
+        if (
+          entry &&
+          entry.source === "EggWatch live auto-discovery" &&
+          entry.eggName &&
+          entry.petName &&
+          ["Secret", "Eternal", "Divine"].includes(entry.rarity) &&
+          !findCatalogEgg(entry.eggName)
+        ) {
+          eggImageCatalog.push(entry);
+        }
+      }
+    }
+
     console.log(
       "Runtime state restored:",
       "spawns=" + spawnHistory.length,
@@ -223,7 +238,10 @@ function saveRuntimeState() {
       lastUpdateFingerprint,
       lastUpdateTitle,
       spawnHistory: spawnHistory.slice(0, MAX_HISTORY),
-      gameEventHistory: gameEventHistory.slice(0, MAX_EVENT_HISTORY)
+      gameEventHistory: gameEventHistory.slice(0, MAX_EVENT_HISTORY),
+      dynamicEggs: eggImageCatalog
+        .filter(entry => entry?.source === "EggWatch live auto-discovery")
+        .slice(0, 50)
     };
 
     const tempFile = STATE_FILE + ".tmp";
@@ -268,6 +286,9 @@ const STEAL_AN_EGG_GAME_URL =
 
 const BACKGROUND_REMOVAL_ENABLED =
   (process.env.BACKGROUND_REMOVAL_ENABLED || "true").toLowerCase() === "true";
+
+const BACKGROUND_REMOVAL_MODEL =
+  String(process.env.BACKGROUND_REMOVAL_MODEL || "small").trim() || "small";
 
 let liveFeedPollInFlight = false;
 
@@ -334,6 +355,7 @@ function ensureCatalogEgg(eggName, rarity, area = "Unknown") {
   if (!dynamic) return null;
 
   eggImageCatalog.push(dynamic);
+  scheduleStateSave();
 
   console.log(
     "Auto-discovered new egg:",
@@ -831,7 +853,9 @@ async function getPetPngBuffer(petName) {
       console.log("Removing image background:", entry.petName);
 
       const sourceBlob = new Blob([input], { type: "image/png" });
-      const removed = await removeBackground(sourceBlob);
+      const removed = await removeBackground(sourceBlob, {
+        model: BACKGROUND_REMOVAL_MODEL
+      });
       processed = Buffer.from(await removed.arrayBuffer());
     }
 
@@ -2374,6 +2398,7 @@ app.get("/health", (_req, res) => {
     liveFeedErrors,
     publicPngProxy: Boolean(PUBLIC_BASE_URL),
     backgroundRemovalEnabled: BACKGROUND_REMOVAL_ENABLED,
+    backgroundRemovalModel: BACKGROUND_REMOVAL_MODEL,
     autoDiscoveryEnabled: AUTO_DISCOVERY_ENABLED,
     autoDiscoveredCount,
     lastUpdateCheckAt,
@@ -2598,7 +2623,8 @@ client.on("interactionCreate", async interaction => {
         "🔔 Role ping: " + ALERT_MENTION_MODE.toUpperCase(),
         "📡 Discord source: " + sourceHealth(),
         "🌐 EggWatch feed: " + liveFeedHealth(),
-        "🖼️ Character PNG: " + (BACKGROUND_REMOVAL_ENABLED ? "ENABLED" : "SOURCE ONLY"),
+        "🖼️ Character PNG: " +
+          (BACKGROUND_REMOVAL_ENABLED ? "ENABLED/" + BACKGROUND_REMOVAL_MODEL : "SOURCE ONLY"),
         "🔄 Auto catalog: " + (AUTO_DISCOVERY_ENABLED ? "ENABLED" : "DISABLED") + " (" + autoDiscoveredCount + " new)",
         "🎮 Event alerts: " + (EVENT_ALERTS_ENABLED ? "ON" : "OFF"),
         "🩺 Doctor: /doctor",
@@ -2905,6 +2931,26 @@ client.on("interactionCreate", async interaction => {
       }).catch(() => {});
     }
   }
+});
+
+client.on("shardReconnecting", shardId => {
+  alertChannel = null;
+  resolvedRoleCache.clear();
+  console.warn("Discord shard reconnecting:", shardId);
+});
+
+client.on("shardReady", shardId => {
+  console.log("Discord shard ready:", shardId);
+});
+
+client.on("shardDisconnect", (event, shardId) => {
+  alertChannel = null;
+  resolvedRoleCache.clear();
+  console.warn("Discord shard disconnected:", shardId, event?.code || "unknown");
+});
+
+client.on("shardResume", (replayed, shardId) => {
+  console.log("Discord shard resumed:", shardId, "replayed=" + replayed);
 });
 
 client.on("error", error => console.error("Discord client error:", error));
