@@ -2286,6 +2286,14 @@ function getRarityEmoji(rarity) {
   return ALERT_EMOJIS[String(rarity || "").toLowerCase()] || "🥚";
 }
 
+function getEggAlertEmoji(event) {
+  const entry =
+    findCatalogEgg(event?.eggName || event?.displayName) ||
+    findCatalogPet(event?.displayName || event?.eggName);
+
+  return getEggCustomEmoji(entry)?.toString() || getRarityEmoji(event?.rarity);
+}
+
 function rarityPriority(rarity) {
   return RARITY_PRIORITY[String(rarity || "").toLowerCase()] || 0;
 }
@@ -3026,9 +3034,10 @@ async function validateAlertRoles() {
 function buildAlertEmbed(event, _latencyMs = null, includeImage = true) {
   const rarity = String(event.rarity || "Unknown").trim();
   const rarityKey = rarity.toLowerCase();
-  const emoji = getRarityEmoji(rarity);
+  const emoji = getEggAlertEmoji(event);
   const eggName = String(event.displayName || event.eggName || "Unknown").trim();
   const area = String(event.biome || "Unknown").trim();
+  const baseIncome = event.gameStats?.income || "Unknown";
 
   const timestamp = Date.parse(event.spawnedAt);
   const unix = Number.isFinite(timestamp)
@@ -3038,6 +3047,7 @@ function buildAlertEmbed(event, _latencyMs = null, includeImage = true) {
   const fields = [
     { name: "🥚 Egg", value: eggName.slice(0, 1024), inline: true },
     { name: "📍 Location", value: area.slice(0, 1024), inline: true },
+    { name: "💰 Base Income", value: baseIncome.slice(0, 1024), inline: true },
     { name: "🕒 Spawned", value: "<t:" + unix + ":R>", inline: true }
   ];
 
@@ -3098,6 +3108,16 @@ async function enrichAlertEvent(event) {
   event.eggName = entry.eggName;
   event.displayName = entry.petName || entry.displayName || entry.eggName;
   event.biome = event.biome || entry.biome || "Unknown";
+
+  try {
+    event.gameStats = await fetchPetGameStats(entry.petName);
+  } catch (error) {
+    event.gameStats = { income: null, speed: null };
+    console.warn(
+      "Pet game stats lookup failed for " + entry.petName + ":",
+      error?.message || error
+    );
+  }
 
   const imageKey = normalizeFeedKey(entry.petName);
   const cachedPng = petPngBufferCache.get(imageKey);
@@ -3258,9 +3278,10 @@ async function sendAlert(event, latencyMs = null) {
 
   const petName = String(event.displayName || event.eggName || "Unknown").trim();
   const area = String(event.biome || "Unknown").trim();
+  const alertEggEmoji = getEggAlertEmoji(event);
 
   const alertText =
-    emoji +
+    alertEggEmoji +
     " **" +
     rarity +
     " egg " +
