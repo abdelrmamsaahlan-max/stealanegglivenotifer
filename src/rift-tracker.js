@@ -178,7 +178,9 @@ export function parseRiftChange(data) {
     bannerKey,
     bannerName: RIFT_DATA[bannerKey].name,
     eggName: RIFT_DATA[bannerKey].eggName,
-    rotationChance: RIFT_DATA[bannerKey].rotationChance,
+    rotationChance:
+      fieldValue(fields, ["Rotation Chance", "Rotation", "Chance"]) ||
+      RIFT_DATA[bannerKey].rotationChance,
     changedLabel:
       fieldValue(fields, ["Changed", "Change", "Current"]) ||
       extractLabel(combined, "Changed") ||
@@ -231,6 +233,14 @@ export function buildRiftAlertEmbed(event) {
     .setDescription(description)
     .setTimestamp(new Date(event?.createdTimestamp || Date.now()))
     .setFooter({ text: "Steal An Egg • Rift Tracker" });
+
+  if (data && event?.rotationChance) {
+    embed.addFields({
+      name: "🎲 Rotation Chance",
+      value: String(event.rotationChance).slice(0, 100),
+      inline: true
+    });
+  }
 
   embed.addFields({
     name: data ? "🐾 Possible Pets" : "⚔️ Rift Boss",
