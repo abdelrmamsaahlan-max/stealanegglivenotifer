@@ -4916,6 +4916,50 @@ async function sendExperimentAlert(event, options = {}) {
   return true;
 }
 
+async function findRecentMatchingAlertMessage(channel, event, entry) {
+  if (!channel?.messages?.fetch || !client.user) return null;
+
+  const targetName = normalizeFeedKey(
+    entry?.petName || event?.displayName || event?.eggName || ""
+  );
+  const targetEgg = normalizeFeedKey(event?.eggName || entry?.eggName || "");
+  const targetTimestamp = Date.parse(event?.spawnedAt || "");
+
+  if (!targetName || !targetEgg || !Number.isFinite(targetTimestamp)) {
+    return null;
+  }
+
+  try {
+    const recent = await channel.messages.fetch({ limit: 25 });
+
+    return [...recent.values()].find(message => {
+      if (message.author?.id !== client.user.id) return false;
+
+      const embed = message.embeds?.[0];
+      if (!embed) return false;
+
+      const footer = normalizeFeedKey(embed.footer?.text || "");
+      if (!footer.includes("powered by fsmm")) return false;
+
+      const title = normalizeFeedKey(embed.title || "");
+      const description = normalizeFeedKey(embed.description || "");
+      if (!title.includes(targetName)) return false;
+      if (!description.includes(targetEgg.replace(/\begg\b/g, "").trim())) return false;
+
+      const embedTimestamp = Date.parse(embed.timestamp || "");
+      if (!Number.isFinite(embedTimestamp)) return false;
+
+      return Math.abs(embedTimestamp - targetTimestamp) <= 10_000;
+    }) || null;
+  } catch (error) {
+    console.warn(
+      "Recent alert recovery check failed:",
+      error?.message || error
+    );
+    return null;
+  }
+}
+
 async function sendAlert(event, latencyMs = null) {
   const entry = resolveAlertEntry(event);
   if (!entry) {
@@ -4998,13 +5042,31 @@ async function sendAlert(event, latencyMs = null) {
     alertChannel = null;
 
     try {
-      const freshChannel = await getAlertChannel();
+      // A timeout/connection failure can be ambiguous: Discord may have accepted
+      // the message even if our request did not receive the response. Check the
+      // channel first so recovery never creates an accidental duplicate.
+      const recoveryChannel = await getAlertChannel();
+      const recovered = await findRecentMatchingAlertMessage(
+        recoveryChannel,
+        event,
+        entry
+      );
 
-      if (event.imageUrl || event.imageBuffer) {
-        payload.embeds = [buildAlertEmbed(event, latencyMs, true)];
+      if (recovered) {
+        sentMessage = recovered;
+        console.warn(
+          "Recovered existing alert after ambiguous send failure:",
+          event?.rarity,
+          event?.eggName,
+          "message=" + recovered.id
+        );
+      } else {
+        if (event.imageUrl || event.imageBuffer) {
+          payload.embeds = [buildAlertEmbed(event, latencyMs, true)];
+        }
+
+        sentMessage = await recoveryChannel.send(payload);
       }
-
-      sentMessage = await freshChannel.send(payload);
     } catch (retryError) {
       alertMetrics.sendFailures++;
       alertMetrics.lastFailureAt = new Date().toISOString();
