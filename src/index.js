@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import sharp from "sharp";
+import { removeBackground } from "@imgly/background-removal-node";
 import {
   Client,
   GatewayIntentBits,
@@ -103,7 +104,7 @@ const SOURCE_BOT_IDS = new Set(
 );
 
 const SEMANTIC_DEDUP_WINDOW_MS =
-  Math.max(1, Number(process.env.SEMANTIC_DEDUP_SECONDS || 8)) * 1000;
+  Math.max(1, Number(process.env.SEMANTIC_DEDUP_SECONDS || 20)) * 1000;
 
 const SEEN_TTL_MS =
   Math.max(60, Number(process.env.SEEN_TTL_SECONDS || 900)) * 1000;
@@ -154,6 +155,14 @@ const PUBLIC_BASE_URL = normalizePublicBaseUrl(
   process.env.PUBLIC_BASE_URL ||
   (process.env.RAILWAY_PUBLIC_DOMAIN ? "https://" + process.env.RAILWAY_PUBLIC_DOMAIN : "")
 );
+
+const STEAL_AN_EGG_GAME_URL =
+  "https://www.roblox.com/games/107778070777162/Steal-An-Egg";
+
+const BACKGROUND_REMOVAL_ENABLED =
+  (process.env.BACKGROUND_REMOVAL_ENABLED || "true").toLowerCase() === "true";
+
+let liveFeedPollInFlight = false;
 
 let eggImageCatalog = [];
 try {
@@ -574,6 +583,23 @@ function publicPetImageUrl(petName) {
   return PUBLIC_BASE_URL + "/cdn/pets/" + encodeURIComponent(slug) + ".png";
 }
 
+async function imageHasTransparentPixels(input) {
+  try {
+    const { data, info } = await sharp(input)
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+
+    for (let offset = 3; offset < data.length; offset += info.channels) {
+      if (data[offset] < 250) return true;
+    }
+  } catch {
+    // Treat an unreadable alpha channel as opaque and let the remover handle it.
+  }
+
+  return false;
+}
+
 async function getPetPngBuffer(petName) {
   const entry = findCatalogPet(petName);
   if (!entry) return null;
@@ -594,7 +620,7 @@ async function getPetPngBuffer(petName) {
     const response = await fetch(sourceUrl, {
       headers: {
         "accept": "image/avif,image/webp,image/png,image/*;q=0.9,*/*;q=0.8",
-        "user-agent": "FSMM-SAB-Live-Notifier/3.0"
+        "user-agent": "FSMM-SAB-Live-Notifier/4.0"
       },
       signal: controller.signal
     });
@@ -609,17 +635,31 @@ async function getPetPngBuffer(petName) {
     const input = Buffer.from(await response.arrayBuffer());
     if (input.length > MAX_REMOTE_IMAGE_BYTES) return null;
 
-    // The verified pet art is already a cut-out asset on the source page.
-    // sharp converts it to PNG while preserving its alpha channel.
-    const pngBuffer = await sharp(input, { failOn: "none" })
+    let processed;
+
+    if (!BACKGROUND_REMOVAL_ENABLED || await imageHasTransparentPixels(input)) {
+      processed = input;
+    } else {
+      console.log("Removing image background:", entry.petName);
+      const removed = await removeBackground(input);
+      processed = Buffer.from(await removed.arrayBuffer());
+    }
+
+    // Final normalization:
+    // - PNG output
+    // - real alpha channel
+    // - trim transparent margins
+    // This guarantees Discord receives a cut-out PNG instead of the source card.
+    const pngBuffer = await sharp(processed, { failOn: "none" })
       .ensureAlpha()
+      .trim()
       .png({ compressionLevel: 9 })
       .toBuffer();
 
     petPngBufferCache.set(key, { buffer: pngBuffer, at: Date.now() });
     return pngBuffer;
   } catch (error) {
-    console.warn("Pet PNG conversion failed for " + entry.petName + ":", error?.message || error);
+    console.warn("Pet PNG/background-removal failed for " + entry.petName + ":", error?.message || error);
     return null;
   }
 }
@@ -881,10 +921,13 @@ async function fetchLiveFeed(url) {
 
 async function pollEggWatch() {
   if (!LIVE_FEED_ENABLED || !LIVE_FEED_URLS.length) return;
+  if (liveFeedPollInFlight) return;
 
+  liveFeedPollInFlight = true;
   liveFeedLastPollAt = new Date().toISOString();
 
-  for (const url of LIVE_FEED_URLS) {
+  try {
+    for (const url of LIVE_FEED_URLS) {
     try {
       const { response, body } = await fetchLiveFeed(url);
 
@@ -1048,6 +1091,9 @@ async function pollEggWatch() {
       liveFeedErrors++;
       console.error("EggWatch feed poll failed:", url, error?.message || error);
     }
+    }
+  } finally {
+    liveFeedPollInFlight = false;
   }
 }
 
@@ -1310,24 +1356,24 @@ function buildAlertEmbed(event, _latencyMs = null, includeImage = true) {
     .setFooter({ text: "Steal An Egg • Live Spawn" })
     .setTimestamp(Number.isFinite(timestamp) ? new Date(timestamp) : new Date());
 
-  if (includeImage && event.imageUrl) {
-    embed.setThumbnail(event.imageUrl);
+  if (includeImage) {
+    if (event.imageBuffer) {
+      embed.setThumbnail("attachment://egg-character.png");
+    } else if (event.imageUrl) {
+      embed.setThumbnail(event.imageUrl);
+    }
   }
 
   return embed;
 }
 
 function buildActionRow(event) {
-  const buttons = [];
-
-  if (event.joinUrl) {
-    buttons.push(
-      new ButtonBuilder()
-        .setLabel("Join Game")
-        .setStyle(ButtonStyle.Link)
-        .setURL(event.joinUrl)
-    );
-  }
+  const buttons = [
+    new ButtonBuilder()
+      .setLabel("Join Game")
+      .setStyle(ButtonStyle.Link)
+      .setURL(event.joinUrl || STEAL_AN_EGG_GAME_URL)
+  ];
 
   if (event.messageUrl) {
     buttons.push(
@@ -1337,8 +1383,6 @@ function buildActionRow(event) {
         .setURL(event.messageUrl)
     );
   }
-
-  if (!buttons.length) return null;
 
   return new ActionRowBuilder().addComponents(...buttons.slice(0, 5));
 }
@@ -1351,6 +1395,7 @@ async function enrichAlertEvent(event) {
   event.displayName = entry.petName || entry.displayName || entry.eggName;
   event.biome = event.biome || entry.biome || "Unknown";
   event.imageUrl = event.imageUrl || await resolveImageUrl(entry.eggName);
+  event.imageBuffer = await getPetPngBuffer(entry.petName);
 
   const stats = await fetchPetGameStats(entry.petName);
   event.gameStats = stats;
@@ -1389,6 +1434,13 @@ async function sendAlert(event, latencyMs = null) {
   const payload = {
     content: mentionContent,
     embeds: [buildAlertEmbed(event, latencyMs, true)],
+    files: event.imageBuffer
+      ? [{
+          attachment: event.imageBuffer,
+          name: "egg-character.png",
+          description: "Transparent Steal An Egg character image"
+        }]
+      : undefined,
     allowedMentions: {
       parse: ALERT_MENTION_MODE === "here" ? ["everyone"] : [],
       roles: ALERT_MENTION_MODE === "role" && roleId ? [roleId] : []
@@ -1406,8 +1458,8 @@ async function sendAlert(event, latencyMs = null) {
 
     const freshChannel = await getAlertChannel();
 
-    if (event.imageUrl) {
-      payload.embeds = [buildAlertEmbed(event, latencyMs, false)];
+    if (event.imageUrl || event.imageBuffer) {
+      payload.embeds = [buildAlertEmbed(event, latencyMs, true)];
     }
 
     await freshChannel.send(payload);
@@ -1565,6 +1617,7 @@ app.get("/health", (_req, res) => {
     liveFeedEventsAccepted,
     liveFeedErrors,
     publicPngProxy: Boolean(PUBLIC_BASE_URL),
+    backgroundRemovalEnabled: BACKGROUND_REMOVAL_ENABLED,
     cachedPetImages: [...imageFallbackCache.keys()].filter(key => key.startsWith("pet:") && imageFallbackCache.get(key)?.url).length
   });
 });
@@ -1687,7 +1740,7 @@ client.on("interactionCreate", async interaction => {
         "🔔 Role ping: " + ALERT_MENTION_MODE.toUpperCase(),
         "📡 Discord source: " + sourceHealth(),
         "🌐 EggWatch feed: " + liveFeedHealth(),
-        "🖼️ PNG images: " + (PUBLIC_BASE_URL ? "ENABLED" : "SOURCE FALLBACK"),
+        "🖼️ Character PNG: " + (BACKGROUND_REMOVAL_ENABLED ? "ENABLED" : "SOURCE ONLY"),
         "🥚 Alerts sent: " + alertCount,
         "🔎 Detected: " + detectedCount,
         "⚡ Average latency: " + (latencySamples
@@ -1763,6 +1816,7 @@ client.on("interactionCreate", async interaction => {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       const imageUrl = await resolveImageUrl(entry.eggName);
+      const imageBuffer = await getPetPngBuffer(entry.petName);
       const stats = await fetchPetGameStats(entry.petName);
 
       const testEvent = {
@@ -1773,16 +1827,24 @@ client.on("interactionCreate", async interaction => {
         biome: entry.biome,
         spawnedAt: new Date().toISOString(),
         imageUrl,
+        imageBuffer,
         gameStats: stats
       };
 
       const embed = buildAlertEmbed(testEvent, null, true);
 
       return await interaction.editReply({
-        content: imageUrl
-          ? "✅ Verified character image resolved for **" + entry.petName + "**."
-          : "⚠️ The game record is valid, but no character image was found for **" + entry.petName + "** yet.",
-        embeds: [embed]
+        content: imageBuffer
+          ? "✅ Transparent PNG character image verified for **" + entry.petName + "**."
+          : "⚠️ The game record is valid, but no character image was generated for **" + entry.petName + "** yet.",
+        embeds: [embed],
+        files: imageBuffer
+          ? [{
+              attachment: imageBuffer,
+              name: "egg-character.png",
+              description: "Transparent Steal An Egg character image"
+            }]
+          : undefined
       });
     }
 
