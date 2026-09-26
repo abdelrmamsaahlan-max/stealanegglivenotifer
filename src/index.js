@@ -11,7 +11,8 @@ const COMMANDS = [
   new SlashCommandBuilder().setName("ping").setDescription("Check if the notifier is online."),
   new SlashCommandBuilder().setName("status").setDescription("Show live monitor and configuration status."),
   new SlashCommandBuilder().setName("testegg").setDescription("Send a test egg alert to the configured alert channel."),
-  new SlashCommandBuilder().setName("lastseen").setDescription("Show the last detected rare egg.")
+  new SlashCommandBuilder().setName("lastseen").setDescription("Show the last detected rare egg."),
+  new SlashCommandBuilder().setName("testrole").setDescription("Test the rarity role mention system.")
 
 ].map(c => c.toJSON());
 
@@ -24,7 +25,7 @@ const SOURCE_CHANNEL_IDS = new Set((process.env.DISCORD_SOURCE_CHANNEL_IDS || ""
 const SOURCE_BOT_IDS = new Set((process.env.DISCORD_SOURCE_BOT_IDS || "").split(",").map(v => v.trim()).filter(Boolean));
 const DEDUP_WINDOW_MS = Math.max(5, Number(process.env.DEDUP_WINDOW_SECONDS || 60)) * 1000;
 const SEEN_TTL_MS = Math.max(60, Number(process.env.SEEN_TTL_SECONDS || 900)) * 1000;
-const ALERT_MENTION_MODE = (process.env.ALERT_MENTION_MODE || "none").toLowerCase();
+const ALERT_MENTION_MODE = (process.env.ALERT_MENTION_MODE || "role").toLowerCase();
 const ALERT_ROLE_IDS = {
   secret: process.env.ALERT_SECRET_ROLE_ID || "",
   eternal: process.env.ALERT_ETERNAL_ROLE_ID || "",
@@ -260,6 +261,9 @@ async function sendAlert(event, latencyMs = null) {
   }
 
   const roleId = ALERT_ROLE_IDS[rarityKey];
+
+  // Only mention the role matching the spawned rarity.
+  // Missing role configuration never blocks the alert.
   const mentionContent = ALERT_MENTION_MODE === "role" && roleId
     ? "<@&" + roleId + "> 🚨 **" + rarity.toUpperCase() + " EGG!**"
     : ALERT_MENTION_MODE === "here"
@@ -443,7 +447,11 @@ client.on("interactionCreate", async (interaction) => {
         "⚡ Alerts sent: " + alertCount,
         "🟢 Last spawn: " + (lastSpawnAt ? "<t:" + Math.floor(new Date(lastSpawnAt).getTime() / 1000) + ":R>" : "NONE"),
         "⚡ Last latency: " + (lastAlertLatencyMs == null ? "N/A" : lastAlertLatencyMs + "ms"),
-        "📊 Alerts / detected: " + alertCount + " / " + detectedCount
+        "📊 Alerts / detected: " + alertCount + " / " + detectedCount,
+        "🔔 Role ping: " + ALERT_MENTION_MODE.toUpperCase(),
+        "🟣 Secret role: " + (ALERT_ROLE_IDS.secret ? "SET" : "NOT SET"),
+        "🟠 Eternal role: " + (ALERT_ROLE_IDS.eternal ? "SET" : "NOT SET"),
+        "🔴 Divine role: " + (ALERT_ROLE_IDS.divine ? "SET" : "NOT SET")
       ].join("\n");
       return await interaction.reply({ content: status, ephemeral: true });
     }
@@ -464,6 +472,28 @@ client.on("interactionCreate", async (interaction) => {
       ).join("\n");
 
       return await interaction.reply({ content: "🕒 **Last Seen**\n" + text, ephemeral: true });
+    }
+
+    if (interaction.commandName === "testrole") {
+      if (!CHANNEL_ID) {
+        return await interaction.reply({ content: "❌ Alert channel is not configured.", ephemeral: true });
+      }
+
+      await interaction.deferReply({ ephemeral: true });
+
+      const testRarity = "Secret";
+      const roleId = ALERT_ROLE_IDS.secret;
+      if (!roleId) {
+        return await interaction.editReply({ content: "⚠️ Secret role ID is not configured in Railway." });
+      }
+
+      const channel = await getAlertChannel();
+      await channel.send({
+        content: "<@&" + roleId + "> 🧪 **SECRET ROLE TEST**",
+        allowedMentions: { roles: [roleId] }
+      });
+
+      return await interaction.editReply({ content: "✅ Secret role mention sent." });
     }
 
     if (interaction.commandName === "testegg") {
