@@ -1142,10 +1142,80 @@ const alertDeliveryInFlight = new Set();
 const ALERT_DELIVERY_DEDUP_MS =
   Math.max(120, Number(process.env.ALERT_DELIVERY_DEDUP_SECONDS || 900)) * 1000;
 
-const alertQueue = [];
+const alertQueues = {
+  live: [],
+  source: [],
+  api: []
+};
 const alertQueueKeys = new Set();
 let alertQueueActive = 0;
+
+function alertQueueName(event) {
+  if (event?.source === "Live Feed") return "live";
+  if (event?.source === "Signed API") return "api";
+  return "source";
+}
+
+function alertQueueDepth(name = null) {
+  if (name && alertQueues[name]) return alertQueues[name].length;
+  return Object.values(alertQueues).reduce((total, queue) => total + queue.length, 0);
+}
 const ingestGlobalTimestamps = [];
+
+const DISCORD_CIRCUIT_FAILURE_THRESHOLD = Math.max(
+  2,
+  Number(process.env.DISCORD_CIRCUIT_FAILURE_THRESHOLD || 3)
+);
+const DISCORD_CIRCUIT_OPEN_MS = Math.max(
+  5_000,
+  Number(process.env.DISCORD_CIRCUIT_OPEN_SECONDS || 15) * 1000
+);
+
+const discordCircuit = {
+  state: "CLOSED",
+  failures: 0,
+  openedAt: 0,
+  lastFailureAt: null,
+  lastSuccessAt: null
+};
+
+function discordCircuitCanSend() {
+  if (discordCircuit.state === "CLOSED") return true;
+
+  if (discordCircuit.state === "OPEN") {
+    if (Date.now() - discordCircuit.openedAt < DISCORD_CIRCUIT_OPEN_MS) {
+      return false;
+    }
+
+    discordCircuit.state = "HALF_OPEN";
+  }
+
+  return true;
+}
+
+function recordDiscordSendSuccess() {
+  discordCircuit.state = "CLOSED";
+  discordCircuit.failures = 0;
+  discordCircuit.lastSuccessAt = new Date().toISOString();
+}
+
+function recordDiscordSendFailure(error) {
+  discordCircuit.failures++;
+  discordCircuit.lastFailureAt = new Date().toISOString();
+
+  if (discordCircuit.failures >= DISCORD_CIRCUIT_FAILURE_THRESHOLD) {
+    discordCircuit.state = "OPEN";
+    discordCircuit.openedAt = Date.now();
+  }
+}
+
+function discordCircuitRetryAfterSeconds() {
+  if (discordCircuit.state !== "OPEN") return 0;
+  return Math.max(
+    1,
+    Math.ceil((DISCORD_CIRCUIT_OPEN_MS - (Date.now() - discordCircuit.openedAt)) / 1000)
+  );
+}
 
 const alertMetrics = {
   duplicateSuppressed: 0,
@@ -1461,21 +1531,38 @@ function alertQueueJobPriority(job) {
 }
 
 function dequeueNextAlert() {
-  if (!alertQueue.length) return null;
+  const candidates = [];
 
-  let bestIndex = 0;
-  let bestPriority = alertQueueJobPriority(alertQueue[0]);
-
-  for (let i = 1; i < alertQueue.length; i++) {
-    const priority = alertQueueJobPriority(alertQueue[i]);
-
-    if (priority > bestPriority) {
-      bestPriority = priority;
-      bestIndex = i;
+  for (const [name, queue] of Object.entries(alertQueues)) {
+    if (queue.length) {
+      candidates.push({
+        name,
+        job: queue.reduce(
+          (best, item) =>
+            !best || alertQueueJobPriority(item) > alertQueueJobPriority(best)
+              ? item
+              : best,
+          null
+        )
+      });
     }
   }
 
-  const job = alertQueue.splice(bestIndex, 1)[0] || null;
+  if (!candidates.length) return null;
+
+  let best = candidates[0];
+  for (let i = 1; i < candidates.length; i++) {
+    if (
+      alertQueueJobPriority(candidates[i].job) >
+      alertQueueJobPriority(best.job)
+    ) {
+      best = candidates[i];
+    }
+  }
+
+  const queue = alertQueues[best.name];
+  const index = queue.indexOf(best.job);
+  const job = index >= 0 ? queue.splice(index, 1)[0] : null;
 
   if (
     job &&
@@ -1488,7 +1575,7 @@ function dequeueNextAlert() {
 }
 
 function pumpAlertQueue() {
-  while (alertQueueActive < ALERT_QUEUE_WORKERS && alertQueue.length) {
+  while (alertQueueActive < ALERT_QUEUE_WORKERS && alertQueueDepth() > 0) {
     const job = dequeueNextAlert();
     if (!job) return;
 
@@ -1529,18 +1616,26 @@ function enqueueAlert(event, latencyMs = null) {
     return { queued: false, duplicate: true, full: false };
   }
 
-  const isApiIngress = event?.source === "Signed API";
-  const queueLimit = isApiIngress
-    ? Math.max(1, ALERT_QUEUE_MAX - ALERT_QUEUE_RESERVED_LIVE_SLOTS)
-    : ALERT_QUEUE_MAX;
+  const queueName = alertQueueName(event);
+  const queue = alertQueues[queueName];
+  const isApiIngress = queueName === "api";
+  const apiLimit = Math.max(1, ALERT_QUEUE_MAX - ALERT_QUEUE_RESERVED_LIVE_SLOTS);
+  const perQueueLimit = isApiIngress
+    ? apiLimit
+    : queueName === "live"
+      ? ALERT_QUEUE_MAX
+      : Math.max(1, Math.floor(ALERT_QUEUE_MAX / 2));
 
-  if (alertQueue.length >= queueLimit) {
+  if (
+    queue.length >= perQueueLimit ||
+    alertQueueDepth() >= ALERT_QUEUE_MAX
+  ) {
     alertMetrics.queueRejected++;
     console.error(
       "Alert queue full; rejecting new alert:",
       event?.rarity,
       event?.eggName,
-      "depth=" + alertQueue.length
+      "depth=" + alertQueueDepth()
     );
 
     return { queued: false, duplicate: false, full: true };
@@ -1550,11 +1645,12 @@ function enqueueAlert(event, latencyMs = null) {
     alertQueueKeys.add(key);
   }
 
-  alertQueue.push({
+  queue.push({
     event: { ...event },
     latencyMs,
     deliveryKeys,
-    enqueuedAt: Date.now()
+    enqueuedAt: Date.now(),
+    queueName
   });
 
   pumpAlertQueue();
@@ -2627,7 +2723,7 @@ async function processAdditionalLiveCandidates(payload, primaryCandidate, url) {
         candidate.rarity,
         candidate.eggName,
         "area=" + candidate.biome,
-        "queueDepth=" + alertQueue.length
+        "queueDepth=" + alertQueueDepth()
       );
     } catch (error) {
       seen.delete(feedEventKey);
@@ -2667,7 +2763,12 @@ async function pollLiveFeed() {
               }
 
               updateLiveFeedEndpointHealth(url, {
-                status: status === 404 ? "HTTP_404" : "HTTP_ERROR",
+                status:
+                status === 404
+                  ? "DEAD"
+                  : status === 429 || status >= 500
+                    ? "DEGRADED"
+                    : "HTTP_ERROR",
                 httpStatus: status,
                 failures:
                   (liveFeedEndpointHealth.get(index + 1)?.failures || 0) + 1,
@@ -2916,7 +3017,7 @@ async function pollLiveFeed() {
             semanticKey,
             "latencyMs=" + (ageMs >= 0 ? ageMs : "unknown"),
             "sourceEndpoint=" + (index + 1),
-            "queueDepth=" + alertQueue.length
+            "queueDepth=" + alertQueueDepth()
           );
         } else if (queued.full) {
           liveFeedProcessedEvents.delete(fingerprint);
@@ -3957,7 +4058,7 @@ let watchdogRecoveryCount = 0;
 let watchdogLastActionAt = 0;
 
 function queueOldestAgeMs() {
-  if (!alertQueue.length) return 0;
+  if (!alertQueueDepth()) return 0;
 
   const oldest = alertQueue.reduce(
     (value, job) => Math.min(value, Number(job?.enqueuedAt || Date.now())),
@@ -3983,7 +4084,7 @@ function watchdogStatus() {
     discovery: AUTO_DISCOVERY_ENABLED
       ? discoveryActive + "/" + AUTO_DISCOVERY_SOURCES.length
       : "DISABLED",
-    queue: alertQueue.length + "/" + ALERT_QUEUE_MAX,
+    queue: alertQueueDepth() + "/" + ALERT_QUEUE_MAX,
     queueOldestAgeMs: queueOldestAgeMs(),
     pngCache: petPngBufferCache.size,
     state: STATE_PERSISTENCE_MODE
@@ -4033,7 +4134,7 @@ async function runSystemWatchdog() {
         for (const url of LIVE_FEED_URLS) {
           const key = LIVE_FEED_URLS.indexOf(url) + 1;
           const state = liveFeedEndpointHealth.get(key);
-          if (state?.status !== "HTTP_404") {
+          if (state?.status !== "DEAD") {
             liveFeedEndpointCooldownUntil.delete(url);
           }
         }
@@ -4075,6 +4176,65 @@ async function runSystemWatchdog() {
     recordMonitorError("other", error, "System watchdog failed");
   } finally {
     watchdogInFlight = false;
+  }
+}
+
+let dailySelfCheckTimer = null;
+let lastDailySelfCheckAt = null;
+let lastDailySelfCheckResult = null;
+
+async function runDailySelfCheck() {
+  const checks = {
+    discord: client.isReady(),
+    alertChannel: Boolean(CHANNEL_ID),
+    liveFeed: !LIVE_FEED_ENABLED || liveFeedHealth() !== "STALE",
+    queue: alertQueueDepth() < ALERT_QUEUE_MAX,
+    lastSeen: !LAST_SEEN_CHANNEL_ID || lastSeenMessagesReady,
+    discovery:
+      !AUTO_DISCOVERY_ENABLED ||
+      AUTO_DISCOVERY_SOURCES.length === 0 ||
+      [...autoDiscoverySourceHealth.values()]
+        .some(item => item.status === "ACTIVE"),
+    png: petPngBufferCache.size > 0 || eggImageCatalog.length === 0,
+    circuit: discordCircuit.state !== "OPEN"
+  };
+
+  const failed = Object.entries(checks)
+    .filter(([, ok]) => !ok)
+    .map(([name]) => name);
+
+  lastDailySelfCheckAt = new Date().toISOString();
+  lastDailySelfCheckResult = {
+    ok: failed.length === 0,
+    checks,
+    failed,
+    at: lastDailySelfCheckAt
+  };
+
+  if (failed.length) {
+    recordMonitorError(
+      "other",
+      null,
+      "Daily self-check found issues: " + failed.join(", ")
+    );
+  } else {
+    console.log("Daily self-check: all core systems healthy.");
+  }
+
+  return lastDailySelfCheckResult;
+}
+
+function scheduleDailySelfCheck() {
+  const run = () => {
+    runDailySelfCheck().catch(error => {
+      recordMonitorError("other", error, "Daily self-check failed");
+    });
+  };
+
+  setTimeout(run, 120_000);
+
+  if (!dailySelfCheckTimer) {
+    dailySelfCheckTimer = setInterval(run, 24 * 60 * 60 * 1000);
   }
 }
 
@@ -5308,6 +5468,24 @@ async function findRecentMatchingAlertMessage(channel, event, entry) {
   }
 }
 
+async function sendDiscordPayload(channel, payload) {
+  if (!discordCircuitCanSend()) {
+    const error = new Error("discord_circuit_open");
+    error.status = 503;
+    error.retryAfter = discordCircuitRetryAfterSeconds();
+    throw error;
+  }
+
+  try {
+    const message = await channel.send(payload);
+    recordDiscordSendSuccess();
+    return message;
+  } catch (error) {
+    recordDiscordSendFailure(error);
+    throw error;
+  }
+}
+
 async function sendAlert(event, latencyMs = null) {
   const entry = resolveAlertEntry(event);
   if (!entry) {
@@ -5382,7 +5560,7 @@ async function sendAlert(event, latencyMs = null) {
   let sentMessage = null;
 
   try {
-    sentMessage = await channel.send(payload);
+    sentMessage = await sendDiscordPayload(channel, payload);
   } catch (firstError) {
     console.error("Primary alert send failed:", firstError);
     alertMetrics.sendFailures++;
@@ -5413,7 +5591,7 @@ async function sendAlert(event, latencyMs = null) {
           payload.embeds = [buildAlertEmbed(event, latencyMs, true)];
         }
 
-        sentMessage = await recoveryChannel.send(payload);
+        sentMessage = await sendDiscordPayload(recoveryChannel, payload);
       }
     } catch (retryError) {
       alertMetrics.sendFailures++;
@@ -5629,7 +5807,7 @@ async function processSpawnMessage(message) {
       semanticKey,
       "priority=" + rarityPriority(event.rarity),
       "latencyMs=" + (latencyMs ?? "unknown"),
-      "queueDepth=" + alertQueue.length
+      "queueDepth=" + alertQueueDepth()
     );
   } else if (queued.duplicate) {
     console.log("Live source duplicate suppressed:", semanticKey);
@@ -5701,7 +5879,7 @@ app.get("/health", (_req, res) => {
         .slice(0, 10)
         .map(([area, count]) => ({ area, count })),
       trackedDeliveryKeys: deliveredAlertKeys.size,
-      alertQueueDepth: alertQueue.length,
+      alertQueueDepth: alertQueueDepth(),
       alertQueueActive: alertQueueActive,
       alertQueueMax: ALERT_QUEUE_MAX,
       alertQueueWorkers: ALERT_QUEUE_WORKERS,
@@ -5761,6 +5939,23 @@ app.get("/health", (_req, res) => {
       lastAction: watchdogLastAction,
       inFlight: watchdogInFlight,
       status: watchdogStatus()
+    },
+    dailySelfCheck: {
+      lastAt: lastDailySelfCheckAt,
+      result: lastDailySelfCheckResult
+    },
+    discordCircuit: {
+      state: discordCircuit.state,
+      failures: discordCircuit.failures,
+      openedAt: discordCircuit.openedAt || null,
+      lastFailureAt: discordCircuit.lastFailureAt,
+      lastSuccessAt: discordCircuit.lastSuccessAt
+    },
+    queueSplit: {
+      live: alertQueueDepth("live"),
+      source: alertQueueDepth("source"),
+      api: alertQueueDepth("api"),
+      total: alertQueueDepth()
     },
     lastSeenMessagesReady,
     customEggEmojisReady: eggCustomEmojiSetupState.ready,
@@ -6025,6 +6220,7 @@ setInterval(() => {
 
 startLiveFeedPoller();
 startAutoDiscovery();
+scheduleDailySelfCheck();
 
 setInterval(() => {
   const memoryMb = process.memoryUsage().rss / 1024 / 1024;
@@ -6072,7 +6268,7 @@ setInterval(() => {
     "avgLatencyMs=" + (latencySamples
       ? Math.round(totalLatencyMs / latencySamples)
       : "N/A"),
-    "queue=" + alertQueue.length + "/" + ALERT_QUEUE_MAX,
+    "queue=" + alertQueueDepth() + "/" + ALERT_QUEUE_MAX,
     "workers=" + alertQueueActive + "/" + ALERT_QUEUE_WORKERS,
     "watchdog=" + (watchdogLastAction || "monitoring"),
     "rift=" + (RIFT_ALERTS_ENABLED
@@ -6220,7 +6416,7 @@ client.on("interactionCreate", async interaction => {
         "🤖 **Bot:** " + (client.isReady() ? "🟢 Online" : "🔴 Offline"),
         "🌐 **Live Feed:** " + liveFeedHealth() + " • " + activeFeed + "/" + LIVE_FEED_URLS.length,
         "🔌 **Sources:** " + sources,
-        "🥚 **Alerts:** " + alertCount + " • queue " + alertQueue.length + "/" + ALERT_QUEUE_MAX,
+        "🥚 **Alerts:** " + alertCount + " • queue " + alertQueueDepth() + "/" + ALERT_QUEUE_MAX,
         "⚡ **Latency:** " + (latencySamples ? Math.round(totalLatencyMs / latencySamples) + "ms avg" : "N/A") +
           " • Discord " + ping + "ms",
         "🕒 **Last Seen:** " +
@@ -6238,6 +6434,12 @@ client.on("interactionCreate", async interaction => {
           (DURABLE_VOLUME_CONFIGURED ? " • durable" : " • no volume detected"),
         "🔧 **Watchdog:** " + (watchdogLastAction || "monitoring") +
           " • recoveries " + watchdogRecoveryCount,
+        "🛡️ **Discord guard:** " + discordCircuit.state +
+          " • failures " + discordCircuit.failures,
+        "📦 **Queues:** live " + alertQueueDepth("live") +
+          " • source " + alertQueueDepth("source") +
+          " • API " + alertQueueDepth("api"),
+        "🩺 **Self-check:** " + (lastDailySelfCheckResult?.ok ? "🟢 Healthy" : lastDailySelfCheckAt ? "🟠 Issues found" : "🟡 Pending"),
         "🛡️ **Errors:** " + monitorErrors,
         "⏱️ **Uptime:** " + days + "d " + hours + "h " + minutes + "m"
       ].join("\n");
@@ -6764,6 +6966,12 @@ async function shutdown(signal) {
     clearTimeout(experimentScheduleTimer);
     clearInterval(experimentScheduleTimer);
     experimentScheduleTimer = null;
+  }
+
+  if (dailySelfCheckTimer) {
+    clearTimeout(dailySelfCheckTimer);
+    clearInterval(dailySelfCheckTimer);
+    dailySelfCheckTimer = null;
   }
 
   client.destroy();
