@@ -2883,7 +2883,9 @@ function sourceHealth() {
 }
 
 async function resolveAlertRoleId(rarity) {
-  const rarityKey = String(rarity || "").toLowerCase();
+  const rarityKey = String(rarity || "").trim().toLowerCase();
+
+  if (!["secret", "eternal", "divine"].includes(rarityKey)) return "";
 
   if (ALERT_ROLE_IDS[rarityKey]) {
     return ALERT_ROLE_IDS[rarityKey];
@@ -2898,19 +2900,80 @@ async function resolveAlertRoleId(rarity) {
 
   try {
     const roles = await alertChannel.guild.roles.fetch();
-    const role = roles.find(candidate =>
-      candidate.name?.trim().toLowerCase() === rarityKey
+
+    const exactRole = roles.find(candidate =>
+      normalizeFeedKey(candidate?.name || "") === rarityKey
     );
 
-    const id = role?.id || "";
-    resolvedRoleCache.set(rarityKey, { id, at: Date.now() });
+    const looseRole = exactRole || roles.find(candidate => {
+      const name = normalizeFeedKey(candidate?.name || "");
+      return (
+        name === rarityKey ||
+        name.startsWith(rarityKey + " ") ||
+        name.endsWith(" " + rarityKey) ||
+        name.includes(" " + rarityKey + " ")
+      );
+    });
 
-    if (role) {
-      console.log("Auto-resolved alert role:", rarityKey, role.name, role.id);
+    if (looseRole) {
+      resolvedRoleCache.set(rarityKey, { id: looseRole.id, at: Date.now() });
+      console.log(
+        "Auto-resolved alert role:",
+        rarityKey,
+        looseRole.name,
+        looseRole.id
+      );
+      return looseRole.id;
     }
-    return id;
+
+    const autoCreateRoles =
+      (process.env.ALERT_AUTO_CREATE_ROLES || "true").toLowerCase() === "true";
+
+    if (!autoCreateRoles) {
+      resolvedRoleCache.set(rarityKey, { id: "", at: Date.now() });
+      return "";
+    }
+
+    const roleNames = {
+      secret: "SECRET",
+      eternal: "ETERNAL",
+      divine: "DIVINE"
+    };
+
+    const roleColors = {
+      secret: 0x7c3aed,
+      eternal: 0xf59e0b,
+      divine: 0xef4444
+    };
+
+    if (!alertChannel.guild.members.me?.permissions?.has(PermissionFlagsBits.ManageRoles)) {
+      console.warn("Cannot auto-create alert role; Manage Roles permission is missing:", rarityKey);
+      resolvedRoleCache.set(rarityKey, { id: "", at: Date.now() });
+      return "";
+    }
+
+    const created = await alertChannel.guild.roles.create({
+      name: roleNames[rarityKey],
+      color: roleColors[rarityKey],
+      mentionable: true,
+      reason: "Steal An Egg rarity alert role"
+    });
+
+    resolvedRoleCache.set(rarityKey, { id: created.id, at: Date.now() });
+
+    console.log(
+      "Auto-created alert role:",
+      rarityKey,
+      created.name,
+      created.id
+    );
+
+    return created.id;
   } catch (error) {
-    console.warn("Automatic role lookup failed for " + rarityKey + ":", error?.message || error);
+    console.warn(
+      "Automatic role lookup/create failed for " + rarityKey + ":",
+      error?.message || error
+    );
     resolvedRoleCache.set(rarityKey, { id: "", at: Date.now() });
     return "";
   }
@@ -3656,11 +3719,21 @@ async function validateAlertRoles() {
 
       if (!role) {
         console.warn("Configured role not found:", rarity, roleId);
-      } else if (!role.mentionable) {
-        console.warn("Configured role is not mentionable:", rarity, role.name);
-      } else {
-        console.log("Alert role ready:", rarity, role.name);
+        resolvedRoleCache.delete(rarity);
+        continue;
       }
+
+      if (!role.mentionable) {
+        try {
+          if (alertChannel.guild.members.me?.permissions?.has(PermissionFlagsBits.ManageRoles)) {
+            await role.setMentionable(true, "Steal An Egg rarity alert role");
+          }
+        } catch (error) {
+          console.warn("Could not make alert role mentionable:", rarity, error?.message || error);
+        }
+      }
+
+      console.log("Alert role ready:", rarity, role.name);
     } catch (error) {
       console.error("Alert role validation failed for " + rarity + ":", error);
     }
