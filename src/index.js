@@ -372,6 +372,7 @@ const PUBLIC_DISCOVERY_SOURCE_LABEL = "Auto Discovery";
 const MAX_DISCOVERY_CHANGELOG = 50;
 const spawnHistory = [];
 const gameEventHistory = [];
+const announcedDiscoveryEventKeys = new Map();
 const riftHistory = [];
 const MAX_HISTORY = 100;
 const MAX_EVENT_HISTORY = 30;
@@ -641,6 +642,14 @@ function loadRuntimeState() {
       lastUpdateTitle = state.lastUpdateTitle;
     }
 
+    if (state.announcedDiscoveryEvents && typeof state.announcedDiscoveryEvents === "object") {
+      for (const [key, value] of Object.entries(state.announcedDiscoveryEvents)) {
+        if (key && Number.isFinite(Number(value))) {
+          announcedDiscoveryEventKeys.set(key, Number(value));
+        }
+      }
+    }
+
     if (state.discoveryState && typeof state.discoveryState === "object") {
       if (state.discoveryState.catalogSnapshot && typeof state.discoveryState.catalogSnapshot === "object") {
         discoveryCatalogSnapshot = state.discoveryState.catalogSnapshot;
@@ -714,6 +723,10 @@ function saveRuntimeState() {
         scanSequence: discoveryScanSequence,
         sourceHealth: discoverySummary()
       },
+      announcedDiscoveryEvents: Object.fromEntries(
+        [...announcedDiscoveryEventKeys.entries()]
+          .slice(0, 100)
+      ),
       spawnHistory: spawnHistory.slice(0, MAX_HISTORY),
       gameEventHistory: gameEventHistory.slice(0, MAX_EVENT_HISTORY),
       riftState,
@@ -3190,6 +3203,121 @@ async function sendGameUpdateAlert(_update, _newEggs = [], _changes = null) {
   return;
 }
 
+async function sendDiscoveredEventAlert(event) {
+  if (!EVENT_ALERTS_ENABLED || !CHANNEL_ID || !event?.title) return false;
+
+  const channel = await getAlertChannel();
+  if (!channel) return false;
+
+  const combined = [
+    event.title,
+    event.description,
+    event.type
+  ].join(" ");
+
+  const isScrambleRevenge =
+    /dr\.?\s*scramble['’]s\s+revenge/i.test(combined);
+
+  const title = isScrambleRevenge
+    ? "🧪 DR. SCRAMBLE'S REVENGE"
+    : "🚨 NEW STEAL AN EGG EVENT";
+
+  const description = isScrambleRevenge
+    ? "Dr. Scramble is back for the FINAL SHOWDOWN. He has built something MUCH bigger. ⚙️👀"
+    : String(event.description || "A new Steal An Egg event was detected.")
+        .slice(0, 900);
+
+  const embed = new EmbedBuilder()
+    .setTitle(title)
+    .setDescription(description)
+    .addFields(
+      {
+        name: "Event",
+        value: String(event.title).slice(0, 500),
+        inline: false
+      },
+      {
+        name: "Detected by",
+        value: PUBLIC_DISCOVERY_SOURCE_LABEL,
+        inline: true
+      },
+      {
+        name: "Date",
+        value: String(event.date || "Unknown"),
+        inline: true
+      }
+    )
+    .setFooter({ text: "Powered by FSMM • Steal An Egg" })
+    .setTimestamp(new Date());
+
+  if (event.url) {
+    embed.setURL(String(event.url).slice(0, 1000));
+  }
+
+  try {
+    await sendDiscordPayload(channel, {
+      content: isScrambleRevenge
+        ? "🧪 **Dr. Scramble's Revenge is here.**"
+        : "🚨 **A new Steal An Egg event was detected.**",
+      embeds: [embed],
+      allowedMentions: { parse: [] }
+    });
+
+    console.log(
+      "Discovered event alert sent:",
+      event.type,
+      event.title
+    );
+    return true;
+  } catch (error) {
+    recordMonitorError(
+      "discord",
+      error,
+      "Discovered event alert failed: " + event.title
+    );
+    return false;
+  }
+}
+
+function discoveryEventAnnouncementKey(event) {
+  return [
+    String(event?.type || "event").trim().toLowerCase(),
+    normalizeFeedKey(event?.title),
+    String(event?.date || "").trim()
+  ].join("|");
+}
+
+function isTodayUtc(dateText) {
+  if (!dateText) return false;
+  return String(dateText).trim() === new Date().toISOString().slice(0, 10);
+}
+
+function shouldAnnounceDiscoveredEvent(event, existedBefore) {
+  const key = discoveryEventAnnouncementKey(event);
+  if (!key || announcedDiscoveryEventKeys.has(key)) return false;
+
+  const type = String(event?.type || "").toLowerCase();
+  const highSignal =
+    type === "official_event" ||
+    type === "limited_event" ||
+    type === "experiment_event" ||
+    type === "rift_event" ||
+    type === "generic_event";
+
+  if (!highSignal) return false;
+  if (!existedBefore) return true;
+
+  const combined = [
+    event?.title,
+    event?.description
+  ].join(" ");
+
+  return (
+    isTodayUtc(event?.date) &&
+    /dr\.?\s*scramble['’]s\s+revenge/i.test(combined)
+  );
+}
+
 async function scanForGameUpdates() {
   if (!AUTO_DISCOVERY_ENABLED || autoDiscoveryInFlight) return null;
   autoDiscoveryInFlight = true;
@@ -3251,7 +3379,12 @@ async function runAutoDiscoverySweep() {
         source: source.name,
         sourceRank: source.rank
       })));
-      detectedEvents.push(...sourceEvents);
+      detectedEvents.push(
+        ...sourceEvents.map(event => ({
+          ...event,
+          url: source.url
+        }))
+      );
 
       if (source.followLinks) {
         linkQueue.push(
@@ -3313,7 +3446,12 @@ async function runAutoDiscoverySweep() {
           sourceRank: 5
         }))
       );
-      detectedEvents.push(...extractDiscoveryEvents(body, pageSource));
+      detectedEvents.push(
+        ...extractDiscoveryEvents(body, pageSource).map(event => ({
+          ...event,
+          url: link.url
+        }))
+      );
     } catch (error) {
       recordMonitorError(
         "discovery",
@@ -3551,7 +3689,31 @@ async function runAutoDiscoverySweep() {
   }
 
   for (const event of detectedEvents) {
+    const eventKey = discoveryEventAnnouncementKey(event);
+    const existedBefore = gameEventHistory.some(
+      item => item.key === eventKey
+    );
+
     recordGameEvent(event);
+
+    if (shouldAnnounceDiscoveredEvent(event, existedBefore)) {
+      const sent = await sendDiscoveredEventAlert(event);
+
+      if (sent) {
+        announcedDiscoveryEventKeys.set(eventKey, Date.now());
+
+        if (announcedDiscoveryEventKeys.size > 100) {
+          const oldestKey = [...announcedDiscoveryEventKeys.entries()]
+            .sort((a, b) => a[1] - b[1])[0]?.[0];
+
+          if (oldestKey) {
+            announcedDiscoveryEventKeys.delete(oldestKey);
+          }
+        }
+
+        scheduleStateSave();
+      }
+    }
   }
 
   const catalogFingerprint = [...uniqueEggs.values()]
@@ -5945,6 +6107,7 @@ app.get("/health", (_req, res) => {
       lastAt: lastDailySelfCheckAt,
       result: lastDailySelfCheckResult
     },
+    discoveredEventAlerts: announcedDiscoveryEventKeys.size,
     discordCircuit: {
       state: discordCircuit.state,
       failures: discordCircuit.failures,
