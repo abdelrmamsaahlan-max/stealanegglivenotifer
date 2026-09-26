@@ -41,7 +41,7 @@ jobs:
             steal-an-egg-live-notifier:ci
           trap 'docker logs steal-an-egg-smoke || true; docker rm -f steal-an-egg-smoke >/dev/null 2>&1 || true' EXIT
           for i in {1..30}; do
-            if curl --fail --silent http://127.0.0.1:3030/health >/tmp/health.json; then
+            if curl --fail --silent http://127.0.0.1:3030/ >/tmp/health.json; then
               cat /tmp/health.json
               exit 0
             fi
