@@ -18,6 +18,13 @@ import {
   MessageFlags
 } from "discord.js";
 import { extractMessageData, parseSpawn } from "./parser.js";
+import {
+  buildRiftActionRow,
+  buildRiftAlertEmbed,
+  getRiftData,
+  parseRiftChange,
+  riftBannerChoices
+} from "./rift-tracker.js";
 
 const app = express();
 
@@ -52,6 +59,17 @@ const COMMANDS = [
   new SlashCommandBuilder().setName("lastseen").setDescription("Show recently detected rare eggs."),
   new SlashCommandBuilder().setName("history").setDescription("Show the latest rare egg spawn history."),
   new SlashCommandBuilder().setName("events").setDescription("Show discovered game events and updates."),
+  new SlashCommandBuilder().setName("rift").setDescription("Show the latest Rift banner and its possible pets."),
+  new SlashCommandBuilder()
+    .setName("testrift")
+    .setDescription("Send a Rift banner test alert.")
+    .addStringOption(option =>
+      option
+        .setName("banner")
+        .setDescription("Which Rift banner to test.")
+        .setRequired(false)
+        .addChoices(...riftBannerChoices())
+    ),
   new SlashCommandBuilder().setName("doctor").setDescription("Run a live self-check of the notifier."),
   new SlashCommandBuilder()
     .setName("testrole")
@@ -150,6 +168,36 @@ const AUTO_DISCOVERY_POLL_MS =
 const EVENT_ALERTS_ENABLED =
   (process.env.EVENT_ALERTS_ENABLED || "true").toLowerCase() === "true";
 
+const RIFT_ALERTS_ENABLED =
+  (process.env.RIFT_ALERTS_ENABLED || "true").toLowerCase() === "true";
+
+const RIFT_BOSS_ALERTS_ENABLED =
+  (process.env.RIFT_BOSS_ALERTS_ENABLED || "true").toLowerCase() === "true";
+
+const RIFT_SOURCE_CHANNEL_IDS = new Set(
+  (process.env.RIFT_SOURCE_CHANNEL_IDS || "")
+    .split(",")
+    .map(value => value.trim())
+    .filter(Boolean)
+);
+
+const RIFT_SOURCE_BOT_IDS = new Set(
+  (process.env.RIFT_SOURCE_BOT_IDS || "")
+    .split(",")
+    .map(value => value.trim())
+    .filter(Boolean)
+);
+
+const RIFT_ALERT_MENTION_MODE = ["none", "role", "here"].includes(
+  String(process.env.RIFT_ALERT_MENTION_MODE || "none").toLowerCase()
+)
+  ? String(process.env.RIFT_ALERT_MENTION_MODE || "none").toLowerCase()
+  : "none";
+
+const RIFT_ALERT_ROLE_ID = process.env.RIFT_ALERT_ROLE_ID || "";
+const RIFT_DEDUP_TTL_MS =
+  Math.max(30, Number(process.env.RIFT_DEDUP_SECONDS || 10800)) * 1000;
+
 const MEMORY_SOFT_LIMIT_MB =
   Math.max(128, Number(process.env.MEMORY_SOFT_LIMIT_MB || 350));
 
@@ -175,8 +223,25 @@ let lastUpdateCheckAt = null;
 let lastUpdateTitle = null;
 const spawnHistory = [];
 const gameEventHistory = [];
+const riftHistory = [];
 const MAX_HISTORY = 100;
 const MAX_EVENT_HISTORY = 30;
+const MAX_RIFT_HISTORY = 30;
+
+let riftState = {
+  currentBannerKey: null,
+  currentBannerName: null,
+  changedLabel: null,
+  nextChangeLabel: null,
+  lastChangedAt: null,
+  lastObservedAt: null,
+  lastJoinUrl: null,
+  lastSourceMessageUrl: null,
+  lastBossAt: null,
+  lastBossMessageUrl: null
+};
+
+const seenRiftAlerts = new Map();
 
 function loadRuntimeState() {
   try {
@@ -190,6 +255,14 @@ function loadRuntimeState() {
 
     if (Array.isArray(state.gameEventHistory)) {
       gameEventHistory.push(...state.gameEventHistory.slice(0, MAX_EVENT_HISTORY));
+    }
+
+    if (Array.isArray(state.riftHistory)) {
+      riftHistory.push(...state.riftHistory.slice(0, MAX_RIFT_HISTORY));
+    }
+
+    if (state.riftState && typeof state.riftState === "object") {
+      riftState = { ...riftState, ...state.riftState };
     }
 
     if (typeof state.lastUpdateFingerprint === "string") {
@@ -239,6 +312,8 @@ function saveRuntimeState() {
       lastUpdateTitle,
       spawnHistory: spawnHistory.slice(0, MAX_HISTORY),
       gameEventHistory: gameEventHistory.slice(0, MAX_EVENT_HISTORY),
+      riftState,
+      riftHistory: riftHistory.slice(0, MAX_RIFT_HISTORY),
       dynamicEggs: eggImageCatalog
         .filter(entry => entry?.source === "EggWatch live auto-discovery")
         .slice(0, 50)
@@ -1937,6 +2012,10 @@ function updateLiveFeedHealth() {
 }
 
 function cleanupCaches(now = Date.now()) {
+  for (const [key, timestamp] of seenRiftAlerts) {
+    if (now - timestamp > RIFT_DEDUP_TTL_MS) seenRiftAlerts.delete(key);
+  }
+
   for (const [key, timestamp] of seen) {
     if (now - timestamp > SEEN_TTL_MS) seen.delete(key);
   }
@@ -2149,6 +2228,122 @@ async function enrichAlertEvent(event) {
   return event;
 }
 
+function recordRiftHistory(event, test = false) {
+  const record = {
+    type: event.type,
+    bannerKey: event.bannerKey || null,
+    bannerName: event.bannerName || null,
+    bossName: event.bossName || null,
+    changedLabel: event.changedLabel || null,
+    nextChangeLabel: event.nextChangeLabel || null,
+    createdTimestamp: event.createdTimestamp || Date.now(),
+    joinUrl: event.joinUrl || null,
+    messageUrl: event.messageUrl || null,
+    sourceName: event.sourceName || null,
+    test
+  };
+
+  riftHistory.unshift(record);
+  if (riftHistory.length > MAX_RIFT_HISTORY) {
+    riftHistory.length = MAX_RIFT_HISTORY;
+  }
+
+  if (test) return;
+
+  const observedAt = new Date().toISOString();
+
+  if (event.type === "banner") {
+    riftState = {
+      ...riftState,
+      currentBannerKey: event.bannerKey || null,
+      currentBannerName: event.bannerName || null,
+      changedLabel: event.changedLabel || null,
+      nextChangeLabel: event.nextChangeLabel || null,
+      lastChangedAt: Number(event.createdTimestamp || Date.now()),
+      lastObservedAt: observedAt,
+      lastJoinUrl: event.joinUrl || null,
+      lastSourceMessageUrl: event.messageUrl || null
+    };
+  } else if (event.type === "boss") {
+    riftState = {
+      ...riftState,
+      lastBossAt: Number(event.createdTimestamp || Date.now()),
+      lastBossMessageUrl: event.messageUrl || null
+    };
+  }
+
+  scheduleStateSave();
+}
+
+async function sendRiftAlert(event, options = {}) {
+  const isTest = options.test === true;
+
+  if (!RIFT_ALERTS_ENABLED || !CHANNEL_ID) return false;
+  if (event?.type === "boss" && !RIFT_BOSS_ALERTS_ENABLED) return false;
+
+  const dedupKey = [
+    "rift",
+    event?.type || "unknown",
+    event?.bannerKey || event?.bossName || "unknown",
+    event?.changedLabel || event?.nextChangeLabel || event?.createdTimestamp || "unknown"
+  ]
+    .join("|")
+    .toLowerCase();
+
+  if (!isTest) {
+    const previous = seenRiftAlerts.get(dedupKey) || 0;
+    if (Date.now() - previous < RIFT_DEDUP_TTL_MS) return false;
+    seenRiftAlerts.set(dedupKey, Date.now());
+  }
+
+  const channel = await getAlertChannel();
+  const alertLine =
+    event.type === "banner"
+      ? "🟣 **The Rift shifted — " + event.bannerName + " is now active!**"
+      : "🌀 **Abyss Overlord is active!**";
+
+  let mentionContent = alertLine;
+  const roleId = RIFT_ALERT_ROLE_ID;
+
+  if (RIFT_ALERT_MENTION_MODE === "role" && roleId) {
+    mentionContent = "<@&" + roleId + "> " + alertLine;
+  } else if (RIFT_ALERT_MENTION_MODE === "here") {
+    mentionContent = "@here " + alertLine;
+  }
+
+  const message = await channel.send({
+    content: mentionContent,
+    embeds: [buildRiftAlertEmbed(event)],
+    components: [buildRiftActionRow(event)],
+    allowedMentions: {
+      parse: RIFT_ALERT_MENTION_MODE === "here" ? ["everyone"] : [],
+      roles: RIFT_ALERT_MENTION_MODE === "role" && roleId ? [roleId] : []
+    }
+  });
+
+  recordRiftHistory(event, isTest);
+
+  if (event.type === "banner") {
+    const data = getRiftData(event.bannerKey);
+
+    console.log(
+      "Rift banner alert sent:",
+      event.bannerName,
+      "rotationChance=" + (data?.rotationChance || "unknown"),
+      "message=" + message.id,
+      "source=" + (event.sourceName || "unknown")
+    );
+  } else {
+    console.log(
+      "Rift boss alert sent:",
+      event.bossName || "Abyss Overlord",
+      "message=" + message.id
+    );
+  }
+
+  return true;
+}
+
 async function sendAlert(event, latencyMs = null) {
   await enrichAlertEvent(event);
   const channel = await getAlertChannel();
@@ -2270,13 +2465,43 @@ async function sendAlert(event, latencyMs = null) {
 async function processSpawnMessage(message) {
   if (!MONITOR_ENABLED || !message) return;
   if (message.author?.id === client.user?.id) return;
+
+  const messageData = extractMessageData(message);
+
+  const riftChannelAllowed =
+    !RIFT_SOURCE_CHANNEL_IDS.size || RIFT_SOURCE_CHANNEL_IDS.has(message.channelId);
+  const riftBotAllowed =
+    !RIFT_SOURCE_BOT_IDS.size || RIFT_SOURCE_BOT_IDS.has(message.author?.id);
+
+  if (RIFT_ALERTS_ENABLED && riftChannelAllowed && riftBotAllowed) {
+    const riftEvent = parseRiftChange(messageData);
+
+    if (riftEvent) {
+      riftEvent.messageUrl = messageData.messageUrl || null;
+      riftEvent.createdTimestamp = messageData.createdTimestamp || Date.now();
+      riftEvent.imageUrl = messageData.imageUrl || null;
+      riftEvent.sourceName =
+        message.author?.tag ||
+        message.author?.username ||
+        "Discord Source";
+
+      try {
+        await sendRiftAlert(riftEvent);
+      } catch (error) {
+        monitorErrors++;
+        console.warn("Rift alert failed:", error?.message || error);
+      }
+
+      return;
+    }
+  }
+
   if (SOURCE_CHANNEL_IDS.size && !SOURCE_CHANNEL_IDS.has(message.channelId)) return;
   if (SOURCE_BOT_IDS.size && !SOURCE_BOT_IDS.has(message.author?.id)) return;
 
   lastSourceMessageAt = new Date(message.createdTimestamp || Date.now()).toISOString();
   lastSourceMessageId = message.id || null;
 
-  const messageData = extractMessageData(message);
   const event = parseSpawn(messageData, RARITIES);
   if (!event) return;
 
@@ -2429,6 +2654,15 @@ app.get("/api/events", (_req, res) => {
   });
 });
 
+app.get("/api/rift", (_req, res) => {
+  res.json({
+    enabled: RIFT_ALERTS_ENABLED,
+    bossAlertsEnabled: RIFT_BOSS_ALERTS_ENABLED,
+    state: riftState,
+    history: riftHistory.slice(0, 20)
+  });
+});
+
 app.post("/api/notify-egg", async (req, res) => {
   const key = rateLimitKey(req);
   cleanupCaches();
@@ -2551,7 +2785,10 @@ setInterval(() => {
     "errors=" + monitorErrors,
     "avgLatencyMs=" + (latencySamples
       ? Math.round(totalLatencyMs / latencySamples)
-      : "N/A")
+      : "N/A"),
+    "rift=" + (RIFT_ALERTS_ENABLED
+      ? (riftState.currentBannerName || "waiting")
+      : "disabled")
   );
 }, 60_000);
 
@@ -2578,6 +2815,18 @@ client.on("interactionCreate", async interaction => {
       checks.push(
         (AUTO_DISCOVERY_ENABLED ? "✅" : "🟡") +
         " Auto update discovery"
+      );
+      checks.push(
+        (RIFT_ALERTS_ENABLED ? "✅" : "🟡") +
+        " Rift tracker: " +
+        (riftState.currentBannerName || "WAITING")
+      );
+      checks.push(
+        (RIFT_ALERTS_ENABLED && RIFT_SOURCE_BOT_IDS.size
+          ? "✅"
+          : "🟡") +
+        " Rift source bot filter: " +
+        (RIFT_SOURCE_BOT_IDS.size ? "CONFIGURED" : "ALL")
       );
       checks.push(
         (BACKGROUND_REMOVAL_ENABLED ? "✅" : "🟡") +
@@ -2627,6 +2876,11 @@ client.on("interactionCreate", async interaction => {
           (BACKGROUND_REMOVAL_ENABLED ? "ENABLED/" + BACKGROUND_REMOVAL_MODEL : "SOURCE ONLY"),
         "🔄 Auto catalog: " + (AUTO_DISCOVERY_ENABLED ? "ENABLED" : "DISABLED") + " (" + autoDiscoveredCount + " new)",
         "🎮 Event alerts: " + (EVENT_ALERTS_ENABLED ? "ON" : "OFF"),
+        "🟣 Rift tracker: " + (RIFT_ALERTS_ENABLED ? "ON" : "OFF"),
+        "🌀 Rift banner: " + (riftState.currentBannerName || "WAITING"),
+        "⏭️ Rift next change: " + (riftState.nextChangeLabel || "Unknown"),
+        "🧩 Rift source filters: " +
+          (RIFT_SOURCE_BOT_IDS.size ? "BOT FILTER" : "ALL BOTS"),
         "🩺 Doctor: /doctor",
         "🆕 Last update: " + (lastUpdateTitle || "Unknown"),
         "🧾 Spawn history: " + spawnHistory.length,
@@ -2708,6 +2962,85 @@ client.on("interactionCreate", async interaction => {
       return await interaction.reply({
         content: "🛰️ **Game Events & Updates**\\n" + eventText.slice(0, 3900),
         flags: MessageFlags.Ephemeral
+      });
+    }
+
+    if (interaction.commandName === "rift") {
+      if (!RIFT_ALERTS_ENABLED) {
+        return await interaction.reply({
+          content: "🟣 Rift tracker is disabled.",
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      if (!riftState.currentBannerKey) {
+        return await interaction.reply({
+          content: "📭 No Rift banner has been observed yet.",
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      const data = getRiftData(riftState.currentBannerKey);
+      const pets = data?.pets || [];
+
+      const lines = [
+        "🟣 **Current Rift — " + (riftState.currentBannerName || data?.name || "Unknown") + "**",
+        "🕒 Changed: " + (riftState.changedLabel || "Unknown"),
+        "⏭️ Next Change: " + (riftState.nextChangeLabel || "Unknown"),
+        "🎲 Rotation Chance: " + (data?.rotationChance || "Unknown"),
+        "",
+        "🐾 **Possible Pets**",
+        ...pets.map(pet =>
+          "**" + pet.name + "** — " + pet.chance + " • " + pet.income
+        ),
+        "",
+        "ℹ️ The rotation percentage is the banner rotation share, not a pet hatch chance."
+      ];
+
+      return await interaction.reply({
+        content: lines.join("\n").slice(0, 3900),
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    if (interaction.commandName === "testrift") {
+      if (!RIFT_ALERTS_ENABLED) {
+        return await interaction.reply({
+          content: "🟣 Rift tracker is disabled.",
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      const requested = interaction.options.getString("banner") || "riftborn";
+      const data = getRiftData(requested);
+
+      if (!data) {
+        return await interaction.reply({
+          content: "❌ Unknown Rift banner.",
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const testEvent = {
+        type: "banner",
+        bannerKey: requested,
+        bannerName: data.name,
+        eggName: data.eggName,
+        rotationChance: data.rotationChance,
+        changedLabel: "Test alert",
+        nextChangeLabel: "Test schedule",
+        possiblePets: data.pets,
+        joinUrl: STEAL_AN_EGG_GAME_URL,
+        createdTimestamp: Date.now(),
+        sourceName: "Manual Test"
+      };
+
+      await sendRiftAlert(testEvent, { test: true });
+
+      return await interaction.editReply({
+        content: "✅ Rift test alert sent for **" + data.name + "**."
       });
     }
 
