@@ -63,24 +63,27 @@ test("extracts high-value event signals", () => {
   assert.ok(events.some(item => /Rifts?/i.test(item.title)));
 });
 
-test("only follows allowlisted discovery hosts", () => {
+test("only follows configured discovery hosts", () => {
+  process.env.DISCOVERY_ALLOWED_HOSTS =
+    "secondary.example,tertiary.example";
+
   const html = `
-    <a href="https://eggipedia.com/updates">Eggipedia</a>
-    <a href="https://www.roblox.com/games/107778070777162/Steal-An-Egg">Roblox</a>
-    <a href="https://example.com/update">External</a>
+    <a href="https://secondary.example/updates">Secondary</a>
+    <a href="https://tertiary.example/events">Tertiary</a>
+    <a href="https://blocked.example/update">Blocked</a>
     <a href="/events/current">Local Event</a>
   `;
 
   const links = extractRelevantLinks(
     html,
-    "https://robloxstealanegg.wiki/",
+    "https://primary.example/",
     10
   );
 
-  assert.ok(links.some(item => item.url.startsWith("https://eggipedia.com/")));
-  assert.ok(links.some(item => item.url.startsWith("https://www.roblox.com/")));
-  assert.ok(links.some(item => item.url.startsWith("https://robloxstealanegg.wiki/")));
-  assert.ok(!links.some(item => item.url.includes("example.com")));
+  assert.ok(links.some(item => item.url.startsWith("https://secondary.example/")));
+  assert.ok(links.some(item => item.url.startsWith("https://tertiary.example/")));
+  assert.ok(links.some(item => item.url.startsWith("https://primary.example/")));
+  assert.ok(!links.some(item => item.url.includes("blocked.example")));
 });
 
 test("chooses the newest numbered update before relying on source rank", () => {
