@@ -1945,10 +1945,17 @@ async function pollLiveFeed() {
           successful.push(result.value);
         } else {
           liveFeedErrors++;
-          console.warn(
+          const message =
             "Live feed endpoint returned HTTP " + result.value.status +
-            " (endpoint " + (result.value.index + 1) + ")."
-          );
+            " (endpoint " + (result.value.index + 1) + ").";
+
+          // 404 endpoints are already cooled down and are expected to be skipped
+          // for a while; keep them out of error-level runtime logs.
+          if (Number(result.value.status) === 404) {
+            console.log(message);
+          } else {
+            console.warn(message);
+          }
         }
       } else {
         liveFeedErrors++;
