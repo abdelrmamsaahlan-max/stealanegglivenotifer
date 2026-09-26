@@ -3957,6 +3957,7 @@ function buildLastSeenEmbed(rarity) {
     );
 
   const lines = [];
+  const renderedEggs = new Set();
 
   for (const { entry, record } of seenEntries) {
     const timestamp = Date.parse(record.spawnedAt);
@@ -3969,18 +3970,26 @@ function buildLastSeenEmbed(rarity) {
         ? record.area
         : entry.biome || "Unknown";
 
-    lines.push(
-      buildEggLinePrefix(entry) +
-      " **" + (entry.eggName || (entry.petName + " Egg")) +
-      "** — <t:" + unix + ":R> • 📍 " +
-      String(displayArea).slice(0, 60)
-    );
+    const renderedKey = normalizeFeedKey(entry.eggName || entry.petName);
+    if (!renderedEggs.has(renderedKey)) {
+      renderedEggs.add(renderedKey);
+      lines.push(
+        buildEggLinePrefix(entry) +
+        " **" + (entry.eggName || (entry.petName + " Egg")) +
+        "** — <t:" + unix + ":R> • 📍 " +
+        String(displayArea).slice(0, 60)
+      );
+    }
   }
 
   if (neverEntries.length) {
     lines.push("", "**Not seen yet**");
 
     for (const { entry } of neverEntries) {
+      const renderedKey = normalizeFeedKey(entry.eggName || entry.petName);
+      if (renderedEggs.has(renderedKey)) continue;
+
+      renderedEggs.add(renderedKey);
       lines.push(
         buildEggLinePrefix(entry) +
         " **" + (entry.eggName || (entry.petName + " Egg")) +
@@ -4847,6 +4856,7 @@ async function processSpawnMessage(message) {
   event.spawnedAt = new Date(messageData.createdTimestamp || Date.now()).toISOString();
   if (messageData.imageUrl) event.imageUrl = messageData.imageUrl;
   if (messageData.messageUrl) event.messageUrl = messageData.messageUrl;
+  event.sourceEventId = message.id || null;
 
   detectedCount++;
 
