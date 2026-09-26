@@ -38,3 +38,29 @@ test("getRiftData exposes the three tracked Rift banners", () => {
     assert.equal(data.pets.length, 5);
   }
 });
+
+
+test("parseRiftChange recognizes flexible current-rift embed wording", () => {
+  const event = parseRiftChange({
+    text: "Current Rift: Riftbeasts",
+    fields: [
+      { name: "Status", value: "Active now" },
+      { name: "Next Change", value: "in 2h 30m" }
+    ]
+  });
+
+  assert.ok(event);
+  assert.equal(event.bannerKey, "riftbeasts");
+  assert.equal(event.nextChangeLabel, "in 2h 30m");
+});
+
+test("parseRiftChange recognizes a bare Abyss Overlord active signal", () => {
+  const event = parseRiftChange({
+    text: "⚔️ Abyss Overlord — LIVE",
+    fields: []
+  });
+
+  assert.ok(event);
+  assert.equal(event.type, "boss");
+  assert.equal(event.bossName, "Abyss Overlord");
+});
