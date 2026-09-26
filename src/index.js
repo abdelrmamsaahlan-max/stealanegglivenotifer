@@ -1960,7 +1960,7 @@ async function pollLiveFeed() {
           candidate.eggName,
           "area=" + candidate.biome,
           "spawnedAt=" + candidate.spawnedAt,
-          "url=" + url,
+          "endpoint=" + (LIVE_FEED_URLS.indexOf(url) + 1),
           "catalogSource=" + (findCatalogEgg(candidate.eggName) ? "available" : "none")
         );
 
