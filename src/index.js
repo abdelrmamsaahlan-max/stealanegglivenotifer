@@ -1,7 +1,17 @@
 import "dotenv/config";
 import express from "express";
 import crypto from "node:crypto";
-import { Client, GatewayIntentBits, EmbedBuilder, REST, Routes, SlashCommandBuilder } from "discord.js";
+import {
+  Client,
+  GatewayIntentBits,
+  EmbedBuilder,
+  REST,
+  Routes,
+  SlashCommandBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle
+} from "discord.js";
 
 const app = express();
 app.use(express.json({ limit: "32kb" }));
@@ -12,7 +22,22 @@ const COMMANDS = [
   new SlashCommandBuilder().setName("status").setDescription("Show live monitor and configuration status."),
   new SlashCommandBuilder().setName("testegg").setDescription("Send a test egg alert to the configured alert channel."),
   new SlashCommandBuilder().setName("lastseen").setDescription("Show the last detected rare egg."),
-  new SlashCommandBuilder().setName("testrole").setDescription("Test the rarity role mention system.")
+  new SlashCommandBuilder()
+    .setName("testrole")
+    .setDescription("Test a rarity role mention.")
+    .addStringOption(option =>
+      option
+        .setName("rarity")
+        .setDescription("Which rarity role to test.")
+        .setRequired(true)
+        .addChoices(
+          { name: "Secret", value: "secret" },
+          { name: "Eternal", value: "eternal" },
+          { name: "Divine", value: "divine" }
+        )
+    ),
+  new SlashCommandBuilder().setName("stats").setDescription("Show notifier performance statistics."),
+  new SlashCommandBuilder().setName("reload").setDescription("Refresh notifier caches and Discord commands.")
 
 ].map(c => c.toJSON());
 
@@ -23,9 +48,16 @@ const MONITOR_ENABLED = (process.env.SOURCE_MONITOR_ENABLED || "true").toLowerCa
 const RARITIES = new Set((process.env.ALERT_RARITIES || "Secret,Eternal,Divine").split(",").map(v => v.trim().toLowerCase()).filter(Boolean));
 const SOURCE_CHANNEL_IDS = new Set((process.env.DISCORD_SOURCE_CHANNEL_IDS || "").split(",").map(v => v.trim()).filter(Boolean));
 const SOURCE_BOT_IDS = new Set((process.env.DISCORD_SOURCE_BOT_IDS || "").split(",").map(v => v.trim()).filter(Boolean));
-const DEDUP_WINDOW_MS = Math.max(5, Number(process.env.DEDUP_WINDOW_SECONDS || 60)) * 1000;
+const SEMANTIC_DEDUP_WINDOW_MS = Math.max(1, Number(process.env.SEMANTIC_DEDUP_SECONDS || 8)) * 1000;
 const SEEN_TTL_MS = Math.max(60, Number(process.env.SEEN_TTL_SECONDS || 900)) * 1000;
+const SOURCE_STALE_AFTER_MS = Math.max(30, Number(process.env.SOURCE_STALE_AFTER_SECONDS || 180)) * 1000;
 const ALERT_MENTION_MODE = (process.env.ALERT_MENTION_MODE || "role").toLowerCase();
+const ALERT_EMOJIS = {
+  secret: process.env.ALERT_EMOJI_SECRET || "🥚",
+  eternal: process.env.ALERT_EMOJI_ETERNAL || "🥚",
+  divine: process.env.ALERT_EMOJI_DIVINE || "🥚"
+};
+const RARITY_PRIORITY = { divine: 3, eternal: 2, secret: 1 };
 const ALERT_ROLE_IDS = {
   secret: process.env.ALERT_SECRET_ROLE_ID || "",
   eternal: process.env.ALERT_ETERNAL_ROLE_ID || "",
@@ -40,6 +72,12 @@ let alertCount = 0;
 let lastSpawnAt = null;
 let lastAlertLatencyMs = null;
 let monitorErrors = 0;
+let lastSourceMessageAt = null;
+let lastSourceMessageId = null;
+let sourceStale = false;
+let totalLatencyMs = 0;
+let latencySamples = 0;
+const inFlightKeys = new Set();
 
 function verify(req) {
   const supplied = req.header("x-live-signature") || "";
@@ -70,6 +108,21 @@ function normalizeLabel(value) {
 
 function firstMeaningfulLine(value) {
   return cleanText(value).split("\n").map(v => v.trim()).find(Boolean) || "";
+}
+
+function getRarityEmoji(rarity) {
+  return ALERT_EMOJIS[String(rarity || "").toLowerCase()] || "🥚";
+}
+
+function rarityPriority(rarity) {
+  return RARITY_PRIORITY[String(rarity || "").toLowerCase()] || 0;
+}
+
+function recordSourceActivity(message) {
+  if (SOURCE_CHANNEL_IDS.size && !SOURCE_CHANNEL_IDS.has(message.channelId)) return;
+  lastSourceMessageAt = new Date(message.createdTimestamp || Date.now()).toISOString();
+  lastSourceMessageId = message.id || null;
+  sourceStale = false;
 }
 
 function parseSpawn(data) {
@@ -194,7 +247,8 @@ function extractMessageData(message) {
     text: parts.filter(Boolean).join("\n"),
     fields,
     imageUrl,
-    createdTimestamp: message.createdTimestamp
+    createdTimestamp: message.createdTimestamp,
+    messageUrl: message.url || null
   };
 }
 
@@ -212,17 +266,21 @@ function buildAlertEmbed(event) {
   const rarity = String(event.rarity || "Unknown").trim();
   const rarityKey = rarity.toLowerCase();
   const rarityColors = {
-    secret: 0x8b5cf6,
+    secret: 0x7c3aed,
     eternal: 0xf59e0b,
     divine: 0xef4444
   };
 
   const unix = Math.floor(new Date(event.spawnedAt).getTime() / 1000);
+  const emoji = getRarityEmoji(rarity);
+  const eggName = String(event.displayName || event.eggName || "Unknown Egg").trim();
+  const area = String(event.biome || "Unknown").trim();
+
   const fields = [
-    { name: "🥚 Egg", value: String(event.displayName || event.eggName || "Unknown Egg").trim().slice(0, 1024), inline: true },
+    { name: "🥚 Egg", value: eggName.slice(0, 1024), inline: true },
     { name: "✨ Rarity", value: rarity.slice(0, 1024), inline: true },
-    { name: "📍 Area", value: String(event.biome || "Unknown").trim().slice(0, 1024), inline: true },
-    { name: "⏱️ Spawned", value: "<t:" + unix + ":R>", inline: true }
+    { name: "📍 Area", value: area.slice(0, 1024), inline: true },
+    { name: "🕒 Spawned", value: "<t:" + unix + ":R>", inline: true }
   ];
 
   const optionalFields = [
@@ -240,14 +298,25 @@ function buildAlertEmbed(event) {
 
   const embed = new EmbedBuilder()
     .setColor(rarityColors[rarityKey] || 0x5865f2)
-    .setTitle("🥚 " + rarity.toUpperCase() + " EGG SPAWNED!")
-    .setDescription("A rare egg has just spawned.")
+    .setTitle(emoji + "  " + rarity.toUpperCase() + " EGG SPAWNED!")
+    .setDescription("**" + eggName + "** has just appeared.")
     .addFields(fields)
-    .setFooter({ text: "Steal an Egg • Live Spawn Alert" })
+    .setFooter({ text: "Steal an Egg • Rare Spawn Alert" })
     .setTimestamp(new Date(event.spawnedAt));
 
   if (event.imageUrl) embed.setImage(event.imageUrl);
   return embed;
+}
+
+function buildSourceRow(messageUrl) {
+  if (!messageUrl) return null;
+
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setLabel("View Spawn")
+      .setStyle(ButtonStyle.Link)
+      .setURL(messageUrl)
+  );
 }
 
 async function sendAlert(event, latencyMs = null) {
@@ -256,28 +325,26 @@ async function sendAlert(event, latencyMs = null) {
   const rarityKey = rarity.toLowerCase();
   const embed = buildAlertEmbed(event);
 
-  if (Number.isFinite(latencyMs) && latencyMs >= 0) {
-    embed.addFields({ name: "⚡ Detection", value: latencyMs < 1000 ? latencyMs + "ms" : (latencyMs / 1000).toFixed(1) + "s", inline: true });
-  }
-
   const roleId = ALERT_ROLE_IDS[rarityKey];
-
-  // Only mention the role matching the spawned rarity.
-  // Missing role configuration never blocks the alert.
+  const emoji = getRarityEmoji(rarity);
   const mentionContent = ALERT_MENTION_MODE === "role" && roleId
-    ? "<@&" + roleId + "> 🚨 **" + rarity.toUpperCase() + " EGG!**"
+    ? "<@&" + roleId + "> " + emoji + " **" + rarity.toUpperCase() + " EGG!**"
     : ALERT_MENTION_MODE === "here"
-      ? "@here 🚨 **" + rarity.toUpperCase() + " EGG!**"
-      : "🚨 **" + rarity.toUpperCase() + " EGG!**";
+      ? "@here " + emoji + " **" + rarity.toUpperCase() + " EGG!**"
+      : emoji + " **" + rarity.toUpperCase() + " EGG!**";
 
   const payload = {
     content: mentionContent,
     embeds: [embed],
+    components: [],
     allowedMentions: {
       parse: ALERT_MENTION_MODE === "here" ? ["everyone"] : [],
       roles: ALERT_MENTION_MODE === "role" && roleId ? [roleId] : []
     }
   };
+
+  const row = buildSourceRow(event.messageUrl);
+  if (row) payload.components.push(row);
 
   try {
     await channel.send(payload);
@@ -286,11 +353,7 @@ async function sendAlert(event, latencyMs = null) {
     const freshChannel = await getAlertChannel();
 
     if (event.imageUrl) {
-      const fallbackEmbed = buildAlertEmbed({ ...event, imageUrl: null });
-      if (Number.isFinite(latencyMs) && latencyMs >= 0) {
-        fallbackEmbed.addFields({ name: "⚡ Detection", value: latencyMs < 1000 ? latencyMs + "ms" : (latencyMs / 1000).toFixed(1) + "s", inline: true });
-      }
-      payload.embeds = [fallbackEmbed];
+      payload.embeds = [buildAlertEmbed({ ...event, imageUrl: null })];
     }
 
     await freshChannel.send(payload);
@@ -299,11 +362,18 @@ async function sendAlert(event, latencyMs = null) {
   alertCount++;
   lastSpawnAt = event.spawnedAt;
   lastAlertLatencyMs = Number.isFinite(latencyMs) ? latencyMs : null;
+  if (Number.isFinite(latencyMs) && latencyMs >= 0) {
+    totalLatencyMs += latencyMs;
+    latencySamples++;
+  }
+
   lastSeen.set((event.displayName || event.eggName || "Unknown Egg").toLowerCase(), {
     eggName: event.displayName || event.eggName || "Unknown Egg",
     rarity,
     area: event.biome || "Unknown",
-    at: event.spawnedAt
+    at: event.spawnedAt,
+    imageUrl: event.imageUrl || null,
+    priority: rarityPriority(rarity)
   });
 }
 
@@ -314,6 +384,9 @@ function cleanupCaches(now = Date.now()) {
 
 async function processSpawnMessage(message) {
   if (!MONITOR_ENABLED || !message || message.author?.id === client.user?.id) return;
+
+  recordSourceActivity(message);
+
   if (SOURCE_CHANNEL_IDS.size && !SOURCE_CHANNEL_IDS.has(message.channelId)) return;
   if (SOURCE_BOT_IDS.size && !SOURCE_BOT_IDS.has(message.author?.id)) return;
 
@@ -325,38 +398,63 @@ async function processSpawnMessage(message) {
     event.spawnedAt = new Date(messageData.createdTimestamp).toISOString();
   }
   if (messageData.imageUrl) event.imageUrl = messageData.imageUrl;
+  if (messageData.messageUrl) event.messageUrl = messageData.messageUrl;
 
   detectedCount++;
   const now = Date.now();
   cleanupCaches(now);
 
-  // A source message should normally generate at most one alert.
   if (alertedMessageIds.has(message.id)) return;
 
-  // Semantic dedup only catches rapid duplicate reposts.
   const semanticKey = [
     event.rarity.toLowerCase(),
     event.eggName.toLowerCase(),
     event.biome.toLowerCase()
   ].join("|");
 
-  if (now - (seen.get(semanticKey) || 0) < DEDUP_WINDOW_MS) return;
+  if (inFlightKeys.has(semanticKey)) return;
+  if (now - (seen.get(semanticKey) || 0) < SEMANTIC_DEDUP_WINDOW_MS) return;
+
+  inFlightKeys.add(semanticKey);
   seen.set(semanticKey, now);
+  alertedMessageIds.set(message.id, now);
 
   const latencyMs = messageData.createdTimestamp ? Math.max(0, now - messageData.createdTimestamp) : null;
-  alertedMessageIds.set(message.id, now);
 
   try {
     await sendAlert(event, latencyMs);
-    console.log("Forwarded live egg spawn:", semanticKey, "latencyMs=" + (latencyMs ?? "unknown"));
+    console.log(
+      "Forwarded live egg spawn:",
+      semanticKey,
+      "priority=" + rarityPriority(event.rarity),
+      "latencyMs=" + (latencyMs ?? "unknown")
+    );
   } catch (err) {
     monitorErrors++;
     alertedMessageIds.delete(message.id);
     seen.delete(semanticKey);
     alertChannel = null;
     console.error("Live source forwarding failed:", err);
+  } finally {
+    inFlightKeys.delete(semanticKey);
   }
 }
+
+client.on("messageCreate", message => {
+  void processSpawnMessage(message);
+});
+
+client.on("messageUpdate", async (_oldMessage, newMessage) => {
+  if (alertedMessageIds.has(newMessage.id)) return;
+
+  try {
+    if (!newMessage.author) await newMessage.fetch().catch(() => newMessage);
+    await processSpawnMessage(newMessage);
+  } catch (err) {
+    monitorErrors++;
+    console.error("Live source update processing failed:", err);
+  }
+});
 
 app.get("/health", (req, res) => res.status(client.isReady() ? 200 : 503).json({
   ok: true,
@@ -372,7 +470,11 @@ app.get("/health", (req, res) => res.status(client.isReady() ? 200 : 503).json({
   lastSpawnAt,
   lastAlertLatencyMs,
   monitorErrors,
-  cacheSize: seen.size
+  cacheSize: seen.size,
+  sourceStale,
+  lastSourceMessageAt,
+  lastSourceMessageId,
+  averageAlertLatencyMs: latencySamples ? Math.round(totalLatencyMs / latencySamples) : null
 }));
 
 app.post("/api/notify-egg", async (req, res) => {
@@ -405,6 +507,8 @@ client.once("clientReady", async () => {
   console.log("Configured rarities:", [...RARITIES].join(", "));
   console.log("Source channel filters:", SOURCE_CHANNEL_IDS.size || "none");
   console.log("Alert mention mode:", ALERT_MENTION_MODE);
+  console.log("Semantic dedup window:", SEMANTIC_DEDUP_WINDOW_MS / 1000 + "s");
+  console.log("Source stale threshold:", SOURCE_STALE_AFTER_MS / 1000 + "s");
 
   if (CHANNEL_ID) {
     try {
@@ -429,6 +533,14 @@ client.once("clientReady", async () => {
   }
 });
 
+setInterval(() => {
+  sourceStale = Boolean(
+    SOURCE_CHANNEL_IDS.size &&
+    lastSourceMessageAt &&
+    Date.now() - new Date(lastSourceMessageAt).getTime() > SOURCE_STALE_AFTER_MS
+  );
+}, 30000);
+
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
@@ -448,7 +560,9 @@ client.on("interactionCreate", async (interaction) => {
         "🟢 Last spawn: " + (lastSpawnAt ? "<t:" + Math.floor(new Date(lastSpawnAt).getTime() / 1000) + ":R>" : "NONE"),
         "⚡ Last latency: " + (lastAlertLatencyMs == null ? "N/A" : lastAlertLatencyMs + "ms"),
         "📊 Alerts / detected: " + alertCount + " / " + detectedCount,
+        "⚡ Avg latency: " + (latencySamples ? Math.round(totalLatencyMs / latencySamples) + "ms" : "N/A"),
         "🔔 Role ping: " + ALERT_MENTION_MODE.toUpperCase(),
+        "📡 Source health: " + (sourceStale ? "STALE" : lastSourceMessageAt ? "ACTIVE" : "WAITING"),
         "🟣 Secret role: " + (ALERT_ROLE_IDS.secret ? "SET" : "NOT SET"),
         "🟠 Eternal role: " + (ALERT_ROLE_IDS.eternal ? "SET" : "NOT SET"),
         "🔴 Divine role: " + (ALERT_ROLE_IDS.divine ? "SET" : "NOT SET")
@@ -474,26 +588,74 @@ client.on("interactionCreate", async (interaction) => {
       return await interaction.reply({ content: "🕒 **Last Seen**\n" + text, ephemeral: true });
     }
 
+    if (interaction.commandName === "stats") {
+      const avg = latencySamples ? Math.round(totalLatencyMs / latencySamples) + "ms" : "N/A";
+      const uptime = Math.floor(process.uptime());
+      const hours = Math.floor(uptime / 3600);
+      const minutes = Math.floor((uptime % 3600) / 60);
+
+      return await interaction.reply({
+        content: [
+          "📊 **Notifier Stats**",
+          "🥚 Alerts sent: " + alertCount,
+          "🔎 Spawns detected: " + detectedCount,
+          "⚡ Average alert latency: " + avg,
+          "🛠️ Monitor errors: " + monitorErrors,
+          "📡 Source: " + (sourceStale ? "STALE" : lastSourceMessageAt ? "ACTIVE" : "WAITING"),
+          "⏱️ Uptime: " + hours + "h " + minutes + "m"
+        ].join("\n"),
+        ephemeral: true
+      });
+    }
+
+    if (interaction.commandName === "reload") {
+      await interaction.deferReply({ ephemeral: true });
+
+      seen.clear();
+      alertedMessageIds.clear();
+      inFlightKeys.clear();
+      alertChannel = null;
+
+      if (CHANNEL_ID) {
+        await getAlertChannel();
+      }
+
+      try {
+        const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_BOT_TOKEN);
+        if (DEV_GUILD_ID) {
+          await rest.put(Routes.applicationGuildCommands(client.user.id, DEV_GUILD_ID), { body: COMMANDS });
+        } else {
+          await rest.put(Routes.applicationCommands(client.user.id), { body: COMMANDS });
+        }
+      } catch (err) {
+        console.error("Reload command registration failed:", err);
+      }
+
+      return await interaction.editReply({ content: "✅ Notifier caches refreshed and commands reloaded." });
+    }
+
     if (interaction.commandName === "testrole") {
       if (!CHANNEL_ID) {
         return await interaction.reply({ content: "❌ Alert channel is not configured.", ephemeral: true });
       }
 
-      await interaction.deferReply({ ephemeral: true });
+      const rarity = interaction.options.getString("rarity", true).toLowerCase();
+      const roleId = ALERT_ROLE_IDS[rarity];
 
-      const testRarity = "Secret";
-      const roleId = ALERT_ROLE_IDS.secret;
       if (!roleId) {
-        return await interaction.editReply({ content: "⚠️ Secret role ID is not configured in Railway." });
+        return await interaction.reply({ content: "⚠️ " + rarity[0].toUpperCase() + rarity.slice(1) + " role ID is not configured in Railway.", ephemeral: true });
       }
 
+      await interaction.deferReply({ ephemeral: true });
+
       const channel = await getAlertChannel();
+      const emoji = getRarityEmoji(rarity);
       await channel.send({
-        content: "<@&" + roleId + "> 🧪 **SECRET ROLE TEST**",
+        content: "<@&" + roleId + "> " + emoji + " **" + rarity.toUpperCase() + " ROLE TEST**",
         allowedMentions: { roles: [roleId] }
       });
 
-      return await interaction.editReply({ content: "✅ Secret role mention sent." });
+      return await interaction.editReply({ content: "✅ " + rarity[0].toUpperCase() + rarity.slice(1) + " role mention sent." });
     }
 
     if (interaction.commandName === "testegg") {
