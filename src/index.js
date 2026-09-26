@@ -80,6 +80,18 @@ import {
   mergeNearDuplicateFeedCandidates,
   shouldProcessLiveFeedCandidate
 } from "./live-feed-gate.js";
+import {
+  addDeadLetterAlert,
+  buildWeeklyReportText,
+  getOpsSummary,
+  markWeeklyReportSent,
+  noteSourceObservation,
+  recordLatency,
+  recordLifecycle,
+  restoreOpsState,
+  shouldRunWeeklyReport,
+  snapshotOpsState
+} from "./ops.js";
 
 const app = express();
 
@@ -184,7 +196,18 @@ const COMMANDS = [
   new SlashCommandBuilder()
     .setName("bot-reload")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .setDescription("Admin: clear runtime caches, refresh image data, reload roles, and sync Discord commands.")
+    .setDescription("Admin: clear runtime caches, refresh image data, reload roles, and sync Discord commands."),
+  new SlashCommandBuilder()
+    .setName("ops-report")
+    .setDescription("View reliability, alert latency, lifecycle, dead-letter, and source-conflict metrics."),
+  new SlashCommandBuilder()
+    .setName("alerts-pause")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .setDescription("Admin: pause public rare-egg alert delivery without stopping detection."),
+  new SlashCommandBuilder()
+    .setName("alerts-resume")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .setDescription("Admin: resume public rare-egg alert delivery.")
 ].map(command => command.toJSON());
 
 const ADMIN_COMMANDS = new Set([
@@ -194,7 +217,9 @@ const ADMIN_COMMANDS = new Set([
   "scramble-test",
   "role-test",
   "bot-reload",
-  "discovery-scan"
+  "discovery-scan",
+  "alerts-pause",
+  "alerts-resume"
 ]);
 
 async function registerDiscordCommands(rest, applicationId) {
@@ -363,6 +388,15 @@ const ADMIN_API_TOKEN = String(
 
 const ALERT_PIPELINE_SELF_TEST_ONCE =
   String(process.env.ALERT_PIPELINE_SELF_TEST_ONCE || "false").toLowerCase() === "true";
+
+const WEEKLY_RELIABILITY_REPORT_ENABLED =
+  String(process.env.WEEKLY_RELIABILITY_REPORT_ENABLED || "true").toLowerCase() === "true";
+
+const WEEKLY_RELIABILITY_REPORT_CHANNEL_ID =
+  String(process.env.WEEKLY_RELIABILITY_REPORT_CHANNEL_ID || CHANNEL_ID).trim();
+
+let alertsPaused =
+  String(process.env.ALERTS_PAUSED || "false").toLowerCase() === "true";
 
 function loadDiscoverySources() {
   const raw = String(process.env.DISCOVERY_SOURCES_JSON || "").trim();
@@ -611,6 +645,10 @@ function loadRuntimeState() {
     if (!loadedPath || !rawState) return;
 
     const state = JSON.parse(rawState);
+    restoreOpsState(state?.ops || {});
+    if (typeof state?.alertsPaused === "boolean") {
+      alertsPaused = state.alertsPaused;
+    }
 
     if (Array.isArray(state.spawnHistory)) {
       spawnHistory.push(...state.spawnHistory.slice(0, MAX_HISTORY));
@@ -886,8 +924,9 @@ function saveRuntimeState() {
     fs.mkdirSync(stateDir, { recursive: true });
 
     const payload = {
-      version: 5,
+      version: 6,
       savedAt: new Date().toISOString(),
+      alertsPaused,
       lastUpdateFingerprint,
       lastUpdateTitle,
       discoveryState: {
@@ -949,6 +988,7 @@ function saveRuntimeState() {
             .map(([key, values]) => [key, Array.isArray(values) ? values.slice(-30) : []])
         )
       },
+      ops: snapshotOpsState(),
       spawnHistory: spawnHistory.slice(0, MAX_HISTORY),
       gameEventHistory: gameEventHistory.slice(0, MAX_EVENT_HISTORY),
       riftState,
@@ -2156,6 +2196,29 @@ function pumpAlertQueue() {
       .catch(error => {
         alertMetrics.sendFailures++;
         alertMetrics.lastFailureAt = new Date().toISOString();
+        recordLifecycle(job.event, "FAILED", {
+          detail: error?.message || "queued_delivery_failed"
+        });
+        const deadLetter = addDeadLetterAlert(
+          job.event,
+          error,
+          ALERT_RETRY_LIMIT + 1
+        );
+        persistGameEvent({
+          source: job.event?.source || "unknown",
+          type: "alert_dead_letter",
+          title: String(job.event?.eggName || job.event?.displayName || "Alert").slice(0, 200),
+          description: deadLetter.error,
+          date: deadLetter.failedAt,
+          sourceEventId: job.event?.sourceEventId || null,
+          incidentId: job.event?.incidentId || null,
+          confidence: Number(job.event?.confidence || 0),
+          eventState: "DEAD_LETTER",
+          evidence: Array.isArray(job.event?.evidence) ? job.event.evidence.slice(0, 8) : []
+        }).catch(storageError => {
+          recordMonitorError("storage", storageError, "Dead-letter persistence failed");
+        });
+        scheduleStateSave();
         recordMonitorError(
           "queue",
           error,
@@ -2172,6 +2235,30 @@ function pumpAlertQueue() {
 }
 
 function enqueueAlert(event, latencyMs = null) {
+  if (alertsPaused) {
+    recordLifecycle(event, "SUPPRESSED", { detail: "alerts_paused" });
+    return {
+      queued: false,
+      duplicate: false,
+      full: false,
+      suppressed: true,
+      reason: "alerts_paused",
+      confidence: 0
+    };
+  }
+
+  const sourceConflict = noteSourceObservation(event);
+  if (sourceConflict) {
+    recordMonitorError(
+      "source",
+      null,
+      "Source disagreement observed for " +
+        (event?.rarity || "unknown") + " " +
+        (event?.eggName || "unknown")
+    );
+    event.sourceDisagreement = sourceConflict;
+  }
+
   const reliability = evaluateEventReliability(event, {
     parser: event?.source === "Live Feed" ? "live-feed-egg" : "discord-egg",
     parserConfidence:
@@ -2183,6 +2270,9 @@ function enqueueAlert(event, latencyMs = null) {
   });
 
   if (!reliability.ok) {
+    recordLifecycle(event, "SUPPRESSED", {
+      detail: reliability.reason || "reliability_guard"
+    });
     console.warn(
       "Detection suppressed by reliability guard:",
       reliability.reason,
@@ -2199,6 +2289,31 @@ function enqueueAlert(event, latencyMs = null) {
       confidence: reliability.confidence ?? 0
     };
   }
+
+  if (reliability.anomaly) {
+    recordLifecycle(event, "SUPPRESSED", {
+      detail: "duplicate_storm:" + String(reliability.reason || "burst_frequency")
+    });
+    persistSuppressedDetection(
+      event,
+      "duplicate_storm",
+      reliability.confidence,
+      reliability.evidence
+    );
+    event.suppressedReason = "duplicate_storm";
+    return {
+      queued: false,
+      duplicate: false,
+      full: false,
+      suppressed: true,
+      reason: "duplicate_storm",
+      confidence: reliability.confidence
+    };
+  }
+
+  recordLifecycle(event, "VERIFIED", {
+    detail: "confidence=" + String(reliability.confidence)
+  });
 
   const deliveryKeys = alertDeliveryKeys(event);
 
@@ -2246,6 +2361,9 @@ function enqueueAlert(event, latencyMs = null) {
     deliveryKeys,
     enqueuedAt: Date.now(),
     queueName
+  });
+  recordLifecycle(event, "QUEUED", {
+    detail: "queue=" + queueName
   });
 
   pumpAlertQueue();
@@ -6089,10 +6207,25 @@ function buildAlertEmbed(event, _latencyMs = null, includeImage = true) {
     ? Math.floor(timestamp / 1000)
     : Math.floor(Date.now() / 1000);
 
+  const verificationCount = Math.max(1, Number(event.verificationCount || 1));
+  const confidencePercent = Number.isFinite(Number(event.confidence))
+    ? Math.round(Number(event.confidence) * 100) + "%"
+    : "N/A";
+
   const fields = [
     { name: "🥚 Egg", value: eggName.slice(0, 1024), inline: true },
     { name: "📍 Location", value: area.slice(0, 1024), inline: true },
-    { name: "🕒 Spawned", value: "<t:" + unix + ":R>", inline: true }
+    { name: "🕒 Spawned", value: "<t:" + unix + ":R>", inline: true },
+    {
+      name: "🔎 Verification",
+      value: verificationCount + " source" + (verificationCount === 1 ? "" : "s") + " • " + confidencePercent,
+      inline: true
+    },
+    {
+      name: "🧾 Incident",
+      value: String(event.incidentId || "untracked").slice(0, 1024),
+      inline: true
+    }
   ];
 
   const embed = new EmbedBuilder()
@@ -6859,6 +6992,10 @@ async function sendAlert(event, latencyMs = null) {
 
   alertCount++;
   recordAlertMetric(event, area);
+  recordLifecycle(event, "SENT", {
+    detail: "discord_message_id=" + String(sentMessage?.id || "unknown")
+  });
+  recordLatency(latencyMs);
   lastSpawnAt = event.spawnedAt;
   lastAlertLatencyMs = Number.isFinite(latencyMs) ? latencyMs : null;
 
@@ -6904,6 +7041,27 @@ async function sendAlert(event, latencyMs = null) {
   // Persist the claim immediately so a restart cannot replay a fresh alert.
   scheduleStateSave();
   return true;
+}
+
+async function runWeeklyReliabilityReport() {
+  if (!WEEKLY_RELIABILITY_REPORT_ENABLED || !WEEKLY_RELIABILITY_REPORT_CHANNEL_ID) return;
+  if (!shouldRunWeeklyReport()) return;
+
+  const channel = await getAlertChannel();
+  if (!channel) return;
+
+  const summary = getOpsSummary();
+  const content = buildWeeklyReportText(summary);
+
+  try {
+    if (!discordCircuitCanSend()) return;
+    await sendDiscordPayload(channel, { content });
+    markWeeklyReportSent(new Date().toISOString());
+    scheduleStateSave();
+    console.log("Weekly reliability report sent.");
+  } catch (error) {
+    recordMonitorError("discord", error, "Weekly reliability report failed");
+  }
 }
 
 async function processSpawnMessage(message) {
@@ -7277,6 +7435,8 @@ app.get("/health", (_req, res) => {
       result: alertPipelineSelfTestResult
     },
     reliability: reliabilitySummary(),
+    ops: getOpsSummary(),
+    alertsPaused,
     recoverySelfTests: recoverySelfTestResult,
     scramble: {
       enabled: EVENT_ALERTS_ENABLED,
@@ -7342,6 +7502,7 @@ app.get("/health", (_req, res) => {
       lastFailureAt: discordCircuit.lastFailureAt,
       lastSuccessAt: discordCircuit.lastSuccessAt
     },
+    ops: getOpsSummary(),
     queueSplit: {
       live: alertQueueDepth("live"),
       source: alertQueueDepth("source"),
@@ -7806,12 +7967,72 @@ client.on("interactionCreate", async interaction => {
         experimentCustomEmojiCache.size + "/" +
         EXPERIMENT_EMOJI_TEMPLATES.length
       );
+      const ops = getOpsSummary();
       checks.push(
         "⏱️ Uptime: " + Math.floor(process.uptime()) + "s"
+      );
+      checks.push(
+        "📈 Alert latency P95: " +
+        (ops.latency.p95Ms == null ? "N/A" : ops.latency.p95Ms + "ms")
+      );
+      checks.push(
+        "🧾 Dead-letter alerts: " + ops.deadLetter.count
+      );
+      checks.push(
+        "🛰️ Source conflicts: " + (ops.sourceConflicts?.length || 0)
+      );
+      checks.push(
+        "⏸️ Public alerts: " + (alertsPaused ? "PAUSED" : "ACTIVE")
       );
 
       return await interaction.editReply({
         content: "**🩺 Notifier Doctor**\\n" + checks.join("\\n")
+      });
+    }
+
+    if (interaction.commandName === "ops-report") {
+      const summary = getOpsSummary();
+      const latency = summary.latency || {};
+      const lifecycle = summary.lifecycle || {};
+      const rel = summary.reliability || {};
+      const dead = summary.deadLetter || {};
+
+      const lines = [
+        "**🧠 Notifier Ops Report**",
+        "Latency: P50 **" + (latency.p50Ms == null ? "N/A" : latency.p50Ms + "ms") +
+          "**, P95 **" + (latency.p95Ms == null ? "N/A" : latency.p95Ms + "ms") +
+          "**, Avg **" + (latency.averageMs == null ? "N/A" : latency.averageMs + "ms") + "**",
+        "Lifecycle: detected **" + lifecycle.detected + "** • verified **" + lifecycle.verified +
+          "** • queued **" + lifecycle.queued + "** • sent **" + lifecycle.sent +
+          "** • failed **" + lifecycle.failed + "** • suppressed **" + lifecycle.suppressed + "**",
+        "Delivery success: **" + (rel.deliverySuccessRate == null ? "N/A" : rel.deliverySuccessRate + "%") + "**",
+        "Dead-letter queue: **" + dead.count + "**",
+        "Source conflicts tracked: **" + (summary.sourceConflicts?.length || 0) + "**",
+        "Alert delivery: **" + (alertsPaused ? "PAUSED" : "ACTIVE") + "**",
+        "Last weekly report: **" + (summary.weeklyReportLastAt || "not sent yet") + "**"
+      ];
+
+      return await interaction.reply({
+        content: lines.join("\n"),
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    if (interaction.commandName === "alerts-pause") {
+      alertsPaused = true;
+      saveRuntimeState();
+      return await interaction.reply({
+        content: "⏸️ Rare-egg public alerts are now **paused**. Detection and Last Seen continue normally.",
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    if (interaction.commandName === "alerts-resume") {
+      alertsPaused = false;
+      saveRuntimeState();
+      return await interaction.reply({
+        content: "▶️ Rare-egg public alerts are now **resumed**.",
+        flags: MessageFlags.Ephemeral
       });
     }
 
@@ -8362,6 +8583,18 @@ client.on("interactionCreate", async interaction => {
     }
   }
 });
+
+setInterval(() => {
+  runWeeklyReliabilityReport().catch(error => {
+    recordMonitorError("discord", error, "Weekly reliability report scheduler failed");
+  });
+}, 6 * 60 * 60 * 1000);
+
+setTimeout(() => {
+  runWeeklyReliabilityReport().catch(error => {
+    recordMonitorError("discord", error, "Initial weekly reliability report check failed");
+  });
+}, 30_000);
 
 client.on("shardReconnecting", shardId => {
   alertChannel = null;
