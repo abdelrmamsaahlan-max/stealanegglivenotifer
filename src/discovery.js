@@ -489,6 +489,7 @@ export function extractDiscoveryEvents(html, source = "Auto Discovery") {
   const lines = htmlToLines(html);
   const text = lines.join("\n");
   const patterns = [
+    // Known high-signal events.
     {
       type: "official_event",
       re: /\bDr\.?\s*Scramble['’]s\s+Revenge\b[^\n]{0,260}/i
