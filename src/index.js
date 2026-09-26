@@ -883,6 +883,7 @@ function ensureCatalogEgg(eggName, rarity, area = "Unknown") {
   if (!dynamic) return null;
 
   eggImageCatalog.push(dynamic);
+  dedupeCatalogEntries();
   scheduleStateSave();
 
   console.log(
