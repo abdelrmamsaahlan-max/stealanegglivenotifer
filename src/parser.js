@@ -176,6 +176,9 @@ export function parseSpawn(data, allowedRarities) {
   eggName = normalizeName(eggName, "Unknown Egg");
   area = normalizeName(area, "Unknown");
 
+  // A rarity mention without a real egg name must never become an alert.
+  if (eggName === "Unknown Egg") return null;
+
   const compact = combined.replace(/\s+/g, " ");
   const spawnSignal = /\b(spawned|spawn|appeared|detected|found|just\s+spawned|new\s+egg|egg\s+alert|egg\s+has\s+appeared|has\s+spawned)\b/i.test(compact);
   const explicitRarityEggSignal = /\b(secret|eternal|divine)\s+egg\s*[:：\-]/i.test(compact);
