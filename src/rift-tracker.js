@@ -259,7 +259,7 @@ export function buildRiftAlertEmbed(event) {
     .setTitle("「・RIFT EVENT」")
     .setDescription(description)
     .setTimestamp(new Date(event?.createdTimestamp || Date.now()))
-    .setFooter({ text: "SenZ V2 | Steal An Egg Rift Tracker" });
+    .setFooter({ text: "Powered by FSMM • Steal An Egg" });
 
   if (data && event?.rotationChance) {
     embed.addFields({
