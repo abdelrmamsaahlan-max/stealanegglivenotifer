@@ -921,6 +921,21 @@ let liveFeedErrors = 0;
 let liveFeedPrimed = false;
 let liveFeedLastSuccessAt = null;
 let liveFeedHealthState = "WAITING";
+const liveFeedEndpointCooldownUntil = new Map();
+const LIVE_FEED_404_COOLDOWN_MS = 5 * 60 * 1000;
+const LIVE_FEED_ERROR_COOLDOWN_MS = 15 * 1000;
+
+function liveFeedEndpointCoolingDown(url) {
+  return Date.now() < (liveFeedEndpointCooldownUntil.get(url) || 0);
+}
+
+function coolDownLiveFeedEndpoint(url, status = null) {
+  const delay = Number(status) === 404
+    ? LIVE_FEED_404_COOLDOWN_MS
+    : LIVE_FEED_ERROR_COOLDOWN_MS;
+
+  liveFeedEndpointCooldownUntil.set(url, Date.now() + delay);
+}
 
 function parseTimestamp(value) {
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -1876,12 +1891,19 @@ async function pollLiveFeed() {
 
   try {
     const results = await Promise.allSettled(
-      LIVE_FEED_URLS.map(async (url, index) => {
-        const { response, body } = await fetchLiveFeed(url);
+      LIVE_FEED_URLS
+        .map((url, index) => ({ url, index }))
+        .filter(item => !liveFeedEndpointCoolingDown(item.url))
+        .map(async ({ url, index }) => {
+          try {
+            const { response, body } = await fetchLiveFeed(url);
 
-        if (!response.ok) {
-          return { ok: false, index, url, status: response.status };
-        }
+            if (!response.ok) {
+              if (response.status === 404) {
+                coolDownLiveFeedEndpoint(url, 404);
+              }
+              return { ok: false, index, url, status: response.status };
+            }
 
         let payload = body;
         const contentType = response.headers.get("content-type") || "";
@@ -1907,8 +1929,12 @@ async function pollLiveFeed() {
             ? pickLatestEggFromFeed(payload)
             : null;
 
-        return { ok: true, index, url, status: response.status, payload, candidate };
-      })
+            return { ok: true, index, url, status: response.status, payload, candidate };
+          } catch (error) {
+            coolDownLiveFeedEndpoint(url);
+            throw error;
+          }
+        })
     );
 
     const successful = [];
