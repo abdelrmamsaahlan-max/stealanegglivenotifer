@@ -1,13 +1,16 @@
 {
   "name": "steal-an-egg-live-notifier",
-  "version": "1.0.1",
+  "version": "2.0.0",
   "private": true,
   "description": "Steal An Egg live spawn Discord notifier",
   "type": "module",
   "engines": { "node": ">=20" },
-  "scripts": { "start": "node src/index.js" },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test"
+  },
   "dependencies": {
-    "discord.js": "^14.24.2",
+    "discord.js": "14.26.2",
     "dotenv": "^17.2.2",
     "express": "^5.1.0"
   }
