@@ -1,6 +1,6 @@
 {
   "schemaVersion": 3,
-  "purpose": "Curated egg-image source map. The notifier matches EggWatch's exact spawned egg name, then extracts the egg image from the mapped source page. Pet images/banners are never used as fallbacks.",
+  "purpose": "Exact egg-image source map. EggWatch supplies the live spawned name/rarity/area; the notifier canonicalizes the egg name, opens the mapped pet page, and extracts only an image explicitly labeled for the matched Egg. Site banners/OG/hero images are rejected.",
   "rarities": [
     "Secret",
     "Eternal",
@@ -16,7 +16,7 @@
         "Secret Gargoyle Egg",
         "Gargoyle"
       ],
-      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/gargoyle-egg/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/gargoyle/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -29,7 +29,7 @@
         "Secret King Snake Egg",
         "King Snake"
       ],
-      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/king-snake-egg/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/king-snake/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -42,7 +42,7 @@
         "Secret Yeti Egg",
         "Yeti"
       ],
-      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/yeti-egg/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/yeti/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -55,7 +55,7 @@
         "Secret Cerberus Egg",
         "Cerberus"
       ],
-      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/cerberus-egg/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/cerberus/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -68,7 +68,7 @@
         "Secret Kraken Egg",
         "Kraken"
       ],
-      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/kraken-egg/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/kraken/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -82,7 +82,7 @@
         "T-Rex",
         "Trex Egg"
       ],
-      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/t-rex-egg/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/t-rex/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -95,7 +95,7 @@
         "Secret Tralaledon Egg",
         "Tralaledon"
       ],
-      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/tralaledon-egg/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/tralaledon/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -108,7 +108,7 @@
         "Secret Cosmic Dragon Egg",
         "Cosmic Dragon"
       ],
-      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/cosmic-dragon-egg/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/cosmic-dragon/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -121,7 +121,7 @@
         "Secret Cosmic Skeleton Boss Egg",
         "Cosmic Skeleton Boss"
       ],
-      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/cosmic-skeleton-boss-egg/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/cosmic-skeleton-boss/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -134,7 +134,7 @@
         "Secret Stag Egg",
         "Stag"
       ],
-      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/stag-egg/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/stag/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -147,7 +147,7 @@
         "Secret Mutant Shark Egg",
         "Mutant Shark"
       ],
-      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/mutant-shark-egg/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/mutant-shark/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -160,7 +160,7 @@
         "Secret Bomboclat Crocolat Egg",
         "Bomboclat Crocolat"
       ],
-      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/bomboclat-crocolat-egg/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/bomboclat-crocolat/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -173,7 +173,7 @@
         "Secret Abyss Overlord Egg",
         "Abyss Overlord"
       ],
-      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/abyss-overlord-egg/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/abyss-overlord/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -186,7 +186,7 @@
         "Secret Wendigo Egg",
         "Wendigo"
       ],
-      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/wendigo-egg/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/wendigo/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -199,7 +199,7 @@
         "Secret Mawbreaker Egg",
         "Mawbreaker"
       ],
-      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/mawbreaker-egg/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/mawbreaker/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -212,7 +212,7 @@
         "Secret Shardwing Egg",
         "Shardwing"
       ],
-      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/shardwing-egg/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/shardwing/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -238,7 +238,7 @@
         "Eternal Phoenix Egg",
         "Phoenix"
       ],
-      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/phoenix-egg/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/phoenix/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -251,7 +251,7 @@
         "Eternal Lava Dragon Egg",
         "Lava Dragon"
       ],
-      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/lava-dragon-egg/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/lava-dragon/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -264,7 +264,7 @@
         "Eternal El Maja Egg",
         "El Maja"
       ],
-      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/el-maja-egg/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/el-maja/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -277,7 +277,7 @@
         "Eternal Mosasaurus Egg",
         "Mosasaurus"
       ],
-      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/mosasaurus-egg/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/mosasaurus/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -291,7 +291,7 @@
         "Eternal Lunar Dragon",
         "Lunar Dragon Egg"
       ],
-      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/eternal-lunar-dragon-egg/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/eternal-lunar-dragon/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -304,7 +304,7 @@
         "Eternal Oni Tiger Egg",
         "Oni Tiger"
       ],
-      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/oni-tiger-egg/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/oni-tiger/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -317,7 +317,7 @@
         "Eternal Gorilla King Egg",
         "Gorilla King"
       ],
-      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/gorilla-king-egg/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/gorilla-king/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -330,7 +330,7 @@
         "Eternal Strawberry Elephant Egg",
         "Strawberry Elephant"
       ],
-      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/strawberry-elephant-egg/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/strawberry-elephant/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -343,7 +343,7 @@
         "Eternal Void Dragon Egg",
         "Void Dragon"
       ],
-      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/void-dragon-egg/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/void-dragon/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -356,7 +356,7 @@
         "Eternal Void Serpent Egg",
         "Void Serpent"
       ],
-      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/void-serpent-egg/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/void-serpent/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -369,7 +369,7 @@
         "Eternal World Eater Egg",
         "World Eater"
       ],
-      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/world-eater-egg/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/world-eater/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -382,7 +382,7 @@
         "Eternal Shattered Drake Egg",
         "Shattered Drake"
       ],
-      "sourcePage": "https://steal-an-egg-roblox.wiki/eggs/shattered-drake-egg/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/shattered-drake/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -395,7 +395,7 @@
         "Divine Unicorn Egg",
         "Unicorn"
       ],
-      "sourcePage": "https://stealaneggwiki.net/secret-divine-eggs",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/unicorn/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -408,7 +408,7 @@
         "Divine Kitsune Egg",
         "Kitsune"
       ],
-      "sourcePage": "https://stealaneggwiki.net/secret-divine-eggs",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/kitsune/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -421,7 +421,7 @@
         "Divine Nightflame Egg",
         "Nightflame"
       ],
-      "sourcePage": "https://stealaneggwiki.net/secret-divine-eggs",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/nightflame/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -434,7 +434,7 @@
         "Divine Shattered Colossus Egg",
         "Shattered Colossus"
       ],
-      "sourcePage": "https://stealanegghub.com/steal-an-egg-secret-pets",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/shattered-colossus/",
       "active": true,
       "lastVerified": "2026-09-26"
     }
