@@ -79,8 +79,21 @@ function fieldValue(fields, names) {
   return "";
 }
 
+function decodeUrl(value) {
+  return String(value || "")
+    .replace(/\\+&/g, "&")
+    .replace(/&amp;/gi, "&")
+    .replace(/[\"')]+$/g, "");
+}
+
 function extractRobloxJoinUrl(data) {
-  const urls = Array.isArray(data?.linkUrls) ? data.linkUrls : [];
+  const urls = [
+    ...(Array.isArray(data?.linkUrls) ? data.linkUrls : []),
+    ...([...String(data?.text || "").matchAll(
+      /https?:\/\/(?:www\.)?roblox\.com\/games\/start[^\s<>\")]+/gi
+    )].map(match => decodeUrl(match[0])))
+  ];
+
   return urls.find(url => /roblox\.com\/games\/start/i.test(url)) ||
     urls.find(url => /roblox\.com\/games\//i.test(url)) ||
     null;
@@ -214,11 +227,11 @@ export function buildRiftAlertEmbed(event) {
     : null;
 
   const changed = event?.changedLabel ||
-    "<t:" + changedUnix + ":R> • <t:" + changedUnix + ":t>";
+    "<t:" + changedUnix + ":t> (<t:" + changedUnix + ":R>)";
 
   const next = event?.nextChangeLabel ||
     (nextUnix
-      ? "<t:" + nextUnix + ":R> • <t:" + nextUnix + ":t>"
+      ? "<t:" + nextUnix + ":t> (<t:" + nextUnix + ":R>)"
       : "Not provided");
 
   const pets = event?.possiblePets?.length
@@ -227,36 +240,40 @@ export function buildRiftAlertEmbed(event) {
 
   const description = data
     ? "🟣 **" + event.bannerName + " is Active!**\n\n" +
-      "**Changed:** " + changed +
-      "\n**Next Change:** " + next
+      "⏱️ **Changed:** " + changed +
+      "    •    ⏭️ **Next Change:** " + next +
+      (event?.joinUrl
+        ? "\n🎮 **Join Game:** [Click Here](" + event.joinUrl + ")"
+        : "")
     : "🌀 **Abyss Overlord is Active!**\n\n" +
-      "**Next Boss:** " + (event.nextChangeLabel || "Not provided");
+      (event?.joinUrl
+        ? "🎮 **Join Game:** [Click Here](" + event.joinUrl + ")"
+        : "") +
+      "\n\n⏭️ **Next Boss:** " + (event?.nextChangeLabel || "Not provided");
 
   const embed = new EmbedBuilder()
     .setColor(0x8b5cf6)
-    .setTitle("・RIFT EVENT")
+    .setTitle("「・RIFT EVENT」")
     .setDescription(description)
     .setTimestamp(new Date(event?.createdTimestamp || Date.now()))
-    .setFooter({ text: "Steal An Egg • Rift Tracker" });
+    .setFooter({ text: "SenZ V2 | Steal An Egg Rift Tracker" });
 
   if (data && event?.rotationChance) {
     embed.addFields({
-      name: "🎲 Rotation Chance",
-      value: String(event.rotationChance).slice(0, 100),
-      inline: true
+      name: "🐾 Possible Pets",
+      value: pets.slice(0, 5).map(petLine).join("\n"),
+      inline: false
+    });
+  } else if (!data) {
+    embed.addFields({
+      name: "⚔️ Rift Boss",
+      value: "**Abyss Overlord** spawned and the boss fight is active.",
+      inline: false
     });
   }
 
-  embed.addFields({
-    name: data ? "🐾 Possible Pets" : "⚔️ Rift Boss",
-    value: data
-      ? pets.slice(0, 5).map(petLine).join("\n")
-      : "**Abyss Overlord** spawned and the boss fight is active.",
-    inline: false
-  });
-
   if (event?.imageUrl) {
-    embed.setThumbnail(event.imageUrl);
+    embed.setImage(event.imageUrl);
   }
 
   return embed;
