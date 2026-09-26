@@ -73,6 +73,21 @@ test("extracts rare pets from current table-style discovery rows", () => {
   );
 });
 
+test("rejects update/version headings as discovered pets", () => {
+  const html = `
+    Update 1 · September 1, 2026 | Divine | Titan Temple | details
+    Version 2 · September 2, 2026 | Divine | Titan Temple | details
+    Nightflame | Divine | Titan Temple | $3B/s
+  `;
+
+  const eggs = extractSupportedEggsFromDiscovery(html);
+
+  assert.deepEqual(
+    eggs.map(item => item.eggName),
+    ["Nightflame Egg"]
+  );
+});
+
 test("extracts rare pets from pipe-delimited rendered rows", () => {
   const html = `
     Image: CerberusCerberus | Secret | Volcano | $8M/s | calc
