@@ -2833,6 +2833,13 @@ async function getPetPngBuffer(petName) {
       contentType.includes("svg") ||
       contentType.includes("gif")
     ) {
+      console.warn(
+        "Pet image download rejected:",
+        entry.petName,
+        "status=" + response.status,
+        "contentType=" + (contentType || "missing"),
+        "source=" + sourceUrl
+      );
       return null;
     }
 
