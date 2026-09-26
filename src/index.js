@@ -3519,7 +3519,10 @@ async function pollLiveFeed() {
           a.index - b.index
         );
       })
-      .filter(item =>\n        !liveFeedEndpointCoolingDown(item.url) &&\n        liveFeedEndpointHealth.get(item.index + 1)?.status !== "DISABLED"\n      );
+      .filter(item =>
+        !liveFeedEndpointCoolingDown(item.url) &&
+        liveFeedEndpointHealth.get(item.index + 1)?.status !== "DISABLED"
+      );
 
     const results = await Promise.allSettled(
       orderedLiveFeedTargets
