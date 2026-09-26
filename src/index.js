@@ -676,6 +676,7 @@ const petPageCache = new Map();
 const petPngBufferCache = new Map();
 const petStatsCache = new Map();
 const IMAGE_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const IMAGE_NEGATIVE_CACHE_TTL_MS = 5 * 60 * 1000;
 const PET_PAGE_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const PET_PNG_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const MAX_REMOTE_IMAGE_BYTES = 6 * 1024 * 1024;
@@ -815,8 +816,10 @@ async function resolvePetImageSource(petName) {
 
   const key = normalizeFeedKey(entry.petName);
   const cached = imageFallbackCache.get("pet:" + key);
-  if (cached && Date.now() - cached.at < IMAGE_CACHE_TTL_MS) {
-    return cached.url;
+  if (cached) {
+    const ttl = cached.url ? IMAGE_CACHE_TTL_MS : IMAGE_NEGATIVE_CACHE_TTL_MS;
+    if (Date.now() - cached.at < ttl) return cached.url;
+    imageFallbackCache.delete("pet:" + key);
   }
 
   const page = await fetchPetPage(entry.petName);
@@ -924,6 +927,216 @@ async function imageHasTransparentPixels(input) {
   return false;
 }
 
+function colorDistance(r1, g1, b1, r2, g2, b2) {
+  const dr = r1 - r2;
+  const dg = g1 - g2;
+  const db = b1 - b2;
+  return Math.sqrt(dr * dr + dg * dg + db * db);
+}
+
+function nearestCornerColor(data, info, x, y) {
+  const { width, channels } = info;
+  const offset = (y * width + x) * channels;
+  return [data[offset], data[offset + 1], data[offset + 2]];
+}
+
+function medianColor(colors) {
+  const channels = [0, 1, 2].map(index =>
+    colors.map(color => color[index]).sort((a, b) => a - b)
+  );
+  const mid = Math.floor(channels[0].length / 2);
+
+  return [
+    channels[0][mid],
+    channels[1][mid],
+    channels[2][mid]
+  ];
+}
+
+async function removeSimpleBackground(input) {
+  try {
+    const prepared = await sharp(input, { failOn: "none" })
+      .resize({
+        width: 768,
+        height: 768,
+        fit: "inside",
+        withoutEnlargement: true
+      })
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+
+    const { data, info } = prepared;
+    const { width, height, channels } = info;
+
+    if (!width || !height || width * height > 600000) return null;
+
+    const samplePoints = [
+      [0, 0],
+      [Math.max(0, width - 1), 0],
+      [0, Math.max(0, height - 1)],
+      [Math.max(0, width - 1), Math.max(0, height - 1)],
+      [Math.floor(width / 2), 0],
+      [Math.floor(width / 2), Math.max(0, height - 1)],
+      [0, Math.floor(height / 2)],
+      [Math.max(0, width - 1), Math.floor(height / 2)]
+    ];
+
+    const background = medianColor(
+      samplePoints.map(([x, y]) => nearestCornerColor(data, info, x, y))
+    );
+
+    const visited = new Uint8Array(width * height);
+    const queue = new Int32Array(width * height);
+    let head = 0;
+    let tail = 0;
+
+    const maxDistance = 58;
+    const pixelsToCheck = [];
+
+    function trySeed(x, y) {
+      if (x < 0 || x >= width || y < 0 || y >= height) return;
+      const index = y * width + x;
+      if (visited[index]) return;
+
+      const offset = index * channels;
+      if (data[offset + 3] === 0) {
+        visited[index] = 1;
+        return;
+      }
+
+      const distance = colorDistance(
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        background[0],
+        background[1],
+        background[2]
+      );
+
+      if (distance <= maxDistance) {
+        visited[index] = 1;
+        queue[tail++] = index;
+      }
+    }
+
+    for (let x = 0; x < width; x++) {
+      trySeed(x, 0);
+      trySeed(x, height - 1);
+    }
+    for (let y = 1; y < height - 1; y++) {
+      trySeed(0, y);
+      trySeed(width - 1, y);
+    }
+
+    while (head < tail) {
+      const index = queue[head++];
+      pixelsToCheck.push(index);
+
+      const x = index % width;
+      const y = Math.floor(index / width);
+      trySeed(x - 1, y);
+      trySeed(x + 1, y);
+      trySeed(x, y - 1);
+      trySeed(x, y + 1);
+    }
+
+    if (pixelsToCheck.length < Math.max(100, Math.floor(width * height * 0.01))) {
+      return null;
+    }
+
+    for (const index of pixelsToCheck) {
+      data[index * channels + 3] = 0;
+    }
+
+    const output = await sharp(data, {
+      raw: {
+        width,
+        height,
+        channels
+      }
+    })
+      .trim()
+      .png({ compressionLevel: 9 })
+      .toBuffer();
+
+    return await imageHasTransparentPixels(output) ? output : null;
+  } catch (error) {
+    console.warn("Simple background removal failed:", error?.message || error);
+    return null;
+  }
+}
+
+async function getPetPngBuffer(petName) {
+  const entry = findCatalogPet(petName);
+  if (!entry) return null;
+
+  const key = normalizeFeedKey(entry.petName);
+  const cached = petPngBufferCache.get(key);
+  if (cached && Date.now() - cached.at < PET_PNG_CACHE_TTL_MS) {
+    return cached.buffer;
+  }
+
+  const sourceUrl = await resolvePetImageSource(entry.petName);
+  if (!sourceUrl) return null;
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), LIVE_FEED_TIMEOUT_MS);
+
+    const response = await fetch(sourceUrl, {
+      headers: {
+        "accept": "image/avif,image/webp,image/png,image/*;q=0.9,*/*;q=0.8",
+        "user-agent": "FSMM-SAB-Live-Notifier/5.0"
+      },
+      signal: controller.signal
+    });
+
+    clearTimeout(timeout);
+
+    if (!response.ok) return null;
+
+    const contentLength = Number(response.headers.get("content-length") || 0);
+    if (contentLength && contentLength > MAX_REMOTE_IMAGE_BYTES) return null;
+
+    const input = Buffer.from(await response.arrayBuffer());
+    if (input.length > MAX_REMOTE_IMAGE_BYTES) return null;
+
+    let pngBuffer = null;
+    const alreadyTransparent = await imageHasTransparentPixels(input);
+
+    if (!alreadyTransparent) {
+      pngBuffer = await removeSimpleBackground(input);
+
+      if (pngBuffer) {
+        console.log("Character cutout created:", entry.petName);
+      } else {
+        console.warn(
+          "Background could not be fully removed; keeping normalized PNG:",
+          entry.petName
+        );
+      }
+    }
+
+    if (!pngBuffer) {
+      pngBuffer = await sharp(input, { failOn: "none" })
+        .ensureAlpha()
+        .trim()
+        .png({ compressionLevel: 9 })
+        .toBuffer();
+    }
+
+    petPngBufferCache.set(key, { buffer: pngBuffer, at: Date.now() });
+    trimImageCaches();
+    return pngBuffer;
+  } catch (error) {
+    console.warn(
+      "Pet PNG processing failed for " + entry.petName + ":",
+      error?.message || error
+    );
+    return null;
+  }
+}
 async function getPetPngBuffer(petName) {
   const entry = findCatalogPet(petName);
   if (!entry) return null;
@@ -2242,15 +2455,20 @@ async function enrichAlertEvent(event) {
       (PUBLIC_BASE_URL ? publicPetImageUrl(entry.petName) : null);
   }
 
-  // Cache misses are processed completely in the background.
+  // First-time images are awaited so the alert is not sent without a picture.
   if (!cachedPng) {
-    getPetPngBuffer(entry.petName)
-      .then(buffer => {
-        if (buffer) {
-          console.log("Transparent PNG ready:", entry.petName);
-        }
-      })
-      .catch(() => {});
+    try {
+      const buffer = await getPetPngBuffer(entry.petName);
+      if (buffer) {
+        event.imageBuffer = buffer;
+        console.log("Pet PNG ready before alert:", entry.petName);
+      }
+    } catch (error) {
+      console.warn(
+        "Pet image preparation failed before alert for " + entry.petName + ":",
+        error?.message || error
+      );
+    }
   }
 
   return event;
