@@ -1028,6 +1028,8 @@ let liveFeedPollInFlight = false;
 const liveFeedProcessedEvents = new Map();
 const LIVE_FEED_EVENT_DEDUP_MS =
   Math.max(60, Number(process.env.LIVE_FEED_EVENT_DEDUP_SECONDS || 900)) * 1000;
+const LIVE_FEED_EVENT_MERGE_MS = 20_000;
+const ALERT_SEMANTIC_DEDUP_BUCKET_MS = 20_000;
 
 let eggImageCatalog = [];
 try {
