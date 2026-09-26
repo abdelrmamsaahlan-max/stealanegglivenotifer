@@ -1712,7 +1712,7 @@ function feedStateLooksOffline(payload) {
   }
 }
 
-function parseLive sourceHtml(html) {
+function parseLiveFeedHtml(html) {
   const rawHtml = String(html || "");
   const text = rawHtml
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
@@ -1785,7 +1785,7 @@ async function fetchLiveFeed(url) {
   }
 }
 
-async function processAdditionalLive sourceCandidates(payload, primaryCandidate, url) {
+async function processAdditionalLiveCandidates(payload, primaryCandidate, url) {
   const all = collectEggCandidates(payload);
   const primaryTime = Date.parse(primaryCandidate.spawnedAt);
   if (!Number.isFinite(primaryTime)) return 0;
@@ -1857,7 +1857,7 @@ async function processAdditionalLive sourceCandidates(payload, primaryCandidate,
   return sent;
 }
 
-async function pollLive source() {
+async function pollLiveFeed() {
   if (!LIVE_FEED_ENABLED || !LIVE_FEED_URLS.length) return;
   if (liveFeedPollInFlight) return;
 
@@ -2033,7 +2033,7 @@ async function pollLive source() {
         await sendAlert(event, ageMs >= 0 ? ageMs : null);
         liveFeedEventsAccepted++;
 
-        const additionalSent = await processAdditionalLive sourceCandidates(
+        const additionalSent = await processAdditionalLiveCandidates(
           payload,
           candidate,
           url
@@ -2656,7 +2656,7 @@ function startAutoDiscovery() {
   }, AUTO_DISCOVERY_POLL_MS);
 }
 
-function startLive sourcePoller() {
+function startLiveFeedPoller() {
   if (!LIVE_FEED_ENABLED) {
     console.log("Live feed: disabled.");
     return;
@@ -2664,13 +2664,13 @@ function startLive sourcePoller() {
 
   console.log("Live feed enabled. Configured private endpoints:", LIVE_FEED_URLS.length);
 
-  pollLive source().catch(error => {
+  pollLiveFeed().catch(error => {
     liveFeedErrors++;
     console.error("Initial Live source poll failed:", error);
   });
 
   setInterval(() => {
-    pollLive source().catch(error => {
+    pollLiveFeed().catch(error => {
       liveFeedErrors++;
       console.error("Live source poll cycle failed:", error);
     });
@@ -4428,7 +4428,7 @@ setInterval(() => {
   cleanupCaches();
 }, 60_000);
 
-startLive sourcePoller();
+startLiveFeedPoller();
 startAutoDiscovery();
 
 setInterval(() => {
