@@ -1306,7 +1306,7 @@ function isTrustedPetImageUrl(value) {
       /\/images\/pets\//.test(pathName) ||
       (host === "stealanegg-wiki.com" &&
         pathName.startsWith("/images/optimized/"));
-    const imageExtension = /\.(?:png|webp|jpe?g)(?:$)/.test(pathName);
+    const imageExtension = /\.png(?:$)/.test(pathName);
     const blockedPath = /(?:\/og\/|\/hero\/|\/banner\/|\/logo\/|\/favicon|sprite)/i.test(pathName);
 
     return trustedHost && petPath && imageExtension && !blockedPath;
@@ -1345,11 +1345,9 @@ async function resolvePetImageSource(petName) {
   }
 
   for (const base of directArtBases) {
-    for (const extension of [".webp", ".png", ".jpg", ".jpeg"]) {
-      directArtUrls.push(
-        base + encodeURIComponent(slug) + extension
-      );
-    }
+    directArtUrls.push(
+      base + encodeURIComponent(slug) + ".png"
+    );
   }
 
   for (const url of directArtUrls) {
@@ -1584,7 +1582,12 @@ async function getPetPngBuffer(petName) {
     return cached.buffer;
   }
 
-  const sourceUrl = await resolvePetImageSource(entry.petName);
+  const sourceUrl =
+    await resolvePetImageSource(entry.petName) ||
+    ({
+      nightflame: "https://stealanegg-wiki.com/images/optimized/e99d6b41b772cf59-500.webp"
+    }[key] || null);
+
   if (!sourceUrl) return null;
 
   const controller = new AbortController();
@@ -1627,6 +1630,30 @@ async function getPetPngBuffer(petName) {
       pngBuffer = await sharp(input, { failOn: "none" })
         .ensureAlpha()
         .trim()
+        .resize({
+          width: 1024,
+          height: 1024,
+          fit: "contain",
+          withoutEnlargement: false,
+          kernel: sharp.kernel.lanczos3,
+          background: { r: 0, g: 0, b: 0, alpha: 0 }
+        })
+        .png({
+          compressionLevel: 9,
+          adaptiveFiltering: true
+        })
+        .toBuffer();
+    } else {
+      pngBuffer = await sharp(pngBuffer, { failOn: "none" })
+        .ensureAlpha()
+        .resize({
+          width: 1024,
+          height: 1024,
+          fit: "contain",
+          withoutEnlargement: false,
+          kernel: sharp.kernel.lanczos3,
+          background: { r: 0, g: 0, b: 0, alpha: 0 }
+        })
         .png({
           compressionLevel: 9,
           adaptiveFiltering: true
