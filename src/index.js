@@ -6183,7 +6183,7 @@ async function enrichAlertEvent(event, entryOverride = null) {
 }
 
 async function runAlertPipelineSelfTest() {
-  if (!ALERT_PIPELINE_SELF_TEST_ONCE || alertPipelineSelfTestAt || alertPipelineSelfTestInFlight) {
+  if (!ALERT_PIPELINE_SELF_TEST_ONCE || alertPipelineSelfTestInFlight) {
     return alertPipelineSelfTestResult;
   }
 
@@ -6193,6 +6193,7 @@ async function runAlertPipelineSelfTest() {
 
   try {
     const entry =
+      findCatalogEgg("Gargoyle") ||
       findCatalogEgg("King Snake") ||
       eggImageCatalog.find(item => isPetImageEligibleEntry(item));
 
