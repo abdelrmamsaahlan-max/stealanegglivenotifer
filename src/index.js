@@ -221,14 +221,14 @@ const RIFT_BOSS_ALERTS_ENABLED =
   (process.env.RIFT_BOSS_ALERTS_ENABLED || "true").toLowerCase() === "true";
 
 const RIFT_SOURCE_CHANNEL_IDS = new Set(
-  (process.env.RIFT_SOURCE_CHANNEL_IDS || "")
+  (process.env.RIFT_SOURCE_CHANNEL_IDS || process.env.DISCORD_SOURCE_CHANNEL_IDS || "")
     .split(",")
     .map(value => value.trim())
     .filter(Boolean)
 );
 
 const RIFT_SOURCE_BOT_IDS = new Set(
-  (process.env.RIFT_SOURCE_BOT_IDS || "")
+  (process.env.RIFT_SOURCE_BOT_IDS || process.env.DISCORD_SOURCE_BOT_IDS || "")
     .split(",")
     .map(value => value.trim())
     .filter(Boolean)
@@ -277,6 +277,7 @@ const MAX_RIFT_HISTORY = 30;
 let riftState = {
   currentBannerKey: null,
   currentBannerName: null,
+  rotationChance: null,
   changedLabel: null,
   nextChangeLabel: null,
   lastChangedAt: null,
@@ -3530,7 +3531,6 @@ async function processSpawnMessage(message) {
         console.warn("Rift alert failed:", error?.message || error);
       }
 
-      return;
     }
   }
 
@@ -3682,6 +3682,9 @@ app.get("/health", (_req, res) => {
     memorySoftLimitMb: MEMORY_SOFT_LIMIT_MB,
     memoryHardLimitMb: MEMORY_HARD_LIMIT_MB,
     statePersistence: true,
+    lastSeenMessagesReady,
+    customEggEmojisReady: eggCustomEmojiSetupState.ready,
+    customEggEmojiCount: eggCustomEmojiCache.size,
     cachedPetImages: [...imageFallbackCache.keys()].filter(key => key.startsWith("pet:") && imageFallbackCache.get(key)?.url).length
   });
 });
@@ -4050,7 +4053,8 @@ client.on("interactionCreate", async interaction => {
         "🟣 **Current Rift — " + (riftState.currentBannerName || data?.name || "Unknown") + "**",
         "🕒 Changed: " + (riftState.changedLabel || "Unknown"),
         "⏭️ Next Change: " + (riftState.nextChangeLabel || "Unknown"),
-        "🎲 Rotation Chance: " + (data?.rotationChance || "Unknown"),
+        "🎲 Rotation Chance: " +
+          (riftState.rotationChance || data?.rotationChance || "Unknown"),
         "",
         "🐾 **Possible Pets**",
         ...pets.map(pet =>
@@ -4091,6 +4095,7 @@ client.on("interactionCreate", async interaction => {
         bannerKey: requested,
         bannerName: data.name,
         eggName: data.eggName,
+        rotationChance: data.rotationChance,
         rotationChance: data.rotationChance,
         changedLabel: "Test alert",
         nextChangeLabel: "Test schedule",
@@ -4174,8 +4179,11 @@ client.on("interactionCreate", async interaction => {
         await validateAlertRoles();
       }
 
-      if (LAST_SEEN_CHANNEL_ID) {
+      if (CHANNEL_ID || LAST_SEEN_CHANNEL_ID) {
         await ensureEggCustomEmojis();
+      }
+
+      if (LAST_SEEN_CHANNEL_ID) {
         await ensureLastSeenMessages();
       }
 
