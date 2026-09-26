@@ -2205,9 +2205,12 @@ function updateDiscoverySourceHealth(source, patch = {}) {
 
 function discoverySummary() {
   return [...autoDiscoverySourceHealth.values()].map(item => ({
+    key: item.key,
     name: item.name,
+    url: item.url,
     status: item.status,
     checkedAt: item.checkedAt,
+    httpStatus: item.httpStatus,
     updateFound: item.updateFound,
     eggCount: item.eggCount,
     eventCount: item.eventCount,
@@ -2514,7 +2517,9 @@ async function runAutoDiscoverySweep() {
             title: bestUpdate.title,
             description: bestUpdate.description,
             source: bestUpdate.source,
-            url: bestUpdate.url || null
+            url: bestUpdate.url || null,
+            evidenceConfidence: bestUpdate.evidenceConfidence,
+            evidenceSourceCount: bestUpdate.evidenceSourceCount
           },
           newlyAdded
         );
