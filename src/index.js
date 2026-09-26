@@ -149,6 +149,17 @@ const AUTO_DISCOVERY_POLL_MS =
 const EVENT_ALERTS_ENABLED =
   (process.env.EVENT_ALERTS_ENABLED || "true").toLowerCase() === "true";
 
+const MEMORY_SOFT_LIMIT_MB =
+  Math.max(128, Number(process.env.MEMORY_SOFT_LIMIT_MB || 350));
+
+const MEMORY_HARD_LIMIT_MB =
+  Math.max(MEMORY_SOFT_LIMIT_MB + 50, Number(process.env.MEMORY_HARD_LIMIT_MB || 450));
+
+const STATE_FILE = path.resolve(
+  process.cwd(),
+  "data/runtime-state.json"
+);
+
 const AUTO_DISCOVERY_URLS = [
   "https://robloxstealanegg.wiki/",
   "https://eggwatcher.com/guides/how-the-live-feed-works"
@@ -165,6 +176,73 @@ const spawnHistory = [];
 const gameEventHistory = [];
 const MAX_HISTORY = 100;
 const MAX_EVENT_HISTORY = 30;
+
+function loadRuntimeState() {
+  try {
+    if (!fs.existsSync(STATE_FILE)) return;
+
+    const state = JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
+
+    if (Array.isArray(state.spawnHistory)) {
+      spawnHistory.push(...state.spawnHistory.slice(0, MAX_HISTORY));
+    }
+
+    if (Array.isArray(state.gameEventHistory)) {
+      gameEventHistory.push(...state.gameEventHistory.slice(0, MAX_EVENT_HISTORY));
+    }
+
+    if (typeof state.lastUpdateFingerprint === "string") {
+      lastUpdateFingerprint = state.lastUpdateFingerprint;
+    }
+
+    if (typeof state.lastUpdateTitle === "string") {
+      lastUpdateTitle = state.lastUpdateTitle;
+    }
+
+    console.log(
+      "Runtime state restored:",
+      "spawns=" + spawnHistory.length,
+      "events=" + gameEventHistory.length
+    );
+  } catch (error) {
+    console.warn("Runtime state restore failed:", error?.message || error);
+  }
+}
+
+let stateSaveTimer = null;
+
+function saveRuntimeState() {
+  try {
+    const stateDir = path.dirname(STATE_FILE);
+    fs.mkdirSync(stateDir, { recursive: true });
+
+    const payload = {
+      version: 1,
+      savedAt: new Date().toISOString(),
+      lastUpdateFingerprint,
+      lastUpdateTitle,
+      spawnHistory: spawnHistory.slice(0, MAX_HISTORY),
+      gameEventHistory: gameEventHistory.slice(0, MAX_EVENT_HISTORY)
+    };
+
+    const tempFile = STATE_FILE + ".tmp";
+    fs.writeFileSync(tempFile, JSON.stringify(payload), "utf8");
+    fs.renameSync(tempFile, STATE_FILE);
+  } catch (error) {
+    console.warn("Runtime state save failed:", error?.message || error);
+  }
+}
+
+function scheduleStateSave() {
+  if (stateSaveTimer) clearTimeout(stateSaveTimer);
+
+  stateSaveTimer = setTimeout(() => {
+    stateSaveTimer = null;
+    saveRuntimeState();
+  }, 1500);
+}
+
+loadRuntimeState();
 
 function normalizePublicBaseUrl(value) {
   const raw = String(value || "").trim();
@@ -461,6 +539,7 @@ const IMAGE_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const PET_PAGE_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const PET_PNG_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const MAX_REMOTE_IMAGE_BYTES = 6 * 1024 * 1024;
+const MAX_REMOTE_TEXT_BYTES = 2 * 1024 * 1024;
 
 
 
@@ -769,7 +848,7 @@ async function warmPetImageCache(options = {}) {
   if (imageWarmupInFlight) return;
   imageWarmupInFlight = true;
 
-  const maxWorkers = Math.max(1, Number(options.workers || 2));
+  const maxWorkers = Math.max(1, Number(options.workers || 1));
   const entries = eggImageCatalog.filter(entry => entry?.active !== false);
   let warmed = 0;
   let cursor = 0;
@@ -816,10 +895,10 @@ async function warmPetImageCache(options = {}) {
 
 function scheduleImageWarmup() {
   setTimeout(() => {
-    warmPetImageCache({ workers: 2 }).catch(error => {
+    warmPetImageCache({ workers: 1 }).catch(error => {
       console.error("Background image warm-up failed:", error);
     });
-  }, 1000);
+  }, 1500);
 }
 
 app.get("/cdn/pets/:pet.png", async (req, res) => {
@@ -1021,7 +1100,18 @@ async function fetchLiveFeed(url) {
       signal: controller.signal
     });
 
+    const contentLength = Number(response.headers.get("content-length") || 0);
+
+    if (contentLength && contentLength > MAX_REMOTE_TEXT_BYTES) {
+      throw new Error("remote_payload_too_large");
+    }
+
     const body = await response.text();
+
+    if (Buffer.byteLength(body, "utf8") > MAX_REMOTE_TEXT_BYTES) {
+      throw new Error("remote_payload_too_large");
+    }
+
     return { response, body };
   } finally {
     clearTimeout(timeout);
@@ -1378,6 +1468,7 @@ function recordSpawnHistory(event, source = "EggWatch Global Feed") {
 
   spawnHistory.unshift(record);
   if (spawnHistory.length > MAX_HISTORY) spawnHistory.length = MAX_HISTORY;
+  scheduleStateSave();
   return record;
 }
 
@@ -1406,6 +1497,7 @@ function recordGameEvent(event) {
     gameEventHistory.length = MAX_EVENT_HISTORY;
   }
 
+  scheduleStateSave();
   return record;
 }
 
@@ -2249,6 +2341,10 @@ app.get("/health", (_req, res) => {
     lastUpdateTitle,
     spawnHistoryCount: spawnHistory.length,
     gameEventHistoryCount: gameEventHistory.length,
+    memoryRssMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+    memorySoftLimitMb: MEMORY_SOFT_LIMIT_MB,
+    memoryHardLimitMb: MEMORY_HARD_LIMIT_MB,
+    statePersistence: true,
     cachedPetImages: [...imageFallbackCache.keys()].filter(key => key.startsWith("pet:") && imageFallbackCache.get(key)?.url).length
   });
 });
@@ -2305,6 +2401,9 @@ client.once("clientReady", async () => {
   console.log("Alert mention mode:", ALERT_MENTION_MODE);
   console.log("Semantic dedup window:", SEMANTIC_DEDUP_WINDOW_MS / 1000 + "s");
   console.log("Source stale threshold:", SOURCE_STALE_AFTER_MS / 1000 + "s");
+  console.log("Memory guard:", MEMORY_SOFT_LIMIT_MB + "MB soft / " + MEMORY_HARD_LIMIT_MB + "MB hard");
+  console.log("Auto discovery:", AUTO_DISCOVERY_ENABLED ? "enabled" : "disabled");
+  console.log("Event alerts:", EVENT_ALERTS_ENABLED ? "enabled" : "disabled");
 
   if (CHANNEL_ID) {
     try {
@@ -2327,13 +2426,13 @@ client.once("clientReady", async () => {
         { body: COMMANDS }
       );
       console.log("Slash commands registered in development guild.");
-    } else {
-      await rest.put(
-        Routes.applicationCommands(client.user.id),
-        { body: COMMANDS }
-      );
-      console.log("Slash commands registered globally.");
     }
+
+    await rest.put(
+      Routes.applicationCommands(client.user.id),
+      { body: COMMANDS }
+    );
+    console.log("Slash commands registered globally.");
   } catch (error) {
     console.error("Slash command registration failed:", error);
   }
@@ -2345,6 +2444,35 @@ setInterval(() => {
 
 startEggWatchPoller();
 startAutoDiscovery();
+
+setInterval(() => {
+  const memoryMb = process.memoryUsage().rss / 1024 / 1024;
+
+  if (memoryMb > MEMORY_SOFT_LIMIT_MB) {
+    console.warn(
+      "Memory pressure detected:",
+      Math.round(memoryMb) + "MB",
+      "softLimit=" + MEMORY_SOFT_LIMIT_MB + "MB"
+    );
+
+    // Drop transient caches first; the catalog/history remain intact.
+    petPageCache.clear();
+    petStatsCache.clear();
+    imageFallbackCache.clear();
+  }
+
+  if (memoryMb > MEMORY_HARD_LIMIT_MB) {
+    console.error(
+      "Memory hard limit exceeded:",
+      Math.round(memoryMb) + "MB",
+      "hardLimit=" + MEMORY_HARD_LIMIT_MB + "MB",
+      "requesting Railway restart."
+    );
+
+    saveRuntimeState();
+    process.exit(1);
+  }
+}, 30_000);
 
 setInterval(() => {
   updateLiveFeedHealth();
@@ -2475,6 +2603,7 @@ client.on("interactionCreate", async interaction => {
       const uptimeSeconds = Math.floor(process.uptime());
       const hours = Math.floor(uptimeSeconds / 3600);
       const minutes = Math.floor((uptimeSeconds % 3600) / 60);
+      const days = Math.floor(uptimeSeconds / 86400);
 
       return await interaction.reply({
         content: [
@@ -2488,7 +2617,7 @@ client.on("interactionCreate", async interaction => {
           "📡 Source: " + sourceHealth(),
           "🌐 EggWatch: " + liveFeedHealth(),
           "🔄 Auto catalog: " + (AUTO_DISCOVERY_ENABLED ? "ON" : "OFF"),
-          "⏱️ Uptime: " + hours + "h " + minutes + "m",
+          "⏱️ Uptime: " + days + "d " + hours + "h " + minutes + "m",
           "💾 Cache: " + seen.size,
           "🧾 Spawn history: " + spawnHistory.length,
           "🎮 Game events: " + gameEventHistory.length
@@ -2571,12 +2700,14 @@ client.on("interactionCreate", async interaction => {
           Routes.applicationGuildCommands(client.user.id, DEV_GUILD_ID),
           { body: COMMANDS }
         );
-      } else {
-        await rest.put(
-          Routes.applicationCommands(client.user.id),
-          { body: COMMANDS }
-        );
       }
+
+      await rest.put(
+        Routes.applicationCommands(client.user.id),
+        { body: COMMANDS }
+      );
+
+      saveRuntimeState();
 
       return await interaction.editReply({
         content: "✅ Notifier caches refreshed and commands reloaded."
@@ -2694,16 +2825,31 @@ client.on("shardError", error => console.error("Discord shard error:", error));
 
 process.on("unhandledRejection", error => {
   monitorErrors++;
-  console.error("Unhandled rejection:", error);
+  console.error(
+    "Unhandled rejection after " + Math.floor(process.uptime()) + "s uptime:",
+    error
+  );
 });
 
 process.on("uncaughtException", error => {
   monitorErrors++;
   console.error("Uncaught exception:", error);
+  saveRuntimeState();
+  process.exit(1);
 });
 
 async function shutdown(signal) {
   console.log("Received " + signal + ", shutting down gracefully...");
+
+  try {
+    saveRuntimeState();
+  } catch {}
+
+  if (stateSaveTimer) {
+    clearTimeout(stateSaveTimer);
+    stateSaveTimer = null;
+  }
+
   client.destroy();
   process.exit(0);
 }
