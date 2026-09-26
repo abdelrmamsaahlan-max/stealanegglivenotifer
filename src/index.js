@@ -201,6 +201,9 @@ const COMMANDS = [
     .setName("ops-report")
     .setDescription("View reliability, alert latency, lifecycle, dead-letter, and source-conflict metrics."),
   new SlashCommandBuilder()
+    .setName("spawn-stats")
+    .setDescription("View recent tracked spawn statistics by rarity, area, and egg."),
+  new SlashCommandBuilder()
     .setName("alerts-pause")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .setDescription("Admin: pause public rare-egg alert delivery without stopping detection."),
@@ -7987,6 +7990,50 @@ client.on("interactionCreate", async interaction => {
 
       return await interaction.editReply({
         content: "**🩺 Notifier Doctor**\\n" + checks.join("\\n")
+      });
+    }
+
+    if (interaction.commandName === "spawn-stats") {
+      const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+      const recent = spawnHistory.filter(item => {
+        const ts = Date.parse(item?.spawnedAt || item?.detectedAt || "");
+        return Number.isFinite(ts) && ts >= cutoff;
+      });
+
+      const rarityCounts = { secret: 0, eternal: 0, divine: 0 };
+      const areaCounts = new Map();
+      const eggCounts = new Map();
+
+      for (const item of recent) {
+        const rarityKey = normalizeFeedKey(item?.rarity);
+        if (Object.prototype.hasOwnProperty.call(rarityCounts, rarityKey)) {
+          rarityCounts[rarityKey]++;
+        }
+
+        const area = String(item?.area || item?.biome || "Unknown").trim() || "Unknown";
+        areaCounts.set(area, (areaCounts.get(area) || 0) + 1);
+
+        const egg = String(item?.eggName || item?.displayName || "Unknown Egg").trim();
+        eggCounts.set(egg, (eggCounts.get(egg) || 0) + 1);
+      }
+
+      const top = map => [...map.entries()]
+        .sort((a,b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .slice(0, 5)
+        .map(([name,count]) => name + " (" + count + ")");
+
+      const ops = getOpsSummary();
+      return await interaction.reply({
+        content: [
+          "**📊 Spawn Statistics — Last 24h**",
+          "Tracked spawns: **" + recent.length + "**",
+          "Secret: **" + rarityCounts.secret + "** • Eternal: **" + rarityCounts.eternal + "** • Divine: **" + rarityCounts.divine + "**",
+          "Top areas: " + (top(areaCounts).join(", ") || "N/A"),
+          "Top eggs: " + (top(eggCounts).join(", ") || "N/A"),
+          "Alert latency: P50 **" + (ops.latency.p50Ms == null ? "N/A" : ops.latency.p50Ms + "ms") +
+            "** • P95 **" + (ops.latency.p95Ms == null ? "N/A" : ops.latency.p95Ms + "ms") + "**"
+        ].join("\n"),
+        flags: MessageFlags.Ephemeral
       });
     }
 
