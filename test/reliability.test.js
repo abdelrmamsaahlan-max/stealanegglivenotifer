@@ -29,17 +29,20 @@ test("multi-source evidence increases confidence without exceeding cap", () => {
     sourceKey: "discord-b",
     parser: "egg"
   });
+  const observedAt = new Date(Date.now() - 10 * 60_000).toISOString();
   const single = calculateEventConfidence({
     source: "Live Feed",
     sourceRank: 8,
+    parserConfidence: 0.75,
     evidence: one,
-    occurredAt: new Date().toISOString()
+    occurredAt: observedAt
   });
   const corroborated = calculateEventConfidence({
     source: "Live Feed",
     sourceRank: 8,
+    parserConfidence: 0.75,
     evidence: two,
-    occurredAt: new Date().toISOString()
+    occurredAt: observedAt
   });
 
   assert.ok(corroborated > single);
