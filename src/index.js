@@ -3,6 +3,7 @@ import express from "express";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import sharp from "sharp";
 import {
   Client,
   GatewayIntentBits,
@@ -38,7 +39,15 @@ const DEV_GUILD_ID = process.env.DISCORD_DEV_GUILD_ID || "";
 const COMMANDS = [
   new SlashCommandBuilder().setName("ping").setDescription("Check if the notifier is online."),
   new SlashCommandBuilder().setName("status").setDescription("Show live monitor and configuration status."),
-  new SlashCommandBuilder().setName("testegg").setDescription("Send a test egg alert to the configured alert channel."),
+  new SlashCommandBuilder()
+    .setName("testegg")
+    .setDescription("Send a real rare-egg alert test using the image/game data.")
+    .addStringOption(option =>
+      option
+        .setName("egg")
+        .setDescription("Egg/pet name to test. Defaults to Gargoyle.")
+        .setRequired(false)
+    ),
   new SlashCommandBuilder().setName("lastseen").setDescription("Show recently detected rare eggs."),
   new SlashCommandBuilder()
     .setName("testrole")
@@ -55,7 +64,16 @@ const COMMANDS = [
         )
     ),
   new SlashCommandBuilder().setName("stats").setDescription("Show notifier performance statistics."),
-  new SlashCommandBuilder().setName("reload").setDescription("Refresh notifier caches and Discord command registration.")
+  new SlashCommandBuilder()
+    .setName("imagecheck")
+    .setDescription("Preview the verified transparent character image for an egg.")
+    .addStringOption(option =>
+      option
+        .setName("egg")
+        .setDescription("Egg/pet name to inspect.")
+        .setRequired(true)
+    ),
+  new SlashCommandBuilder().setName("reload").setDescription("Refresh notifier caches, images and Discord command registration.")
 ].map(command => command.toJSON());
 
 const PORT = Number(process.env.PORT || 3000);
@@ -115,6 +133,27 @@ const LIVE_FEED_TIMEOUT_MS =
 
 const LIVE_FEED_MAX_AGE_MS =
   Math.max(60, Number(process.env.LIVE_FEED_MAX_AGE_SECONDS || 600)) * 1000;
+
+const LIVE_FEED_STALE_AFTER_MS =
+  Math.max(30, Number(process.env.LIVE_FEED_STALE_AFTER_SECONDS || 45)) * 1000;
+
+function normalizePublicBaseUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+
+  try {
+    const withProtocol = /^https?:\/\//i.test(raw) ? raw : "https://" + raw;
+    const url = new URL(withProtocol);
+    return url.origin.replace(/\/$/, "");
+  } catch {
+    return "";
+  }
+}
+
+const PUBLIC_BASE_URL = normalizePublicBaseUrl(
+  process.env.PUBLIC_BASE_URL ||
+  (process.env.RAILWAY_PUBLIC_DOMAIN ? "https://" + process.env.RAILWAY_PUBLIC_DOMAIN : "")
+);
 
 let eggImageCatalog = [];
 try {
@@ -231,6 +270,8 @@ let liveFeedEventsReceived = 0;
 let liveFeedEventsAccepted = 0;
 let liveFeedErrors = 0;
 let liveFeedPrimed = false;
+let liveFeedLastSuccessAt = null;
+let liveFeedHealthState = "WAITING";
 
 function parseTimestamp(value) {
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -327,85 +368,334 @@ function slugify(value) {
 }
 
 const imageFallbackCache = new Map();
-const IMAGE_CACHE_TTL_MS = 60 * 60 * 1000;
+const petPageCache = new Map();
+const petPngBufferCache = new Map();
+const petStatsCache = new Map();
+const IMAGE_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const PET_PAGE_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const PET_PNG_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const MAX_REMOTE_IMAGE_BYTES = 6 * 1024 * 1024;
 
 
 
-async function fetchExactEggImage(pageUrl, targetEggName) {
-  try {
-    const { response, body } = await fetchLiveFeed(pageUrl);
-    if (!response.ok) return null;
+function findCatalogPet(input) {
+  const wanted = normalizeFeedKey(input);
+  if (!wanted) return null;
 
-    const tags = body.match(/<img\b[^>]*>/gi) || [];
-    const candidates = tags.map(tag => {
-      const attrs = extractTagAttributes(tag);
-      const src = attrs.src || attrs["data-src"] || attrs["data-lazy-src"] || "";
-      const alt = attrs.alt || "";
-      const title = attrs.title || "";
-      const className = attrs.class || "";
-      const metadata = (alt + " " + title + " " + className + " " + src).toLowerCase();
-
-      let score = 0;
-      if (eggNameMatchesTarget(alt, targetEggName)) score += 120;
-      if (eggNameMatchesTarget(title, targetEggName)) score += 90;
-      if (metadata.includes(normalizeFeedKey(targetEggName))) score += 50;
-      if (/\begg\b/i.test(alt) || /\begg\b/i.test(title)) score += 20;
-
-      if (/\b(og|hero|banner|logo|site-header|favicon)\b/i.test(metadata)) score -= 200;
-      if (/\b(article|author|avatar|profile|icon|sprite)\b/i.test(metadata)) score -= 100;
-
-      return {
-        src: absolutizeUrl(src, pageUrl),
-        score
-      };
-    })
-      .filter(item => item.src && item.score >= 70)
-      .sort((a, b) => b.score - a.score);
-
-    return candidates[0]?.src || null;
-  } catch {
-    return null;
-  }
+  return eggImageCatalog.find(entry => {
+    const petName = entry?.petName;
+    return petName && normalizeFeedKey(petName) === wanted;
+  }) || null;
 }
 
-async function resolveImageUrl(eggName, providedUrl = null) {
-  // Do not use generic website banners or Open Graph images.
-  const direct = normalizeImageUrl(providedUrl);
-  if (direct && /\.(?:png|jpe?g|gif|webp)(?:\?|$)/i.test(direct)) return direct;
+function petSlugForEntry(entry) {
+  return slugify(entry?.petName || "").replace(/-egg$/i, "");
+}
 
-  const key = normalizeFeedKey(eggName);
-  if (!key) return null;
+async function fetchPetPage(petName) {
+  const entry = findCatalogPet(petName);
+  if (!entry) return null;
 
-  const cached = imageFallbackCache.get(key);
-  if (cached && Date.now() - cached.at < IMAGE_CACHE_TTL_MS) {
-    return cached.url;
+  const key = normalizeFeedKey(entry.petName);
+  const cached = petPageCache.get(key);
+  if (cached && Date.now() - cached.at < PET_PAGE_CACHE_TTL_MS) {
+    return cached;
   }
 
-  const canonicalName = canonicalEggName(eggName);
-  const catalogEntry = findCatalogEgg(eggName);
-  const slug = slugify(canonicalName.replace(/\s+Egg$/i, ""));
+  const slug = petSlugForEntry(entry);
   const pages = [];
-
-  if (catalogEntry?.sourcePage) pages.push(catalogEntry.sourcePage);
 
   if (slug) {
     pages.push(
-      "https://stealanegg-hub.wiki/wiki/pets/" + slug + "/",
-      "https://steal-an-egg-roblox.wiki/eggs/" + slug + "-egg/",
-      "https://steal-an-egg-roblox.wiki/pets/" + slug + "/"
+      "https://robloxstealanegg.wiki/pets/" + slug + "/"
     );
   }
 
   for (const page of [...new Set(pages)]) {
-    const imageUrl = await fetchExactEggImage(page, canonicalName);
-    if (imageUrl) {
-      imageFallbackCache.set(key, { url: imageUrl, at: Date.now() });
-      return imageUrl;
+    try {
+      const { response, body } = await fetchLiveFeed(page);
+      if (!response.ok) continue;
+
+      const result = { pageUrl: page, body, at: Date.now() };
+      petPageCache.set(key, result);
+      return result;
+    } catch {
+      // Try the next verified page source.
     }
   }
 
-  imageFallbackCache.set(key, { url: null, at: Date.now() });
+  petPageCache.set(key, { pageUrl: null, body: null, at: Date.now() });
   return null;
+}
+
+function parseImgCandidates(html, pageUrl, targetPetName) {
+  const tags = String(html || "").match(/<img\\b[^>]*>/gi) || [];
+
+  return tags.map(tag => {
+    const attrs = extractTagAttributes(tag);
+    const src =
+      attrs.src ||
+      attrs["data-src"] ||
+      attrs["data-lazy-src"] ||
+      attrs["data-original"] ||
+      "";
+
+    const srcSet =
+      attrs.srcset ||
+      attrs["data-srcset"] ||
+      "";
+
+    const alt = attrs.alt || "";
+    const title = attrs.title || "";
+    const className = attrs.class || "";
+    const metadata = (alt + " " + title + " " + className + " " + src).toLowerCase();
+
+    let score = 0;
+    if (eggNameMatchesTarget(alt, targetPetName)) score += 150;
+    if (eggNameMatchesTarget(title, targetPetName)) score += 120;
+    if (normalizeFeedKey(alt) === normalizeFeedKey(targetPetName)) score += 35;
+    if (metadata.includes(normalizeFeedKey(targetPetName))) score += 35;
+    if (/\\b(avatar|pet)\\b/i.test(alt + " " + title)) score += 20;
+    if (/\\/images\\/pets\\//i.test(src)) score += 50;
+    if (/\\.(?:webp|png)(?:\\?|$)/i.test(src)) score += 10;
+
+    if (/\\b(og|hero|banner|logo|site-header|favicon|sprite)\\b/i.test(metadata)) score -= 250;
+    if (/\\b(article|author|profile|icon|thumbnail)\\b/i.test(metadata)) score -= 100;
+
+    const srcParts = [];
+    if (src) srcParts.push(src);
+    if (srcSet) {
+      for (const part of srcSet.split(",")) {
+        const candidate = part.trim().split(/\\s+/)[0];
+        if (candidate) srcParts.push(candidate);
+      }
+    }
+
+    return {
+      urls: srcParts
+        .map(value => absolutizeUrl(value, pageUrl))
+        .filter(Boolean),
+      score
+    };
+  })
+    .filter(item => item.urls.length && item.score >= 100)
+    .sort((a, b) => b.score - a.score);
+}
+
+function isTrustedPetImageUrl(value) {
+  if (!isValidHttpUrl(value)) return false;
+
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    const pathName = url.pathname.toLowerCase();
+
+    return (
+      host === "robloxstealanegg.wiki" &&
+      /\\/images\\/pets\\//.test(pathName) &&
+      /\\.(?:png|webp)(?:$)/.test(pathName)
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function resolvePetImageSource(petName) {
+  const entry = findCatalogPet(petName);
+  if (!entry) return null;
+
+  const key = normalizeFeedKey(entry.petName);
+  const cached = imageFallbackCache.get("pet:" + key);
+  if (cached && Date.now() - cached.at < IMAGE_CACHE_TTL_MS) {
+    return cached.url;
+  }
+
+  const page = await fetchPetPage(entry.petName);
+  if (!page?.body || !page?.pageUrl) {
+    imageFallbackCache.set("pet:" + key, { url: null, at: Date.now() });
+    return null;
+  }
+
+  const candidates = parseImgCandidates(page.body, page.pageUrl, entry.petName);
+
+  for (const candidate of candidates) {
+    for (const url of candidate.urls) {
+      if (!isTrustedPetImageUrl(url)) continue;
+
+      imageFallbackCache.set("pet:" + key, { url, at: Date.now() });
+      return url;
+    }
+  }
+
+  imageFallbackCache.set("pet:" + key, { url: null, at: Date.now() });
+  return null;
+}
+
+function parseGameStatsFromPetPage(body) {
+  const html = String(body || "");
+  const text = html
+    .replace(/<script[\\s\\S]*?<\\/script>/gi, " ")
+    .replace(/<style[\\s\\S]*?<\\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/\\s+/g, " ")
+    .trim();
+
+  const incomeMatch = text.match(/Base income\\s*\\$?([0-9.,]+\\s*[KMBT])\\/s/i);
+  const speedMatch = text.match(/(?:you need|requires?|minimum(?: gate)?[:\\s]+)([0-9.,]+\\s*[KMBT])\\s*Speed/i);
+
+  return {
+    income: incomeMatch ? "$" + incomeMatch[1].replace(/\\s+/g, "") + "/s" : null,
+    speed: speedMatch ? speedMatch[1].replace(/\\s+/g, "") : null
+  };
+}
+
+async function fetchPetGameStats(petName) {
+  const entry = findCatalogPet(petName);
+  if (!entry) return { income: null, speed: null };
+
+  const key = normalizeFeedKey(entry.petName);
+  const cached = petStatsCache.get(key);
+  if (cached && Date.now() - cached.at < PET_PAGE_CACHE_TTL_MS) {
+    return cached.stats;
+  }
+
+  const page = await fetchPetPage(entry.petName);
+  const stats = parseGameStatsFromPetPage(page?.body || "");
+  petStatsCache.set(key, { stats, at: Date.now() });
+  return stats;
+}
+
+function publicPetImageUrl(petName) {
+  if (!PUBLIC_BASE_URL) return null;
+  const slug = slugify(petName);
+  if (!slug) return null;
+  return PUBLIC_BASE_URL + "/cdn/pets/" + encodeURIComponent(slug) + ".png";
+}
+
+async function getPetPngBuffer(petName) {
+  const entry = findCatalogPet(petName);
+  if (!entry) return null;
+
+  const key = normalizeFeedKey(entry.petName);
+  const cached = petPngBufferCache.get(key);
+  if (cached && Date.now() - cached.at < PET_PNG_CACHE_TTL_MS) {
+    return cached.buffer;
+  }
+
+  const sourceUrl = await resolvePetImageSource(entry.petName);
+  if (!sourceUrl) return null;
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), LIVE_FEED_TIMEOUT_MS);
+
+    const response = await fetch(sourceUrl, {
+      headers: {
+        "accept": "image/avif,image/webp,image/png,image/*;q=0.9,*/*;q=0.8",
+        "user-agent": "FSMM-SAB-Live-Notifier/3.0"
+      },
+      signal: controller.signal
+    });
+
+    clearTimeout(timeout);
+
+    if (!response.ok) return null;
+
+    const contentLength = Number(response.headers.get("content-length") || 0);
+    if (contentLength && contentLength > MAX_REMOTE_IMAGE_BYTES) return null;
+
+    const input = Buffer.from(await response.arrayBuffer());
+    if (input.length > MAX_REMOTE_IMAGE_BYTES) return null;
+
+    // The verified pet art is already a cut-out asset on the source page.
+    // sharp converts it to PNG while preserving its alpha channel.
+    const pngBuffer = await sharp(input, { failOn: "none" })
+      .ensureAlpha()
+      .png({ compressionLevel: 9 })
+      .toBuffer();
+
+    petPngBufferCache.set(key, { buffer: pngBuffer, at: Date.now() });
+    return pngBuffer;
+  } catch (error) {
+    console.warn("Pet PNG conversion failed for " + entry.petName + ":", error?.message || error);
+    return null;
+  }
+}
+
+async function resolveImageUrl(eggName, _providedUrl = null) {
+  const entry = findCatalogEgg(eggName);
+  if (!entry?.petName) return null;
+
+  const petName = entry.petName;
+
+  if (PUBLIC_BASE_URL) {
+    const pngUrl = publicPetImageUrl(petName);
+    if (pngUrl) {
+      // Warm the cache in the background so Discord never has to wait on
+      // the first image request.
+      getPetPngBuffer(petName).catch(() => {});
+      imageFallbackCache.set(normalizeFeedKey(eggName), { url: pngUrl, at: Date.now() });
+      return pngUrl;
+    }
+  }
+
+  return resolvePetImageSource(petName);
+}
+
+async function warmPetImageCache() {
+  let warmed = 0;
+  let cursor = 0;
+  const entries = eggImageCatalog.filter(entry => entry?.active !== false);
+
+  async function worker() {
+    while (true) {
+      const index = cursor++;
+      if (index >= entries.length) return;
+
+      const entry = entries[index];
+      try {
+        const source = await resolvePetImageSource(entry.petName);
+        if (source) {
+          warmed++;
+          if (PUBLIC_BASE_URL) await getPetPngBuffer(entry.petName);
+        }
+      } catch (error) {
+        console.warn("Image warm-up failed for " + entry.petName + ":", error?.message || error);
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(4, entries.length) }, () => worker()));
+  console.log(
+    "Pet image cache warm:",
+    warmed + "/" + entries.length,
+    PUBLIC_BASE_URL ? "(PNG proxy ready)" : "(source image fallback)"
+  );
+}
+
+app.get("/cdn/pets/:pet.png", async (req, res) => {
+  const rawPet = String(req.params.pet || "")
+    .replace(/\\.png$/i, "")
+    .replace(/-/g, " ")
+    .trim();
+
+  const entry = findCatalogPet(rawPet) ||
+    eggImageCatalog.find(item => slugify(item?.petName || "") === slugify(rawPet));
+
+  if (!entry) {
+    return res.status(404).end();
+  }
+
+  const pngBuffer = await getPetPngBuffer(entry.petName);
+  if (!pngBuffer) {
+    return res.status(404).end();
+  }
+
+  res.setHeader("Content-Type", "image/png");
+  res.setHeader("Cache-Control", "public, max-age=21600, stale-while-revalidate=86400");
+  return res.status(200).send(pngBuffer);
 }
 
 function collectEggCandidates(value, path = [], out = []) {
@@ -602,6 +892,9 @@ async function pollEggWatch() {
         continue;
       }
 
+      liveFeedLastSuccessAt = new Date().toISOString();
+      updateLiveFeedHealth();
+
       let payload = body;
       const contentType = response.headers.get("content-type") || "";
 
@@ -673,13 +966,28 @@ async function pollEggWatch() {
           candidate.eggName,
           "ageMs=" + ageMs
         );
-        return;
+        continue;
       }
 
       if (feedStateLooksOffline(payload)) {
-        console.log("EggWatch feed changed while watcher is explicitly offline; skipping alert.");
+        console.log("EggWatch feed changed while watcher is explicitly offline; trying next feed endpoint.");
+        continue;
+      }
+
+      const feedEventKey = [
+        "feed",
+        candidate.rarity.toLowerCase(),
+        normalizeFeedKey(candidate.eggName),
+        normalizeFeedKey(candidate.biome),
+        Math.floor(eventTime / 1000)
+      ].join("|");
+
+      const alreadySeenFeedEvent = seen.get(feedEventKey) || 0;
+      if (Date.now() - alreadySeenFeedEvent < SEEN_TTL_MS) {
         return;
       }
+
+      seen.set(feedEventKey, Date.now());
 
       const imageUrl = await resolveImageUrl(
         candidate.eggName,
@@ -783,6 +1091,63 @@ function sourceHealth() {
     : "ACTIVE";
 }
 
+async function resolveAlertRoleId(rarity) {
+  const rarityKey = String(rarity || "").toLowerCase();
+
+  if (ALERT_ROLE_IDS[rarityKey]) {
+    return ALERT_ROLE_IDS[rarityKey];
+  }
+
+  if (!alertChannel?.guild) return "";
+
+  try {
+    const roles = await alertChannel.guild.roles.fetch();
+    const role = roles.find(candidate =>
+      candidate.name?.trim().toLowerCase() === rarityKey
+    );
+
+    if (role) {
+      console.log("Auto-resolved alert role:", rarityKey, role.name, role.id);
+      return role.id;
+    }
+  } catch (error) {
+    console.warn("Automatic role lookup failed for " + rarityKey + ":", error?.message || error);
+  }
+
+  return "";
+}
+
+function liveFeedHealth() {
+  if (!LIVE_FEED_ENABLED) return "DISABLED";
+  if (!liveFeedLastSuccessAt) return "WAITING";
+
+  const ageMs = Date.now() - new Date(liveFeedLastSuccessAt).getTime();
+  return ageMs > LIVE_FEED_STALE_AFTER_MS ? "STALE" : "ACTIVE";
+}
+
+function updateLiveFeedHealth() {
+  const current = liveFeedHealth();
+
+  if (current !== liveFeedHealthState) {
+    liveFeedHealthState = current;
+
+    if (current === "STALE") {
+      console.warn(
+        "EggWatch feed is stale. Last successful response:",
+        liveFeedLastSuccessAt || "never"
+      );
+    } else if (current === "ACTIVE") {
+      console.log(
+        "EggWatch feed health:",
+        "ACTIVE",
+        "lastSuccessAt=" + liveFeedLastSuccessAt
+      );
+    }
+  }
+
+  return current;
+}
+
 function cleanupCaches(now = Date.now()) {
   for (const [key, timestamp] of seen) {
     if (now - timestamp > SEEN_TTL_MS) seen.delete(key);
@@ -868,13 +1233,15 @@ async function getAlertChannel() {
 async function validateAlertRoles() {
   if (!alertChannel?.guild) return;
 
-  for (const [rarity, roleId] of Object.entries(ALERT_ROLE_IDS)) {
-    if (!roleId) {
-      console.warn("No alert role configured for", rarity);
-      continue;
-    }
-
+  for (const rarity of ["secret", "eternal", "divine"]) {
     try {
+      const roleId = await resolveAlertRoleId(rarity);
+
+      if (!roleId) {
+        console.warn("No alert role available for", rarity);
+        continue;
+      }
+
       const role = await alertChannel.guild.roles.fetch(roleId);
 
       if (!role) {
@@ -890,11 +1257,11 @@ async function validateAlertRoles() {
   }
 }
 
-function buildAlertEmbed(event, latencyMs = null, includeImage = true) {
+function buildAlertEmbed(event, _latencyMs = null, includeImage = true) {
   const rarity = String(event.rarity || "Unknown").trim();
   const rarityKey = rarity.toLowerCase();
   const emoji = getRarityEmoji(rarity);
-  const eggName = String(event.displayName || event.eggName || "Unknown Egg").trim();
+  const eggName = String(event.displayName || event.eggName || "Unknown").trim();
   const area = String(event.biome || "Unknown").trim();
 
   const timestamp = Date.parse(event.spawnedAt);
@@ -904,36 +1271,25 @@ function buildAlertEmbed(event, latencyMs = null, includeImage = true) {
 
   const fields = [
     { name: "🥚 Egg", value: eggName.slice(0, 1024), inline: true },
-    { name: "✨ Rarity", value: rarity.slice(0, 1024), inline: true },
-    { name: "📍 Area", value: area.slice(0, 1024), inline: true },
+    { name: "📍 Location", value: area.slice(0, 1024), inline: true },
     { name: "🕒 Spawned", value: "<t:" + unix + ":R>", inline: true }
   ];
 
-  const optionalFields = [
-    ["🎲 Chance", event.chance],
-    ["⚡ Speed", event.speed],
-    ["💰 Value", event.value],
-    ["📈 Income", event.income],
-    ["🧬 Mutation", event.mutation],
-    ["⌛ Time Left", event.countdown]
-  ];
+  const money = event.gameStats?.income || event.income;
+  const speed = event.gameStats?.speed || event.speed;
 
-  for (const [name, value] of optionalFields) {
-    if (value) {
-      fields.push({
-        name,
-        value: String(value).slice(0, 1024),
-        inline: true
-      });
-    }
+  if (money) {
+    fields.push({
+      name: "💰 Money",
+      value: String(money).slice(0, 1024),
+      inline: true
+    });
   }
 
-  if (Number.isFinite(latencyMs) && latencyMs >= 0) {
+  if (speed) {
     fields.push({
-      name: "⚡ Detection",
-      value: latencyMs < 1000
-        ? latencyMs + "ms"
-        : (latencyMs / 1000).toFixed(1) + "s",
+      name: "⚡ Recommended Speed",
+      value: String(speed).slice(0, 1024),
       inline: true
     });
   }
@@ -946,13 +1302,17 @@ function buildAlertEmbed(event, latencyMs = null, includeImage = true) {
         divine: 0xef4444
       }[rarityKey] || 0x5865f2
     )
-    .setTitle(emoji + "  " + rarity.toUpperCase() + " EGG SPAWNED!")
-    .setDescription("**" + eggName.slice(0, 200) + "** has just appeared.")
+    .setTitle(emoji + "  " + rarity + " Egg Spawned!")
+    .setDescription(
+      "**" + eggName.slice(0, 200) + "** has spawned in **" + area.slice(0, 200) + "**."
+    )
     .addFields(fields)
-    .setFooter({ text: "Steal an Egg • Rare Spawn Alert" })
+    .setFooter({ text: "Steal An Egg • Live Spawn" })
     .setTimestamp(Number.isFinite(timestamp) ? new Date(timestamp) : new Date());
 
-  if (includeImage && event.imageUrl) embed.setImage(event.imageUrl);
+  if (includeImage && event.imageUrl) {
+    embed.setThumbnail(event.imageUrl);
+  }
 
   return embed;
 }
@@ -983,19 +1343,48 @@ function buildActionRow(event) {
   return new ActionRowBuilder().addComponents(...buttons.slice(0, 5));
 }
 
+async function enrichAlertEvent(event) {
+  const entry = findCatalogEgg(event.eggName || event.displayName);
+  if (!entry) return event;
+
+  event.eggName = entry.eggName;
+  event.displayName = entry.petName || entry.displayName || entry.eggName;
+  event.biome = event.biome || entry.biome || "Unknown";
+  event.imageUrl = event.imageUrl || await resolveImageUrl(entry.eggName);
+
+  const stats = await fetchPetGameStats(entry.petName);
+  event.gameStats = stats;
+
+  return event;
+}
+
 async function sendAlert(event, latencyMs = null) {
+  await enrichAlertEvent(event);
   const channel = await getAlertChannel();
   const rarity = String(event.rarity || "Unknown").trim();
   const rarityKey = rarity.toLowerCase();
-  const roleId = ALERT_ROLE_IDS[rarityKey];
+  const roleId = await resolveAlertRoleId(rarity);
   const emoji = getRarityEmoji(rarity);
+
+  const petName = String(event.displayName || event.eggName || "Unknown").trim();
+  const area = String(event.biome || "Unknown").trim();
+
+  const alertText =
+    emoji +
+    " **" +
+    rarity +
+    " egg " +
+    petName +
+    " spawned in " +
+    area +
+    "!**";
 
   const mentionContent =
     ALERT_MENTION_MODE === "role" && roleId
-      ? "<@&" + roleId + "> " + emoji + " **" + rarity.toUpperCase() + " EGG!**"
+      ? "<@&" + roleId + "> " + alertText
       : ALERT_MENTION_MODE === "here"
-        ? "@here " + emoji + " **" + rarity.toUpperCase() + " EGG!**"
-        : emoji + " **" + rarity.toUpperCase() + " EGG!**";
+        ? "@here " + alertText
+        : alertText;
 
   const payload = {
     content: mentionContent,
@@ -1170,9 +1559,13 @@ app.get("/health", (_req, res) => {
     liveFeedLastUrl,
     liveFeedLastPollAt,
     liveFeedLastEventAt,
+    liveFeedLastSuccessAt,
+    liveFeedHealth: liveFeedHealth(),
     liveFeedEventsReceived,
     liveFeedEventsAccepted,
-    liveFeedErrors
+    liveFeedErrors,
+    publicPngProxy: Boolean(PUBLIC_BASE_URL),
+    cachedPetImages: [...imageFallbackCache.keys()].filter(key => key.startsWith("pet:") && imageFallbackCache.get(key)?.url).length
   });
 });
 
@@ -1223,6 +1616,12 @@ client.once("clientReady", async () => {
   }
 
   try {
+    await warmPetImageCache();
+  } catch (error) {
+    console.error("Pet image cache warm-up failed:", error);
+  }
+
+  try {
     const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_BOT_TOKEN);
 
     if (DEV_GUILD_ID) {
@@ -1250,10 +1649,13 @@ setInterval(() => {
 startEggWatchPoller();
 
 setInterval(() => {
+  updateLiveFeedHealth();
+
   console.log(
     "Heartbeat:",
     "ready=" + client.isReady(),
     "source=" + sourceHealth(),
+    "eggWatch=" + liveFeedHealth(),
     "detected=" + detectedCount,
     "alerts=" + alertCount,
     "errors=" + monitorErrors,
@@ -1283,7 +1685,9 @@ client.on("interactionCreate", async interaction => {
         "📥 Source channel: " + (SOURCE_CHANNEL_IDS.size ? [...SOURCE_CHANNEL_IDS].join(", ") : "ALL"),
         "📤 Alert channel: " + (CHANNEL_ID ? "CONFIGURED" : "NOT CONFIGURED"),
         "🔔 Role ping: " + ALERT_MENTION_MODE.toUpperCase(),
-        "📡 Source health: " + sourceHealth(),
+        "📡 Discord source: " + sourceHealth(),
+        "🌐 EggWatch feed: " + liveFeedHealth(),
+        "🖼️ PNG images: " + (PUBLIC_BASE_URL ? "ENABLED" : "SOURCE FALLBACK"),
         "🥚 Alerts sent: " + alertCount,
         "🔎 Detected: " + detectedCount,
         "⚡ Average latency: " + (latencySamples
@@ -1345,6 +1749,43 @@ client.on("interactionCreate", async interaction => {
       });
     }
 
+    if (interaction.commandName === "imagecheck") {
+      const requested = interaction.options.getString("egg", true);
+      const entry = findCatalogEgg(requested) || findCatalogPet(requested);
+
+      if (!entry) {
+        return await interaction.reply({
+          content: "❌ I couldn't find that egg in the verified Secret/Eternal/Divine catalog.",
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const imageUrl = await resolveImageUrl(entry.eggName);
+      const stats = await fetchPetGameStats(entry.petName);
+
+      const testEvent = {
+        live: true,
+        eggName: entry.eggName,
+        displayName: entry.petName,
+        rarity: entry.rarity,
+        biome: entry.biome,
+        spawnedAt: new Date().toISOString(),
+        imageUrl,
+        gameStats: stats
+      };
+
+      const embed = buildAlertEmbed(testEvent, null, true);
+
+      return await interaction.editReply({
+        content: imageUrl
+          ? "✅ Verified character image resolved for **" + entry.petName + "**."
+          : "⚠️ The game record is valid, but no character image was found for **" + entry.petName + "** yet.",
+        embeds: [embed]
+      });
+    }
+
     if (interaction.commandName === "reload") {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
@@ -1352,11 +1793,17 @@ client.on("interactionCreate", async interaction => {
       alertedMessageIds.clear();
       inFlightKeys.clear();
       alertChannel = null;
+      petPageCache.clear();
+      petPngBufferCache.clear();
+      petStatsCache.clear();
+      imageFallbackCache.clear();
 
       if (CHANNEL_ID) {
         await getAlertChannel();
         await validateAlertRoles();
       }
+
+      await warmPetImageCache();
 
       const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_BOT_TOKEN);
 
@@ -1379,7 +1826,7 @@ client.on("interactionCreate", async interaction => {
 
     if (interaction.commandName === "testrole") {
       const rarity = interaction.options.getString("rarity", true);
-      const roleId = ALERT_ROLE_IDS[rarity];
+      const roleId = await resolveAlertRoleId(rarity);
 
       if (!CHANNEL_ID) {
         return await interaction.reply({
@@ -1419,17 +1866,28 @@ client.on("interactionCreate", async interaction => {
         });
       }
 
+      const requested = interaction.options.getString("egg") || "Gargoyle";
+      const entry = findCatalogEgg(requested) || findCatalogPet(requested);
+
+      if (!entry) {
+        return await interaction.reply({
+          content: "❌ That egg is not in the verified Secret/Eternal/Divine catalog.",
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       const beforeAlerts = alertCount;
       const beforeLastSpawn = lastSpawnAt;
+      const beforeRecentLength = recentSpawns.length;
 
       const testEvent = {
         live: true,
-        eggName: "Test Egg",
-        displayName: "Test Egg",
-        rarity: "Secret",
-        biome: "Test Area",
+        eggName: entry.eggName,
+        displayName: entry.petName,
+        rarity: entry.rarity,
+        biome: entry.biome,
         spawnedAt: new Date().toISOString(),
         source: "Test"
       };
@@ -1438,10 +1896,17 @@ client.on("interactionCreate", async interaction => {
 
       alertCount = beforeAlerts;
       lastSpawnAt = beforeLastSpawn;
-      recentSpawns.shift();
+      if (recentSpawns.length > beforeRecentLength) {
+        recentSpawns.splice(beforeRecentLength);
+      }
 
       return await interaction.editReply({
-        content: "✅ Test egg alert sent successfully."
+        content:
+          "✅ Test alert sent for **" +
+          entry.petName +
+          "** (" +
+          entry.rarity +
+          ")."
       });
     }
   } catch (error) {
