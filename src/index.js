@@ -4087,39 +4087,38 @@ async function processSpawnMessage(message) {
 
   const messageData = extractMessageData(message);
 
-  const riftChannelAllowed =
-    !RIFT_SOURCE_CHANNEL_IDS.size || RIFT_SOURCE_CHANNEL_IDS.has(message.channelId);
-  const riftBotAllowed =
-    !RIFT_SOURCE_BOT_IDS.size || RIFT_SOURCE_BOT_IDS.has(message.author?.id);
+  // Event trackers are intentionally independent from the rare-egg source filters.
+  // Rift and Dr. Scramble announcements can come from a different channel/bot than
+  // the live egg feed, and their parsers are already strict enough to reject noise.
+  if (RIFT_ALERTS_ENABLED) {
+    const riftChannelAllowed =
+      !RIFT_SOURCE_CHANNEL_IDS.size || RIFT_SOURCE_CHANNEL_IDS.has(message.channelId);
+    const riftBotAllowed =
+      !RIFT_SOURCE_BOT_IDS.size || RIFT_SOURCE_BOT_IDS.has(message.author?.id);
 
-  if (RIFT_ALERTS_ENABLED && riftChannelAllowed && riftBotAllowed) {
-    const riftEvent = parseRiftChange(messageData);
+    if (riftChannelAllowed && riftBotAllowed) {
+      const riftEvent = parseRiftChange(messageData);
 
-    if (riftEvent) {
-      riftEvent.messageUrl = messageData.messageUrl || null;
-      riftEvent.createdTimestamp = messageData.createdTimestamp || Date.now();
-      riftEvent.imageUrl = messageData.imageUrl || null;
-      riftEvent.sourceName =
-        message.author?.tag ||
-        message.author?.username ||
-        "Discord Source";
+      if (riftEvent) {
+        riftEvent.messageUrl = messageData.messageUrl || null;
+        riftEvent.createdTimestamp = messageData.createdTimestamp || Date.now();
+        riftEvent.imageUrl = messageData.imageUrl || null;
+        riftEvent.sourceName =
+          message.author?.tag ||
+          message.author?.username ||
+          "Discord Source";
 
-      try {
-        await sendRiftAlert(riftEvent);
-      } catch (error) {
-        monitorErrors++;
-        console.warn("Rift alert failed:", error?.message || error);
+        try {
+          await sendRiftAlert(riftEvent);
+        } catch (error) {
+          monitorErrors++;
+          console.warn("Rift alert failed:", error?.message || error);
+        }
       }
-
     }
   }
 
-  if (SOURCE_CHANNEL_IDS.size && !SOURCE_CHANNEL_IDS.has(message.channelId)) return;
-  if (SOURCE_BOT_IDS.size && !SOURCE_BOT_IDS.has(message.author?.id)) return;
-
-  lastSourceMessageAt = new Date(message.createdTimestamp || Date.now()).toISOString();
-  lastSourceMessageId = message.id || null;
-
+  // Scramble event detection must never be blocked by the live egg-feed filters.
   const experimentEvent = parseExperimentAlert(messageData);
   if (experimentEvent) {
     experimentEvent.sourceMessageId = message.id || null;
@@ -4141,6 +4140,12 @@ async function processSpawnMessage(message) {
       }
     }
   }
+
+  if (SOURCE_CHANNEL_IDS.size && !SOURCE_CHANNEL_IDS.has(message.channelId)) return;
+  if (SOURCE_BOT_IDS.size && !SOURCE_BOT_IDS.has(message.author?.id)) return;
+
+  lastSourceMessageAt = new Date(message.createdTimestamp || Date.now()).toISOString();
+  lastSourceMessageId = message.id || null;
 
   const event = parseSpawn(messageData, RARITIES);
   if (!event) return;
