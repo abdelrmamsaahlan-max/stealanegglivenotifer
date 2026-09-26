@@ -3734,7 +3734,9 @@ function updateDiscoverySourceHealth(source, patch = {}) {
 }
 
 function discoverySummary() {
-  return [...autoDiscoverySourceHealth.values()].map((item, index) => ({
+  const ranked = rankSourceHealth([...autoDiscoverySourceHealth.values()]);
+
+  return ranked.map((item, index) => ({
     id: "source-" + (index + 1),
     label: PUBLIC_DISCOVERY_SOURCE_LABEL + " #" + (index + 1),
     status: item.status,
@@ -3756,6 +3758,26 @@ async function sendGameUpdateAlert(_update, _newEggs = [], _changes = null) {
 
 async function sendDiscoveredEventAlert(event) {
   if (!EVENT_ALERTS_ENABLED || !CHANNEL_ID || !event?.title) return false;
+
+  const reliability = evaluateEventReliability({
+    ...event,
+    source: PUBLIC_DISCOVERY_SOURCE_LABEL,
+    type: event?.type || "official_event"
+  }, {
+    parser: "discovery-event",
+    parserConfidence: 0.78
+  });
+
+  if (!reliability.ok) {
+    console.warn("Discovered event suppressed:", reliability.reason);
+    return false;
+  }
+
+  event.incidentId = reliability.incidentId;
+  event.confidence = reliability.confidence;
+  event.evidence = reliability.evidence;
+  event.verificationCount = reliability.verificationCount;
+  event.eventState = reliability.eventState;
 
   const channel = await getAlertChannel();
   if (!channel) return false;
@@ -3795,6 +3817,11 @@ async function sendDiscoveredEventAlert(event) {
       {
         name: "Date",
         value: String(event.date || "Unknown"),
+        inline: true
+      },
+      {
+        name: "Confidence",
+        value: Math.round(Number(event.confidence || 0) * 100) + "%",
         inline: true
       }
     )
@@ -6630,7 +6657,10 @@ async function sendAlert(event, latencyMs = null) {
       discordMessageId: sentMessage?.id || null,
       status: "sent",
       attempts: 1,
-      sentAt: new Date().toISOString()
+      sentAt: new Date().toISOString(),
+      incidentId: event?.incidentId || null,
+      confidence: Number.isFinite(Number(event?.confidence)) ? Number(event.confidence) : null,
+      evidence: Array.isArray(event?.evidence) ? event.evidence.slice(0, 8) : []
     }))
   ).catch(error => {
     recordMonitorError("storage", error, "Supabase alert delivery persistence failed");
@@ -6903,6 +6933,9 @@ app.get("/health", (_req, res) => {
     liveFeedConsecutiveFailures,
     liveFeedRecoveryCount,
     liveFeedEndpointHealth: [...liveFeedEndpointHealth.values()],
+    liveFeedFailoverOrder: [...rankSourceHealth(
+      [...liveFeedEndpointHealth.values()]
+    )],
     liveFeedEventsReceived,
     liveFeedEventsAccepted,
     liveFeedErrors,
