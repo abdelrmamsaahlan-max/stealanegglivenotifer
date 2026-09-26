@@ -322,7 +322,10 @@ const lastSeenMessageIds = {
   eternal: null,
   divine: null
 };
+const lastSeenMessageCache = new Map();
 let lastSeenChannel = null;
+let lastSeenMessagesReady = false;
+let lastSeenMessagesInitInFlight = null;
 const lastSeenUpdateTimers = new Map();
 const lastSeenUpdateInFlight = new Map();
 const eggCustomEmojiCache = new Map();
@@ -2806,19 +2809,34 @@ async function getLastSeenChannel() {
 async function findExistingLastSeenMessage(channel, rarity) {
   const expectedTitle = "🕒 " + lastSeenLabel(rarity) + " • Last Seen";
 
+  const cached = lastSeenMessageCache.get(rarity);
+  if (cached && cached.channelId === channel.id) {
+    if (
+      cached.author?.id === client.user?.id &&
+      cached.embeds?.[0]?.title === expectedTitle
+    ) {
+      return cached;
+    }
+    lastSeenMessageCache.delete(rarity);
+  }
+
   if (lastSeenMessageIds[rarity]) {
     try {
       const saved = await channel.messages.fetch(lastSeenMessageIds[rarity]);
+
       if (
         saved &&
         saved.author?.id === client.user?.id &&
         saved.embeds?.[0]?.title === expectedTitle
       ) {
+        lastSeenMessageCache.set(rarity, saved);
         return saved;
       }
     } catch {
-      // Saved message ID may be stale after a restart or manual deletion.
+      // Saved message may have been deleted or become inaccessible.
     }
+
+    lastSeenMessageIds[rarity] = null;
   }
 
   try {
@@ -2832,10 +2850,11 @@ async function findExistingLastSeenMessage(channel, rarity) {
 
     if (!matches.length) return null;
 
+    // Keep one canonical message per rarity and remove older duplicates.
     const primary = matches[0];
     lastSeenMessageIds[rarity] = primary.id;
+    lastSeenMessageCache.set(rarity, primary);
 
-    // Remove duplicate Last Seen messages created by previous restarts.
     for (const duplicate of matches.slice(1)) {
       try {
         await duplicate.delete();
@@ -2859,48 +2878,71 @@ async function findExistingLastSeenMessage(channel, rarity) {
 }
 
 async function ensureLastSeenMessages() {
-  const channel = await getLastSeenChannel();
-  if (!channel) return false;
+  if (lastSeenMessagesReady) return true;
+  if (lastSeenMessagesInitInFlight) return lastSeenMessagesInitInFlight;
 
-  for (const rarity of LAST_SEEN_RARITIES) {
-    const embed = buildLastSeenEmbed(rarity);
-    const message = await findExistingLastSeenMessage(channel, rarity);
+  lastSeenMessagesInitInFlight = (async () => {
+    const channel = await getLastSeenChannel();
+    if (!channel) return false;
 
-    if (message) {
-      await message.edit({ embeds: [embed] });
-      continue;
+    for (const rarity of LAST_SEEN_RARITIES) {
+      const embed = buildLastSeenEmbed(rarity);
+      const message = await findExistingLastSeenMessage(channel, rarity);
+
+      if (message) {
+        // Startup can refresh the canonical message, but never duplicates it.
+        await message.edit({ embeds: [embed] });
+        lastSeenMessageCache.set(rarity, message);
+        continue;
+      }
+
+      // A brand-new message is created only when no canonical message exists.
+      const created = await channel.send({ embeds: [embed] });
+      lastSeenMessageIds[rarity] = created.id;
+      lastSeenMessageCache.set(rarity, created);
+      console.log("Created canonical Last Seen message:", rarity, created.id);
     }
 
-    const created = await channel.send({ embeds: [embed] });
-    lastSeenMessageIds[rarity] = created.id;
-  }
+    lastSeenMessagesReady = true;
+    scheduleStateSave();
+    return true;
+  })();
 
-  scheduleStateSave();
-  return true;
+  try {
+    return await lastSeenMessagesInitInFlight;
+  } finally {
+    lastSeenMessagesInitInFlight = null;
+  }
 }
 
 async function updateLastSeenMessage(rarity) {
   if (!LAST_SEEN_CHANNEL_ID || !LAST_SEEN_RARITIES.includes(rarity)) return;
 
-  const channel = await getLastSeenChannel();
-  if (!channel) return;
-
-  const embed = buildLastSeenEmbed(rarity);
   const existingPromise = lastSeenUpdateInFlight.get(rarity);
-
   if (existingPromise) {
     await existingPromise;
     return;
   }
 
   const promise = (async () => {
+    // Resolve the canonical messages before any update can happen.
+    const ready = await ensureLastSeenMessages();
+    if (!ready) return;
+
+    const channel = await getLastSeenChannel();
+    const embed = buildLastSeenEmbed(rarity);
     const message = await findExistingLastSeenMessage(channel, rarity);
 
-    if (message) {
-      await message.edit({ embeds: [embed] });
-    } else {
+    if (!message) {
+      // Only recreate if the canonical message was actually deleted.
       const created = await channel.send({ embeds: [embed] });
       lastSeenMessageIds[rarity] = created.id;
+      lastSeenMessageCache.set(rarity, created);
+      console.warn("Canonical Last Seen message was missing; recreated:", rarity, created.id);
+    } else {
+      // Normal update path: EDIT the existing Discord message.
+      await message.edit({ embeds: [embed] });
+      lastSeenMessageCache.set(rarity, message);
     }
 
     scheduleStateSave();
@@ -2914,7 +2956,6 @@ async function updateLastSeenMessage(rarity) {
     lastSeenUpdateInFlight.delete(rarity);
   }
 }
-
 function scheduleLastSeenUpdate(rarity, retry = false) {
   if (!LAST_SEEN_CHANNEL_ID || !LAST_SEEN_RARITIES.includes(rarity)) return;
 
@@ -4004,6 +4045,9 @@ client.on("interactionCreate", async interaction => {
       alertedMessageIds.clear();
       inFlightKeys.clear();
       alertChannel = null;
+      lastSeenMessagesReady = false;
+      lastSeenMessageCache.clear();
+      lastSeenMessagesInitInFlight = null;
       petPageCache.clear();
       petPngBufferCache.clear();
       petStatsCache.clear();
@@ -4143,6 +4187,9 @@ client.on("interactionCreate", async interaction => {
 
 client.on("shardReconnecting", shardId => {
   alertChannel = null;
+  lastSeenMessagesReady = false;
+  lastSeenMessageCache.clear();
+  lastSeenMessagesInitInFlight = null;
   resolvedRoleCache.clear();
   console.warn("Discord shard reconnecting:", shardId);
 });
@@ -4153,6 +4200,9 @@ client.on("shardReady", shardId => {
 
 client.on("shardDisconnect", (event, shardId) => {
   alertChannel = null;
+  lastSeenMessagesReady = false;
+  lastSeenMessageCache.clear();
+  lastSeenMessagesInitInFlight = null;
   resolvedRoleCache.clear();
   console.warn("Discord shard disconnected:", shardId, event?.code || "unknown");
 });
