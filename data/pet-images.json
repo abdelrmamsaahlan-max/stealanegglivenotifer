@@ -5,14 +5,20 @@
   "source": "https://stealanegg-wiki.com/",
   "pets": [
     {
-      "petName": "King Snake",
-      "sourcePage": "https://stealanegg-wiki.com/wiki/king-snake/",
+      "petName": "ArchAngel",
+      "sourcePage": "https://steal-an-egg-roblox.wiki/pets/archangel/",
       "format": "png",
       "imageKind": "original-pet-icon"
     },
     {
-      "petName": "Yeti",
-      "sourcePage": "https://stealanegg-wiki.com/wiki/yeti/",
+      "petName": "Bomboclat Crocolat",
+      "sourcePage": "https://steal-an-egg-roblox.wiki/pets/bomboclat-crocolat/",
+      "format": "png",
+      "imageKind": "original-pet-icon"
+    },
+    {
+      "petName": "Centaur",
+      "sourcePage": "https://steal-an-egg-roblox.wiki/pets/centaur/",
       "format": "png",
       "imageKind": "original-pet-icon"
     },
@@ -23,20 +29,8 @@
       "imageKind": "original-pet-icon"
     },
     {
-      "petName": "Kraken",
-      "sourcePage": "https://stealanegg-wiki.com/wiki/kraken/",
-      "format": "png",
-      "imageKind": "original-pet-icon"
-    },
-    {
-      "petName": "T-Rex",
-      "sourcePage": "https://stealanegg-wiki.com/wiki/t-rex/",
-      "format": "png",
-      "imageKind": "original-pet-icon"
-    },
-    {
-      "petName": "Tralaledon",
-      "sourcePage": "https://stealanegg-wiki.com/wiki/tralaledon/",
+      "petName": "Cosmic Dragon",
+      "sourcePage": "https://stealanegg-wiki.com/wiki/cosmic-dragon/",
       "format": "png",
       "imageKind": "original-pet-icon"
     },
@@ -47,80 +41,8 @@
       "imageKind": "original-pet-icon"
     },
     {
-      "petName": "Cosmic Dragon",
-      "sourcePage": "https://stealanegg-wiki.com/wiki/cosmic-dragon/",
-      "format": "png",
-      "imageKind": "original-pet-icon"
-    },
-    {
-      "petName": "Stag",
-      "sourcePage": "https://stealanegg-wiki.com/wiki/stag/",
-      "format": "png",
-      "imageKind": "original-pet-icon"
-    },
-    {
-      "petName": "Bomboclat Crocolat",
-      "sourcePage": "https://stealanegg-wiki.com/wiki/bomboclat-crocolat/",
-      "format": "png",
-      "imageKind": "original-pet-icon"
-    },
-    {
-      "petName": "Mutant Shark",
-      "sourcePage": "https://stealanegg-wiki.com/wiki/mutant-shark/",
-      "format": "png",
-      "imageKind": "original-pet-icon"
-    },
-    {
-      "petName": "Gargoyle",
-      "sourcePage": "https://stealanegg-wiki.com/wiki/gargoyle/",
-      "format": "png",
-      "imageKind": "original-pet-icon"
-    },
-    {
-      "petName": "RazorFang",
-      "sourcePage": "https://stealanegg-wiki.com/wiki/razorfang/",
-      "format": "png",
-      "imageKind": "original-pet-icon"
-    },
-    {
-      "petName": "Pure Jellyfish",
-      "sourcePage": "https://stealanegg-wiki.com/wiki/pure-jellyfish/",
-      "format": "png",
-      "imageKind": "original-pet-icon"
-    },
-    {
-      "petName": "Centaur",
-      "sourcePage": "https://stealanegg-wiki.com/wiki/centaur/",
-      "format": "png",
-      "imageKind": "original-pet-icon"
-    },
-    {
-      "petName": "Ice Dragon",
-      "sourcePage": "https://stealanegg-wiki.com/wiki/ice-dragon/",
-      "format": "png",
-      "imageKind": "original-pet-icon"
-    },
-    {
-      "petName": "Phoenix",
-      "sourcePage": "https://stealanegg-wiki.com/wiki/phoenix/",
-      "format": "png",
-      "imageKind": "original-pet-icon"
-    },
-    {
-      "petName": "Lava Dragon",
-      "sourcePage": "https://stealanegg-wiki.com/wiki/lava-dragon/",
-      "format": "png",
-      "imageKind": "original-pet-icon"
-    },
-    {
       "petName": "El Maja",
       "sourcePage": "https://stealanegg-wiki.com/wiki/el-maja/",
-      "format": "png",
-      "imageKind": "original-pet-icon"
-    },
-    {
-      "petName": "Mosasaurus",
-      "sourcePage": "https://stealanegg-wiki.com/wiki/mosasaurus/",
       "format": "png",
       "imageKind": "original-pet-icon"
     },
@@ -131,14 +53,8 @@
       "imageKind": "original-pet-icon"
     },
     {
-      "petName": "Oni Tiger",
-      "sourcePage": "https://stealanegg-wiki.com/wiki/oni-tiger/",
-      "format": "png",
-      "imageKind": "original-pet-icon"
-    },
-    {
-      "petName": "Strawberry Elephant",
-      "sourcePage": "https://stealanegg-wiki.com/wiki/strawberry-elephant/",
+      "petName": "Gargoyle",
+      "sourcePage": "https://stealanegg-wiki.com/wiki/gargoyle/",
       "format": "png",
       "imageKind": "original-pet-icon"
     },
@@ -149,14 +65,14 @@
       "imageKind": "original-pet-icon"
     },
     {
-      "petName": "Skeleton Horse",
-      "sourcePage": "https://stealanegg-wiki.com/wiki/skeleton-horse/",
+      "petName": "Ice Dragon",
+      "sourcePage": "https://stealanegg-wiki.com/wiki/ice-dragon/",
       "format": "png",
       "imageKind": "original-pet-icon"
     },
     {
-      "petName": "Pegasus",
-      "sourcePage": "https://stealanegg-wiki.com/wiki/pegasus/",
+      "petName": "King Snake",
+      "sourcePage": "https://stealanegg-wiki.com/wiki/king-snake/",
       "format": "png",
       "imageKind": "original-pet-icon"
     },
@@ -167,8 +83,26 @@
       "imageKind": "original-pet-icon"
     },
     {
-      "petName": "Unicorn",
-      "sourcePage": "https://stealanegg-wiki.com/wiki/unicorn/",
+      "petName": "Kraken",
+      "sourcePage": "https://stealanegg-wiki.com/wiki/kraken/",
+      "format": "png",
+      "imageKind": "original-pet-icon"
+    },
+    {
+      "petName": "Lava Dragon",
+      "sourcePage": "https://stealanegg-wiki.com/wiki/lava-dragon/",
+      "format": "png",
+      "imageKind": "original-pet-icon"
+    },
+    {
+      "petName": "Mosasaurus",
+      "sourcePage": "https://stealanegg-wiki.com/wiki/mosasaurus/",
+      "format": "png",
+      "imageKind": "original-pet-icon"
+    },
+    {
+      "petName": "Mutant Shark",
+      "sourcePage": "https://stealanegg-wiki.com/wiki/mutant-shark/",
       "format": "png",
       "imageKind": "original-pet-icon"
     },
@@ -179,14 +113,80 @@
       "imageKind": "original-pet-icon"
     },
     {
-      "petName": "World Burner",
-      "sourcePage": "https://stealanegg-wiki.com/wiki/world-burner/",
+      "petName": "Oni Tiger",
+      "sourcePage": "https://stealanegg-wiki.com/wiki/oni-tiger/",
       "format": "png",
       "imageKind": "original-pet-icon"
     },
     {
-      "petName": "ArchAngel",
-      "sourcePage": "https://stealanegg-wiki.com/wiki/archangel/",
+      "petName": "Pegasus",
+      "sourcePage": "https://steal-an-egg-roblox.wiki/pets/pegasus/",
+      "format": "png",
+      "imageKind": "original-pet-icon"
+    },
+    {
+      "petName": "Phoenix",
+      "sourcePage": "https://stealanegg-wiki.com/wiki/phoenix/",
+      "format": "png",
+      "imageKind": "original-pet-icon"
+    },
+    {
+      "petName": "Pure Jellyfish",
+      "sourcePage": "https://steal-an-egg-roblox.wiki/pets/pure-jellyfish/",
+      "format": "png",
+      "imageKind": "original-pet-icon"
+    },
+    {
+      "petName": "RazorFang",
+      "sourcePage": "https://steal-an-egg-roblox.wiki/pets/razorfang/",
+      "format": "png",
+      "imageKind": "original-pet-icon"
+    },
+    {
+      "petName": "Skeleton Horse",
+      "sourcePage": "https://steal-an-egg-roblox.wiki/pets/skeleton-horse/",
+      "format": "png",
+      "imageKind": "original-pet-icon"
+    },
+    {
+      "petName": "Stag",
+      "sourcePage": "https://stealanegg-wiki.com/wiki/stag/",
+      "format": "png",
+      "imageKind": "original-pet-icon"
+    },
+    {
+      "petName": "Strawberry Elephant",
+      "sourcePage": "https://stealanegg-wiki.com/wiki/strawberry-elephant/",
+      "format": "png",
+      "imageKind": "original-pet-icon"
+    },
+    {
+      "petName": "T-Rex",
+      "sourcePage": "https://steal-an-egg-roblox.wiki/pets/trex/",
+      "format": "png",
+      "imageKind": "original-pet-icon"
+    },
+    {
+      "petName": "Tralaledon",
+      "sourcePage": "https://stealanegg-wiki.com/wiki/tralaledon/",
+      "format": "png",
+      "imageKind": "original-pet-icon"
+    },
+    {
+      "petName": "Unicorn",
+      "sourcePage": "https://stealanegg-wiki.com/wiki/unicorn/",
+      "format": "png",
+      "imageKind": "original-pet-icon"
+    },
+    {
+      "petName": "World Burner",
+      "sourcePage": "https://steal-an-egg-roblox.wiki/pets/world-burner/",
+      "format": "png",
+      "imageKind": "original-pet-icon"
+    },
+    {
+      "petName": "Yeti",
+      "sourcePage": "https://stealanegg-wiki.com/wiki/yeti/",
       "format": "png",
       "imageKind": "original-pet-icon"
     }
