@@ -2562,7 +2562,7 @@ async function rebuildLastSeenFromHistory() {
   }
 }
 
-async function getAlertChannel() {async function getAlertChannel() {
+async function getAlertChannel() {
   if (alertChannel?.isTextBased()) return alertChannel;
   if (!CHANNEL_ID) throw new Error("DISCORD_DEFAULT_CHANNEL_ID is not configured");
 
