@@ -52,6 +52,7 @@ const COMMANDS = [
   new SlashCommandBuilder().setName("lastseen").setDescription("Show recently detected rare eggs."),
   new SlashCommandBuilder().setName("history").setDescription("Show the latest rare egg spawn history."),
   new SlashCommandBuilder().setName("events").setDescription("Show discovered game events and updates."),
+  new SlashCommandBuilder().setName("doctor").setDescription("Run a live self-check of the notifier."),
   new SlashCommandBuilder()
     .setName("testrole")
     .setDescription("Test a rarity role mention.")
@@ -403,6 +404,9 @@ const ALERT_ROLE_IDS = {
   divine: process.env.ALERT_DIVINE_ROLE_ID || ""
 };
 
+const resolvedRoleCache = new Map();
+const ROLE_CACHE_TTL_MS = 5 * 60 * 1000;
+
 const RARITY_PRIORITY = {
   divine: 3,
   eternal: 2,
@@ -743,7 +747,31 @@ function publicPetImageUrl(petName) {
   return PUBLIC_BASE_URL + "/cdn/pets/" + encodeURIComponent(slug) + ".png";
 }
 
-async function imageHasTransparentPixels(input) {
+async function trimImageCaches() {
+  const maxEntries = 40;
+
+  if (petPngBufferCache.size > maxEntries) {
+    const oldest = [...petPngBufferCache.entries()]
+      .sort((a, b) => a[1].at - b[1].at)
+      .slice(0, petPngBufferCache.size - maxEntries);
+
+    for (const [key] of oldest) {
+      petPngBufferCache.delete(key);
+    }
+  }
+
+  if (imageFallbackCache.size > maxEntries * 2) {
+    const oldest = [...imageFallbackCache.entries()]
+      .sort((a, b) => a[1].at - b[1].at)
+      .slice(0, imageFallbackCache.size - maxEntries * 2);
+
+    for (const [key] of oldest) {
+      imageFallbackCache.delete(key);
+    }
+  }
+}
+
+function imageHasTransparentPixels(input) {
   try {
     const { data, info } = await sharp(input)
       .ensureAlpha()
@@ -801,7 +829,9 @@ async function getPetPngBuffer(petName) {
       processed = input;
     } else {
       console.log("Removing image background:", entry.petName);
-      const removed = await removeBackground(input);
+
+      const sourceBlob = new Blob([input], { type: "image/png" });
+      const removed = await removeBackground(sourceBlob);
       processed = Buffer.from(await removed.arrayBuffer());
     }
 
@@ -817,6 +847,7 @@ async function getPetPngBuffer(petName) {
       .toBuffer();
 
     petPngBufferCache.set(key, { buffer: pngBuffer, at: Date.now() });
+    trimImageCaches();
     return pngBuffer;
   } catch (error) {
     console.warn("Pet PNG/background-removal failed for " + entry.petName + ":", error?.message || error);
@@ -1696,7 +1727,7 @@ async function scanForGameUpdates() {
 
   if (homepageUpdate?.title) {
     const updateFingerprint = normalizeFeedKey(
-      homepageUpdate.title + "|" + homepageUpdate.description
+      homepageUpdate.title + "|" + (homepageUpdate.url || "")
     );
 
     if (!lastUpdateFingerprint) {
@@ -1823,6 +1854,11 @@ async function resolveAlertRoleId(rarity) {
     return ALERT_ROLE_IDS[rarityKey];
   }
 
+  const cached = resolvedRoleCache.get(rarityKey);
+  if (cached && Date.now() - cached.at < ROLE_CACHE_TTL_MS) {
+    return cached.id;
+  }
+
   if (!alertChannel?.guild) return "";
 
   try {
@@ -1831,15 +1867,18 @@ async function resolveAlertRoleId(rarity) {
       candidate.name?.trim().toLowerCase() === rarityKey
     );
 
+    const id = role?.id || "";
+    resolvedRoleCache.set(rarityKey, { id, at: Date.now() });
+
     if (role) {
       console.log("Auto-resolved alert role:", rarityKey, role.name, role.id);
-      return role.id;
     }
+    return id;
   } catch (error) {
     console.warn("Automatic role lookup failed for " + rarityKey + ":", error?.message || error);
+    resolvedRoleCache.set(rarityKey, { id: "", at: Date.now() });
+    return "";
   }
-
-  return "";
 }
 
 function liveFeedHealth() {
@@ -2495,6 +2534,52 @@ client.on("interactionCreate", async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
   try {
+    if (interaction.commandName === "doctor") {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const checks = [];
+      const memoryMb = Math.round(process.memoryUsage().rss / 1024 / 1024);
+
+      checks.push(
+        (client.isReady() ? "✅" : "❌") + " Discord connection"
+      );
+      checks.push(
+        (CHANNEL_ID ? "✅" : "❌") + " Alert channel configuration"
+      );
+      checks.push(
+        (liveFeedHealth() === "ACTIVE" ? "✅" : liveFeedHealth() === "WAITING" ? "🟡" : "❌") +
+        " EggWatch feed: " + liveFeedHealth()
+      );
+      checks.push(
+        (AUTO_DISCOVERY_ENABLED ? "✅" : "🟡") +
+        " Auto update discovery"
+      );
+      checks.push(
+        (BACKGROUND_REMOVAL_ENABLED ? "✅" : "🟡") +
+        " Transparent PNG processing"
+      );
+      checks.push(
+        (memoryMb < MEMORY_SOFT_LIMIT_MB ? "✅" : memoryMb < MEMORY_HARD_LIMIT_MB ? "🟡" : "❌") +
+        " Memory: " + memoryMb + "MB"
+      );
+      checks.push(
+        "🥚 Catalog: " + eggImageCatalog.length + " entries"
+      );
+      checks.push(
+        "🧾 Spawn history: " + spawnHistory.length
+      );
+      checks.push(
+        "🎮 Event history: " + gameEventHistory.length
+      );
+      checks.push(
+        "⏱️ Uptime: " + Math.floor(process.uptime()) + "s"
+      );
+
+      return await interaction.editReply({
+        content: "**🩺 Notifier Doctor**\\n" + checks.join("\\n")
+      });
+    }
+
     if (interaction.commandName === "ping") {
       const ping = Math.max(0, Math.round(client.ws.ping));
 
@@ -2516,6 +2601,7 @@ client.on("interactionCreate", async interaction => {
         "🖼️ Character PNG: " + (BACKGROUND_REMOVAL_ENABLED ? "ENABLED" : "SOURCE ONLY"),
         "🔄 Auto catalog: " + (AUTO_DISCOVERY_ENABLED ? "ENABLED" : "DISABLED") + " (" + autoDiscoveredCount + " new)",
         "🎮 Event alerts: " + (EVENT_ALERTS_ENABLED ? "ON" : "OFF"),
+        "🩺 Doctor: /doctor",
         "🆕 Last update: " + (lastUpdateTitle || "Unknown"),
         "🧾 Spawn history: " + spawnHistory.length,
         "🎮 Game events: " + gameEventHistory.length,
@@ -2683,6 +2769,7 @@ client.on("interactionCreate", async interaction => {
       petPngBufferCache.clear();
       petStatsCache.clear();
       imageFallbackCache.clear();
+      resolvedRoleCache.clear();
 
       if (CHANNEL_ID) {
         await getAlertChannel();
@@ -2833,7 +2920,12 @@ process.on("unhandledRejection", error => {
 
 process.on("uncaughtException", error => {
   monitorErrors++;
-  console.error("Uncaught exception:", error);
+  console.error(
+    "Uncaught exception. rssMb=" +
+    Math.round(process.memoryUsage().rss / 1024 / 1024) +
+    ":",
+    error
+  );
   saveRuntimeState();
   process.exit(1);
 });
