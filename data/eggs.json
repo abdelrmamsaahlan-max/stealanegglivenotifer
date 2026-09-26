@@ -8,28 +8,277 @@
   ],
   "eggs": [
     {
-      "eggName": "Gargoyle Egg",
-      "displayName": "Gargoyle Egg",
-      "rarity": "Secret",
+      "eggName": "World Burner Egg",
+      "displayName": "World Burner Egg",
+      "rarity": "Divine",
       "biome": "Demons",
       "aliases": [
-        "Secret Gargoyle Egg",
-        "Gargoyle"
+        "Divine World Burner Egg",
+        "World Burner"
       ],
-      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/gargoyle/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/world-burner/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
     {
-      "eggName": "King Snake Egg",
-      "displayName": "King Snake Egg",
-      "rarity": "Secret",
-      "biome": "Jungle",
+      "eggName": "Unicorn Egg",
+      "displayName": "Unicorn Egg",
+      "rarity": "Divine",
+      "biome": "Cosmic",
       "aliases": [
-        "Secret King Snake Egg",
-        "King Snake"
+        "Divine Unicorn Egg",
+        "Unicorn"
       ],
-      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/king-snake/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/unicorn/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Shattered Colossus Egg",
+      "displayName": "Shattered Colossus Egg",
+      "rarity": "Divine",
+      "biome": "Rift",
+      "aliases": [
+        "Divine Shattered Colossus Egg",
+        "Shattered Colossus"
+      ],
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/shattered-colossus/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Nightflame Egg",
+      "displayName": "Nightflame Egg",
+      "rarity": "Divine",
+      "biome": "Titan Temple",
+      "aliases": [
+        "Divine Nightflame Egg",
+        "Nightflame"
+      ],
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/nightflame/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Kitsune Egg",
+      "displayName": "Kitsune Egg",
+      "rarity": "Divine",
+      "biome": "Cherry Blossom",
+      "aliases": [
+        "Divine Kitsune Egg",
+        "Kitsune"
+      ],
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/kitsune/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "ArchAngel Egg",
+      "displayName": "ArchAngel Egg",
+      "rarity": "Divine",
+      "biome": "Angels",
+      "aliases": [
+        "Divine ArchAngel Egg",
+        "ArchAngel",
+        "Arch Angel"
+      ],
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/archangel/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "World Eater Egg",
+      "displayName": "World Eater Egg",
+      "rarity": "Eternal",
+      "biome": "Rift",
+      "aliases": [
+        "Eternal World Eater Egg",
+        "World Eater"
+      ],
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/world-eater/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Void Serpent Egg",
+      "displayName": "Void Serpent Egg",
+      "rarity": "Eternal",
+      "biome": "Rift",
+      "aliases": [
+        "Eternal Void Serpent Egg",
+        "Void Serpent"
+      ],
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/void-serpent/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Void Dragon Egg",
+      "displayName": "Void Dragon Egg",
+      "rarity": "Eternal",
+      "biome": "Rift",
+      "aliases": [
+        "Eternal Void Dragon Egg",
+        "Void Dragon"
+      ],
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/void-dragon/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Strawberry Elephant Egg",
+      "displayName": "Strawberry Elephant Egg",
+      "rarity": "Eternal",
+      "biome": "Event",
+      "aliases": [
+        "Eternal Strawberry Elephant Egg",
+        "Strawberry Elephant"
+      ],
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/strawberry-elephant/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Skeleton Horse Egg",
+      "displayName": "Skeleton Horse Egg",
+      "rarity": "Eternal",
+      "biome": "Demons",
+      "aliases": [
+        "Eternal Skeleton Horse Egg",
+        "Skeleton Horse"
+      ],
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/skeleton-horse/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Shattered Drake Egg",
+      "displayName": "Shattered Drake Egg",
+      "rarity": "Eternal",
+      "biome": "Rift",
+      "aliases": [
+        "Eternal Shattered Drake Egg",
+        "Shattered Drake"
+      ],
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/shattered-drake/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Phoenix Egg",
+      "displayName": "Phoenix Egg",
+      "rarity": "Eternal",
+      "biome": "Volcano",
+      "aliases": [
+        "Eternal Phoenix Egg",
+        "Phoenix"
+      ],
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/phoenix/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Pegasus Egg",
+      "displayName": "Pegasus Egg",
+      "rarity": "Eternal",
+      "biome": "Angels",
+      "aliases": [
+        "Eternal Pegasus Egg",
+        "Pegasus"
+      ],
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/pegasus/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Oni Tiger Egg",
+      "displayName": "Oni Tiger Egg",
+      "rarity": "Eternal",
+      "biome": "Cherry Blossom",
+      "aliases": [
+        "Eternal Oni Tiger Egg",
+        "Oni Tiger"
+      ],
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/oni-tiger/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Mosasaurus Egg",
+      "displayName": "Mosasaurus Egg",
+      "rarity": "Eternal",
+      "biome": "Prehistoric",
+      "aliases": [
+        "Eternal Mosasaurus Egg",
+        "Mosasaurus"
+      ],
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/mosasaurus/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Lava Dragon Egg",
+      "displayName": "Lava Dragon Egg",
+      "rarity": "Eternal",
+      "biome": "Volcano",
+      "aliases": [
+        "Eternal Lava Dragon Egg",
+        "Lava Dragon"
+      ],
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/lava-dragon/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Ice Dragon Egg",
+      "displayName": "Ice Dragon Egg",
+      "rarity": "Eternal",
+      "biome": "Snow",
+      "aliases": [
+        "Eternal Ice Dragon Egg",
+        "Ice Dragon"
+      ],
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/ice-dragon/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Gorilla King Egg",
+      "displayName": "Gorilla King Egg",
+      "rarity": "Eternal",
+      "biome": "Titan Temple",
+      "aliases": [
+        "Eternal Gorilla King Egg",
+        "Gorilla King"
+      ],
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/gorilla-king/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Eternal Lunar Dragon Egg",
+      "displayName": "Eternal Lunar Dragon Egg",
+      "rarity": "Eternal",
+      "biome": "Cosmic",
+      "aliases": [
+        "Eternal Eternal Lunar Dragon Egg",
+        "Eternal Lunar Dragon",
+        "Lunar Dragon Egg"
+      ],
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/eternal-lunar-dragon/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "El Maja Egg",
+      "displayName": "El Maja Egg",
+      "rarity": "Eternal",
+      "biome": "Abyss Ocean",
+      "aliases": [
+        "Eternal El Maja Egg",
+        "El Maja"
+      ],
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/el-maja/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -47,28 +296,28 @@
       "lastVerified": "2026-09-26"
     },
     {
-      "eggName": "Cerberus Egg",
-      "displayName": "Cerberus Egg",
+      "eggName": "Wendigo Egg",
+      "displayName": "Wendigo Egg",
       "rarity": "Secret",
-      "biome": "Volcano",
+      "biome": "Rift",
       "aliases": [
-        "Secret Cerberus Egg",
-        "Cerberus"
+        "Secret Wendigo Egg",
+        "Wendigo"
       ],
-      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/cerberus/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/wendigo/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
     {
-      "eggName": "Kraken Egg",
-      "displayName": "Kraken Egg",
+      "eggName": "Tralaledon Egg",
+      "displayName": "Tralaledon Egg",
       "rarity": "Secret",
-      "biome": "Abyss Ocean",
+      "biome": "Prehistoric",
       "aliases": [
-        "Secret Kraken Egg",
-        "Kraken"
+        "Secret Tralaledon Egg",
+        "Tralaledon"
       ],
-      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/kraken/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/tralaledon/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -87,28 +336,133 @@
       "lastVerified": "2026-09-26"
     },
     {
-      "eggName": "Tralaledon Egg",
-      "displayName": "Tralaledon Egg",
+      "eggName": "Stag Egg",
+      "displayName": "Stag Egg",
       "rarity": "Secret",
-      "biome": "Prehistoric",
+      "biome": "Cherry Blossom",
       "aliases": [
-        "Secret Tralaledon Egg",
-        "Tralaledon"
+        "Secret Stag Egg",
+        "Stag"
       ],
-      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/tralaledon/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/stag/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
     {
-      "eggName": "Cosmic Dragon Egg",
-      "displayName": "Cosmic Dragon Egg",
+      "eggName": "Shardwing Egg",
+      "displayName": "Shardwing Egg",
       "rarity": "Secret",
-      "biome": "Cosmic",
+      "biome": "Rift",
       "aliases": [
-        "Secret Cosmic Dragon Egg",
-        "Cosmic Dragon"
+        "Secret Shardwing Egg",
+        "Shardwing"
       ],
-      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/cosmic-dragon/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/shardwing/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "RazorFang Egg",
+      "displayName": "RazorFang Egg",
+      "rarity": "Secret",
+      "biome": "Demons",
+      "aliases": [
+        "Secret RazorFang Egg",
+        "RazorFang"
+      ],
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/razorfang/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Pure Jellyfish Egg",
+      "displayName": "Pure Jellyfish Egg",
+      "rarity": "Secret",
+      "biome": "Angels",
+      "aliases": [
+        "Secret Pure Jellyfish Egg",
+        "Pure Jellyfish"
+      ],
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/pure-jellyfish/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Mutant Shark Egg",
+      "displayName": "Mutant Shark Egg",
+      "rarity": "Secret",
+      "biome": "Titan Temple",
+      "aliases": [
+        "Secret Mutant Shark Egg",
+        "Mutant Shark"
+      ],
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/mutant-shark/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Mawbreaker Egg",
+      "displayName": "Mawbreaker Egg",
+      "rarity": "Secret",
+      "biome": "Rift",
+      "aliases": [
+        "Secret Mawbreaker Egg",
+        "Mawbreaker"
+      ],
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/mawbreaker/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Kraken Egg",
+      "displayName": "Kraken Egg",
+      "rarity": "Secret",
+      "biome": "Abyss Ocean",
+      "aliases": [
+        "Secret Kraken Egg",
+        "Kraken"
+      ],
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/kraken/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "King Snake Egg",
+      "displayName": "King Snake Egg",
+      "rarity": "Secret",
+      "biome": "Jungle",
+      "aliases": [
+        "Secret King Snake Egg",
+        "King Snake"
+      ],
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/king-snake/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Gargoyle Egg",
+      "displayName": "Gargoyle Egg",
+      "rarity": "Secret",
+      "biome": "Demons",
+      "aliases": [
+        "Secret Gargoyle Egg",
+        "Gargoyle"
+      ],
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/gargoyle/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Experiment 001 Egg",
+      "displayName": "Experiment 001 Egg",
+      "rarity": "Secret",
+      "biome": "Event",
+      "aliases": [
+        "Secret Experiment 001 Egg",
+        "Experiment 001",
+        "Experiment001 Egg"
+      ],
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/experiment-001/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -126,28 +480,41 @@
       "lastVerified": "2026-09-26"
     },
     {
-      "eggName": "Stag Egg",
-      "displayName": "Stag Egg",
+      "eggName": "Cosmic Dragon Egg",
+      "displayName": "Cosmic Dragon Egg",
       "rarity": "Secret",
-      "biome": "Cherry Blossom",
+      "biome": "Cosmic",
       "aliases": [
-        "Secret Stag Egg",
-        "Stag"
+        "Secret Cosmic Dragon Egg",
+        "Cosmic Dragon"
       ],
-      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/stag/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/cosmic-dragon/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
     {
-      "eggName": "Mutant Shark Egg",
-      "displayName": "Mutant Shark Egg",
+      "eggName": "Cerberus Egg",
+      "displayName": "Cerberus Egg",
       "rarity": "Secret",
-      "biome": "Titan Temple",
+      "biome": "Volcano",
       "aliases": [
-        "Secret Mutant Shark Egg",
-        "Mutant Shark"
+        "Secret Cerberus Egg",
+        "Cerberus"
       ],
-      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/mutant-shark/",
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/cerberus/",
+      "active": true,
+      "lastVerified": "2026-09-26"
+    },
+    {
+      "eggName": "Centaur Egg",
+      "displayName": "Centaur Egg",
+      "rarity": "Secret",
+      "biome": "Angels",
+      "aliases": [
+        "Secret Centaur Egg",
+        "Centaur"
+      ],
+      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/centaur/",
       "active": true,
       "lastVerified": "2026-09-26"
     },
@@ -174,267 +541,6 @@
         "Abyss Overlord"
       ],
       "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/abyss-overlord/",
-      "active": true,
-      "lastVerified": "2026-09-26"
-    },
-    {
-      "eggName": "Wendigo Egg",
-      "displayName": "Wendigo Egg",
-      "rarity": "Secret",
-      "biome": "Rift",
-      "aliases": [
-        "Secret Wendigo Egg",
-        "Wendigo"
-      ],
-      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/wendigo/",
-      "active": true,
-      "lastVerified": "2026-09-26"
-    },
-    {
-      "eggName": "Mawbreaker Egg",
-      "displayName": "Mawbreaker Egg",
-      "rarity": "Secret",
-      "biome": "Rift",
-      "aliases": [
-        "Secret Mawbreaker Egg",
-        "Mawbreaker"
-      ],
-      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/mawbreaker/",
-      "active": true,
-      "lastVerified": "2026-09-26"
-    },
-    {
-      "eggName": "Shardwing Egg",
-      "displayName": "Shardwing Egg",
-      "rarity": "Secret",
-      "biome": "Rift",
-      "aliases": [
-        "Secret Shardwing Egg",
-        "Shardwing"
-      ],
-      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/shardwing/",
-      "active": true,
-      "lastVerified": "2026-09-26"
-    },
-    {
-      "eggName": "Ice Dragon Egg",
-      "displayName": "Ice Dragon Egg",
-      "rarity": "Eternal",
-      "biome": "Snow",
-      "aliases": [
-        "Eternal Ice Dragon Egg",
-        "Ice Dragon"
-      ],
-      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/ice-dragon/",
-      "active": true,
-      "lastVerified": "2026-09-26"
-    },
-    {
-      "eggName": "Phoenix Egg",
-      "displayName": "Phoenix Egg",
-      "rarity": "Eternal",
-      "biome": "Volcano",
-      "aliases": [
-        "Eternal Phoenix Egg",
-        "Phoenix"
-      ],
-      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/phoenix/",
-      "active": true,
-      "lastVerified": "2026-09-26"
-    },
-    {
-      "eggName": "Lava Dragon Egg",
-      "displayName": "Lava Dragon Egg",
-      "rarity": "Eternal",
-      "biome": "Volcano",
-      "aliases": [
-        "Eternal Lava Dragon Egg",
-        "Lava Dragon"
-      ],
-      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/lava-dragon/",
-      "active": true,
-      "lastVerified": "2026-09-26"
-    },
-    {
-      "eggName": "El Maja Egg",
-      "displayName": "El Maja Egg",
-      "rarity": "Eternal",
-      "biome": "Abyss Ocean",
-      "aliases": [
-        "Eternal El Maja Egg",
-        "El Maja"
-      ],
-      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/el-maja/",
-      "active": true,
-      "lastVerified": "2026-09-26"
-    },
-    {
-      "eggName": "Mosasaurus Egg",
-      "displayName": "Mosasaurus Egg",
-      "rarity": "Eternal",
-      "biome": "Prehistoric",
-      "aliases": [
-        "Eternal Mosasaurus Egg",
-        "Mosasaurus"
-      ],
-      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/mosasaurus/",
-      "active": true,
-      "lastVerified": "2026-09-26"
-    },
-    {
-      "eggName": "Eternal Lunar Dragon Egg",
-      "displayName": "Eternal Lunar Dragon Egg",
-      "rarity": "Eternal",
-      "biome": "Cosmic",
-      "aliases": [
-        "Eternal Eternal Lunar Dragon Egg",
-        "Eternal Lunar Dragon",
-        "Lunar Dragon Egg"
-      ],
-      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/eternal-lunar-dragon/",
-      "active": true,
-      "lastVerified": "2026-09-26"
-    },
-    {
-      "eggName": "Oni Tiger Egg",
-      "displayName": "Oni Tiger Egg",
-      "rarity": "Eternal",
-      "biome": "Cherry Blossom",
-      "aliases": [
-        "Eternal Oni Tiger Egg",
-        "Oni Tiger"
-      ],
-      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/oni-tiger/",
-      "active": true,
-      "lastVerified": "2026-09-26"
-    },
-    {
-      "eggName": "Gorilla King Egg",
-      "displayName": "Gorilla King Egg",
-      "rarity": "Eternal",
-      "biome": "Titan Temple",
-      "aliases": [
-        "Eternal Gorilla King Egg",
-        "Gorilla King"
-      ],
-      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/gorilla-king/",
-      "active": true,
-      "lastVerified": "2026-09-26"
-    },
-    {
-      "eggName": "Strawberry Elephant Egg",
-      "displayName": "Strawberry Elephant Egg",
-      "rarity": "Eternal",
-      "biome": "Event",
-      "aliases": [
-        "Eternal Strawberry Elephant Egg",
-        "Strawberry Elephant"
-      ],
-      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/strawberry-elephant/",
-      "active": true,
-      "lastVerified": "2026-09-26"
-    },
-    {
-      "eggName": "Void Dragon Egg",
-      "displayName": "Void Dragon Egg",
-      "rarity": "Eternal",
-      "biome": "Rift",
-      "aliases": [
-        "Eternal Void Dragon Egg",
-        "Void Dragon"
-      ],
-      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/void-dragon/",
-      "active": true,
-      "lastVerified": "2026-09-26"
-    },
-    {
-      "eggName": "Void Serpent Egg",
-      "displayName": "Void Serpent Egg",
-      "rarity": "Eternal",
-      "biome": "Rift",
-      "aliases": [
-        "Eternal Void Serpent Egg",
-        "Void Serpent"
-      ],
-      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/void-serpent/",
-      "active": true,
-      "lastVerified": "2026-09-26"
-    },
-    {
-      "eggName": "World Eater Egg",
-      "displayName": "World Eater Egg",
-      "rarity": "Eternal",
-      "biome": "Rift",
-      "aliases": [
-        "Eternal World Eater Egg",
-        "World Eater"
-      ],
-      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/world-eater/",
-      "active": true,
-      "lastVerified": "2026-09-26"
-    },
-    {
-      "eggName": "Shattered Drake Egg",
-      "displayName": "Shattered Drake Egg",
-      "rarity": "Eternal",
-      "biome": "Rift",
-      "aliases": [
-        "Eternal Shattered Drake Egg",
-        "Shattered Drake"
-      ],
-      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/shattered-drake/",
-      "active": true,
-      "lastVerified": "2026-09-26"
-    },
-    {
-      "eggName": "Unicorn Egg",
-      "displayName": "Unicorn Egg",
-      "rarity": "Divine",
-      "biome": "Cosmic",
-      "aliases": [
-        "Divine Unicorn Egg",
-        "Unicorn"
-      ],
-      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/unicorn/",
-      "active": true,
-      "lastVerified": "2026-09-26"
-    },
-    {
-      "eggName": "Kitsune Egg",
-      "displayName": "Kitsune Egg",
-      "rarity": "Divine",
-      "biome": "Cherry Blossom",
-      "aliases": [
-        "Divine Kitsune Egg",
-        "Kitsune"
-      ],
-      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/kitsune/",
-      "active": true,
-      "lastVerified": "2026-09-26"
-    },
-    {
-      "eggName": "Nightflame Egg",
-      "displayName": "Nightflame Egg",
-      "rarity": "Divine",
-      "biome": "Titan Temple",
-      "aliases": [
-        "Divine Nightflame Egg",
-        "Nightflame"
-      ],
-      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/nightflame/",
-      "active": true,
-      "lastVerified": "2026-09-26"
-    },
-    {
-      "eggName": "Shattered Colossus Egg",
-      "displayName": "Shattered Colossus Egg",
-      "rarity": "Divine",
-      "biome": "Rift",
-      "aliases": [
-        "Divine Shattered Colossus Egg",
-        "Shattered Colossus"
-      ],
-      "sourcePage": "https://stealanegg-hub.wiki/wiki/pets/shattered-colossus/",
       "active": true,
       "lastVerified": "2026-09-26"
     }
