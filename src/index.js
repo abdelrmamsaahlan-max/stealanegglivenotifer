@@ -645,6 +645,46 @@ function loadRuntimeState() {
       }
     }
 
+    if (state.deliveredAlertKeys && typeof state.deliveredAlertKeys === "object") {
+      for (const [key, value] of Object.entries(state.deliveredAlertKeys)) {
+        if (key && Number.isFinite(Number(value)) && Number(value) > Date.now()) {
+          deliveredAlertKeys.set(key, Number(value));
+        }
+      }
+    }
+
+    if (state.seenSemanticKeys && typeof state.seenSemanticKeys === "object") {
+      for (const [key, value] of Object.entries(state.seenSemanticKeys)) {
+        if (key && Number.isFinite(Number(value))) {
+          seen.set(key, Number(value));
+        }
+      }
+    }
+
+    if (state.alertedMessageIds && typeof state.alertedMessageIds === "object") {
+      for (const [key, value] of Object.entries(state.alertedMessageIds)) {
+        if (key && Number.isFinite(Number(value))) {
+          alertedMessageIds.set(key, Number(value));
+        }
+      }
+    }
+
+    if (state.seenRiftAlerts && typeof state.seenRiftAlerts === "object") {
+      for (const [key, value] of Object.entries(state.seenRiftAlerts)) {
+        if (key && Number.isFinite(Number(value)) && Number(value) > Date.now()) {
+          seenRiftAlerts.set(key, Number(value));
+        }
+      }
+    }
+
+    if (state.seenExperimentAlerts && typeof state.seenExperimentAlerts === "object") {
+      for (const [key, value] of Object.entries(state.seenExperimentAlerts)) {
+        if (key && Number.isFinite(Number(value))) {
+          seenExperimentAlerts.set(key, Number(value));
+        }
+      }
+    }
+
     if (typeof state.lastUpdateFingerprint === "string") {
       lastUpdateFingerprint = state.lastUpdateFingerprint;
     }
@@ -723,7 +763,7 @@ function saveRuntimeState() {
     fs.mkdirSync(stateDir, { recursive: true });
 
     const payload = {
-      version: 2,
+      version: 3,
       savedAt: new Date().toISOString(),
       lastUpdateFingerprint,
       lastUpdateTitle,
@@ -737,6 +777,29 @@ function saveRuntimeState() {
       announcedDiscoveryEvents: Object.fromEntries(
         [...announcedDiscoveryEventKeys.entries()]
           .slice(0, 100)
+      ),
+      deliveredAlertKeys: Object.fromEntries(
+        [...deliveredAlertKeys.entries()]
+          .filter(([, expiresAt]) => Number(expiresAt) > Date.now())
+          .slice(0, 500)
+      ),
+      seenSemanticKeys: Object.fromEntries(
+        [...seen.entries()]
+          .slice(-500)
+      ),
+      alertedMessageIds: Object.fromEntries(
+        [...alertedMessageIds.entries()]
+          .slice(-500)
+      ),
+      seenRiftAlerts: Object.fromEntries(
+        [...seenRiftAlerts.entries()]
+          .filter(([, seenAt]) => Number(seenAt) > Date.now() - RIFT_DEDUP_TTL_MS)
+          .slice(0, 300)
+          .map(([key, seenAt]) => [key, seenAt])
+      ),
+      seenExperimentAlerts: Object.fromEntries(
+        [...seenExperimentAlerts.entries()]
+          .slice(-300)
       ),
       spawnHistory: spawnHistory.slice(0, MAX_HISTORY),
       gameEventHistory: gameEventHistory.slice(0, MAX_EVENT_HISTORY),
