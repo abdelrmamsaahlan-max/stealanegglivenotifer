@@ -2919,7 +2919,7 @@ let imageWarmupTimer = null;
 
 function scheduleImageWarmup() {
   const run = () => {
-    warmPetImageCache({ workers: 2 }).catch(error => {
+    warmPetImageCache({ workers: 3 }).catch(error => {
       console.error("Background image warm-up failed:", error);
     });
   };
@@ -3948,7 +3948,20 @@ async function runAutoDiscoverySweep() {
   const linkQueue = [];
   let successfulSources = 0;
 
-  for (const source of AUTO_DISCOVERY_SOURCES) {
+  const orderedDiscoverySources = [...AUTO_DISCOVERY_SOURCES].sort((a, b) => {
+    const left = autoDiscoverySourceHealth.get(a.key) || {};
+    const right = autoDiscoverySourceHealth.get(b.key) || {};
+    const activeScore = value =>
+      String(value?.status || "").toUpperCase() === "ACTIVE" ? 0 : 1;
+    return (
+      activeScore(left) - activeScore(right) ||
+      Number(left?.failures || left?.consecutiveFailures || 0) -
+        Number(right?.failures || right?.consecutiveFailures || 0) ||
+      Number(b.rank || 0) - Number(a.rank || 0)
+    );
+  });
+
+  for (const source of orderedDiscoverySources) {
     sourceRanks[source.name] = source.rank;
     updateDiscoverySourceHealth(source);
 
@@ -5057,7 +5070,13 @@ async function runDailySelfCheck() {
       AUTO_DISCOVERY_SOURCES.length === 0 ||
       [...autoDiscoverySourceHealth.values()]
         .some(item => item.status === "ACTIVE"),
-    png: petPngBufferCache.size > 0 || eggImageCatalog.length === 0,
+    png: eggImageCatalog.length === 0 ||
+      eggImageCatalog
+        .filter(isLastSeenEligibleEntry)
+        .every(entry =>
+          petPngBufferCache.has(normalizeFeedKey(entry.petName)) &&
+          petPngBufferCache.get(normalizeFeedKey(entry.petName))?.buffer
+        ),
     circuit: discordCircuit.state !== "OPEN",
     recoverySelfTests: recovery.ok
   };
@@ -6902,6 +6921,99 @@ app.get("/", (_req, res) => {
   });
 });
 
+function dashboardHtml() {
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Steal An Egg Tracker</title>
+<style>
+body{font-family:Inter,system-ui,sans-serif;margin:0;padding:28px;background:#0b1020;color:#eef2ff}
+h1{margin:0 0 6px}.sub{opacity:.7;margin-bottom:22px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}
+.card{background:#11182d;border:1px solid #25304e;border-radius:14px;padding:16px}
+.label{opacity:.65;font-size:12px;text-transform:uppercase;letter-spacing:.08em}
+.value{font-size:28px;font-weight:700;margin-top:8px}
+.ok{color:#6ee7b7}.warn{color:#fbbf24}.bad{color:#fb7185}
+#updated{margin-top:18px;opacity:.65;font-size:13px}
+</style>
+</head>
+<body>
+<h1>Steal An Egg Tracker</h1>
+<div class="sub">Live system health, reliability, source failover and transparent pet-image readiness.</div>
+<div id="grid" class="grid"></div>
+<div id="updated">Loading…</div>
+<script>
+const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+function card(name,value,cls=""){return '<div class="card"><div class="label">'+esc(name)+'</div><div class="value '+cls+'">'+esc(value)+'</div></div>'}
+function render(h){
+  const live=h.liveFeedHealth||"UNKNOWN";
+  const png=`${h.transparentPetImagesReady??0}/${h.petImageCatalogSize??0}`;
+  const rel=h.reliability||{};
+  const rift=h.riftStateMachine||"WAITING";
+  const scramble=h.scramble?.currentState||"WAITING";
+  const queue=h.alertDelivery?.alertQueueDepth??0;
+  const html=[
+    card("Bot",h.botReady?"ONLINE":"OFFLINE",h.botReady?"ok":"bad"),
+    card("Live Feed",live,live==="ACTIVE"?"ok":live==="STALE"?"bad":"warn"),
+    card("Queue",queue,queue>0?"warn":"ok"),
+    card("Reliability Tracked",rel.trackedIncidents??0),
+    card("Corroborated",rel.corroboratedEvents??0,"ok"),
+    card("Anomaly Flags",rel.anomalyFlags??0,rel.anomalyFlags?"warn":"ok"),
+    card("Scramble",scramble),
+    card("Rift",rift),
+    card("Transparent Pet PNG",png,png.split("/")[0]===png.split("/")[1]?"ok":"warn"),
+    card("Persistence",h.persistence?.enabled?"ENABLED":"OFFLINE",h.persistence?.enabled?"ok":"warn"),
+    card("Discord Circuit",h.discordCircuit?.state||"UNKNOWN",h.discordCircuit?.state==="CLOSED"?"ok":"warn")
+  ].join("");
+  document.getElementById("grid").innerHTML=html;
+  document.getElementById("updated").textContent="Updated "+new Date().toLocaleTimeString();
+}
+async function refresh(){
+  try{
+    const res=await fetch("/health",{cache:"no-store"});
+    const data=await res.json();
+    render(data);
+  }catch(e){
+    document.getElementById("updated").textContent="Health request failed";
+  }
+}
+refresh();setInterval(refresh,5000);
+</script>
+</body>
+</html>`;
+}
+
+app.get("/dashboard", (_req, res) => {
+  res.setHeader("content-type","text/html; charset=utf-8");
+  res.setHeader("cache-control","no-store");
+  res.send(dashboardHtml());
+});
+
+app.get("/api/images/status", (_req, res) => {
+  const items = eggImageCatalog
+    .filter(isLastSeenEligibleEntry)
+    .map(entry => {
+      const key = normalizeFeedKey(entry.petName);
+      const cached = petPngBufferCache.get(key);
+      return {
+        petName: entry.petName,
+        rarity: entry.rarity,
+        ready: Boolean(cached?.buffer),
+        format: cached?.buffer ? "image/png" : null,
+        transparent: Boolean(cached?.buffer)
+      };
+    });
+
+  res.json({
+    total: items.length,
+    ready: items.filter(item => item.ready).length,
+    transparentPngOnly: true,
+    items
+  });
+});
+
 app.get("/health", (_req, res) => {
   const ready = client.isReady();
 
@@ -6976,6 +7088,14 @@ app.get("/health", (_req, res) => {
       enabled: EVENT_ALERTS_ENABLED,
       lastAppearedAt: scrambleState.lastAppearedAt,
       nextBossAt: scrambleState.nextBossAt,
+      currentState: scrambleState.lastAppearedAt
+        ? transitionEventState({
+            occurredAt: scrambleState.lastAppearedAt,
+            now: Date.now(),
+            cycleMs: SCRAMBLE_CYCLE_MINUTES * 60_000,
+            activeMs: SCRAMBLE_ACTIVE_MINUTES * 60_000
+          })
+        : "WAITING",
       lastTier: scrambleState.lastTier,
       lastSamples: scrambleState.lastSamples
     },
@@ -6986,6 +7106,14 @@ app.get("/health", (_req, res) => {
     autoDiscoverySources: discoverySummary(),
     autoDiscoverySummary: autoDiscoveryLastSummary,
     lastUpdateTitle,
+    riftStateMachine: riftState.lastChangedAt
+      ? transitionEventState({
+          occurredAt: riftState.lastChangedAt,
+          now: Date.now(),
+          cycleMs: 30 * 60_000,
+          activeMs: 5 * 60_000
+        })
+      : "WAITING",
     spawnHistoryCount: spawnHistory.length,
     gameEventHistoryCount: gameEventHistory.length,
     memoryRssMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
@@ -7034,7 +7162,12 @@ app.get("/health", (_req, res) => {
     experimentLastAppearedAt: experimentState.lastAppearedAt,
     experimentCustomEmojisReady: experimentCustomEmojiSetupState.ready,
     experimentCustomEmojiCount: experimentCustomEmojiCache.size,
-    cachedPetImages: [...imageFallbackCache.keys()].filter(key => key.startsWith("pet:") && imageFallbackCache.get(key)?.url).length
+    cachedPetImages: [...petPngBufferCache.keys()].length,
+    transparentPetImagesReady: eggImageCatalog
+      .filter(isLastSeenEligibleEntry)
+      .filter(entry => petPngBufferCache.has(normalizeFeedKey(entry.petName)))
+      .length,
+    petImageCatalogSize: eggImageCatalog.filter(isLastSeenEligibleEntry).length
   });
 });
 
