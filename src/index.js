@@ -3643,8 +3643,12 @@ async function pollLiveFeed() {
     updateLiveFeedHealth();
 
     const now = Date.now();
-    const startupBaselineAt = liveFeedLastEventAt
-      ? Date.parse(liveFeedLastEventAt)
+    // Snapshot the previous feed watermark once per poll. Do not mutate the
+    // watermark while iterating candidates or later candidates in the same
+    // response can incorrectly look like old events and get dropped.
+    const previousLastEventAt = liveFeedLastEventAt;
+    const startupBaselineAt = previousLastEventAt
+      ? Date.parse(previousLastEventAt)
       : null;
 
     for (const [fingerprint, seenAt] of liveFeedProcessedEvents) {
@@ -3678,13 +3682,25 @@ async function pollLiveFeed() {
           ? String(candidate.sourceEventId)
           : "";
 
-        const fingerprint = [
-          sourceEventId,
-          rarityKey,
-          normalizeFeedKey(candidate.eggName),
-          normalizeFeedKey(candidate.biome),
-          candidate.spawnedAt
-        ].join("|");
+        // Prefer the upstream event ID. When a feed does not expose one,
+        // use a source-independent canonical timestamp bucket so equivalent
+        // observations from multiple endpoints collapse to one event.
+        const eventSecond = Math.floor(eventTime / 1000);
+        const fingerprint = sourceEventId
+          ? [
+              "id",
+              sourceEventId,
+              rarityKey,
+              normalizeFeedKey(candidate.eggName),
+              normalizeFeedKey(candidate.biome)
+            ].join("|")
+          : [
+              "event",
+              rarityKey,
+              normalizeFeedKey(candidate.eggName),
+              normalizeFeedKey(candidate.biome),
+              eventSecond
+            ].join("|");
 
         const existing = candidateMap.get(fingerprint);
 
@@ -3722,7 +3738,6 @@ async function pollLiveFeed() {
 
       liveFeedEventsReceived++;
       liveFeedLastUrl = url;
-      liveFeedLastEventAt = candidate.spawnedAt;
 
       const feedGate = shouldProcessLiveFeedCandidate({
         eventTime,
@@ -3832,14 +3847,32 @@ async function pollLiveFeed() {
     // Startup baseline: mark every currently visible event as seen without
     // sending a burst of historical alerts. Future polls deliver every new
     // candidate independently.
+    // Advance the feed watermark only after every candidate in this
+    // response has been evaluated. This prevents multi-spawn payloads from
+    // losing events because a later candidate was compared against a mutated
+    // watermark from an earlier candidate.
+    const newestCandidate = [...candidates]
+      .filter(item => Number.isFinite(Number(item?.eventTime)))
+      .sort((a, b) => Number(b.eventTime) - Number(a.eventTime))[0];
+
+    if (newestCandidate) {
+      const newestTime = Number(newestCandidate.eventTime);
+      const previousTime = previousLastEventAt
+        ? Date.parse(previousLastEventAt)
+        : NaN;
+
+      if (!Number.isFinite(previousTime) || newestTime > previousTime) {
+        liveFeedLastEventAt = new Date(newestTime).toISOString();
+        liveFeedLastFingerprint = newestCandidate.fingerprint || null;
+      }
+    }
+
     if (!liveFeedPrimed) {
       liveFeedPrimed = true;
-      liveFeedLastFingerprint =
-        candidates[candidates.length - 1]?.fingerprint || null;
 
       scheduleStateSave();
 
-      const newest = candidates[candidates.length - 1];
+      const newest = newestCandidate;
       if (newest) {
         console.log(
           "Live feed primed:",
@@ -6210,25 +6243,10 @@ function buildAlertEmbed(event, _latencyMs = null, includeImage = true) {
     ? Math.floor(timestamp / 1000)
     : Math.floor(Date.now() / 1000);
 
-  const verificationCount = Math.max(1, Number(event.verificationCount || 1));
-  const confidencePercent = Number.isFinite(Number(event.confidence))
-    ? Math.round(Number(event.confidence) * 100) + "%"
-    : "N/A";
-
   const fields = [
     { name: "🥚 Egg", value: eggName.slice(0, 1024), inline: true },
     { name: "📍 Location", value: area.slice(0, 1024), inline: true },
-    { name: "🕒 Spawned", value: "<t:" + unix + ":R>", inline: true },
-    {
-      name: "🔎 Verification",
-      value: verificationCount + " source" + (verificationCount === 1 ? "" : "s") + " • " + confidencePercent,
-      inline: true
-    },
-    {
-      name: "🧾 Incident",
-      value: String(event.incidentId || "untracked").slice(0, 1024),
-      inline: true
-    }
+    { name: "🕒 Spawned", value: "<t:" + unix + ":R>", inline: true }
   ];
 
   const embed = new EmbedBuilder()
