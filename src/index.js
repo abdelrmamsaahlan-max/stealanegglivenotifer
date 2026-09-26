@@ -6957,7 +6957,7 @@ const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&
 function card(name,value,cls=""){return '<div class="card"><div class="label">'+esc(name)+'</div><div class="value '+cls+'">'+esc(value)+'</div></div>'}
 function render(h){
   const live=h.liveFeedHealth||"UNKNOWN";
-  const png=`${h.transparentPetImagesReady??0}/${h.petImageCatalogSize??0}`;
+  const png=String(h.transparentPetImagesReady??0)+"/"+String(h.petImageCatalogSize??0);
   const rel=h.reliability||{};
   const rift=h.riftStateMachine||"WAITING";
   const scramble=h.scramble?.currentState||"WAITING";
