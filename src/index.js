@@ -1072,13 +1072,33 @@ async function fetchPetGameStats(petName) {
   if (!entry) return { income: null, speed: null };
 
   const key = normalizeFeedKey(entry.petName);
+  const staticIncome = typeof entry.baseIncome === "string" && entry.baseIncome.trim()
+    ? entry.baseIncome.trim()
+    : null;
+
   const cached = petStatsCache.get(key);
   if (cached && Date.now() - cached.at < PET_PAGE_CACHE_TTL_MS) {
-    return cached.stats;
+    return {
+      ...cached.stats,
+      income: staticIncome || cached.stats.income || null
+    };
+  }
+
+  // Use the verified catalog value first. The page scrape is only a fallback
+  // for newly discovered/uncatalogued values, so formatting changes on the wiki
+  // cannot randomly break the alert income field.
+  if (staticIncome) {
+    const stats = { income: staticIncome, speed: null };
+    petStatsCache.set(key, { stats, at: Date.now() });
+    return stats;
   }
 
   const page = await fetchPetPage(entry.petName);
-  const stats = parseGameStatsFromPetPage(page?.body || "");
+  const scraped = parseGameStatsFromPetPage(page?.body || "");
+  const stats = {
+    income: scraped.income || null,
+    speed: scraped.speed || null
+  };
   petStatsCache.set(key, { stats, at: Date.now() });
   return stats;
 }
@@ -3356,7 +3376,8 @@ function buildAlertEmbed(event, _latencyMs = null, includeImage = true) {
   const rarity = String(event.rarity || "Unknown").trim();
   const rarityKey = rarity.toLowerCase();
   const emoji = getEggAlertEmoji(event);
-  const eggName = String(event.displayName || event.eggName || "Unknown").trim();
+  const eggName = String(event.eggName || "Unknown Egg").trim();
+  const petName = String(event.displayName || event.eggName || "Unknown").trim();
   const area = String(event.biome || "Unknown").trim();
   const baseIncome = event.gameStats?.income || "Not available";
 
@@ -3366,7 +3387,8 @@ function buildAlertEmbed(event, _latencyMs = null, includeImage = true) {
     : Math.floor(Date.now() / 1000);
 
   const fields = [
-    { name: "🥚 Egg", value: eggName.slice(0, 1024), inline: true },
+    { name: emoji + " Egg", value: eggName.slice(0, 1024), inline: true },
+    { name: "🐾 Pet", value: petName.slice(0, 1024), inline: true },
     { name: "📍 Location", value: area.slice(0, 1024), inline: true },
     { name: "💰 Base Income", value: baseIncome.slice(0, 1024), inline: true },
     { name: "🕒 Spawned", value: "<t:" + unix + ":R>", inline: true }
@@ -3380,9 +3402,10 @@ function buildAlertEmbed(event, _latencyMs = null, includeImage = true) {
         divine: 0xef4444
       }[rarityKey] || 0x5865f2
     )
-    .setTitle(emoji + "  " + rarity + " Egg Spawned!")
+    .setTitle(emoji + "  " + rarity + " Egg Spawned")
     .setDescription(
-      "**" + eggName.slice(0, 200) + "** spawned in **" + area.slice(0, 200) + "**."
+      "**" + petName.slice(0, 200) + "** spawned from **" +
+      eggName.slice(0, 200) + "** in **" + area.slice(0, 200) + "**."
     )
     .addFields(fields)
     .setFooter({ text: "Steal An Egg • Live Spawn • EggWatch" })
@@ -3676,13 +3699,10 @@ async function sendAlert(event, latencyMs = null) {
     alertEggEmoji +
     " **" +
     rarity +
-    " egg " +
+    " Egg Spawned:** " +
     petName +
-    " spawned in " +
-    area +
-    "!**\n" +
-    "💰 **Base Income:** " +
-    baseIncome;
+    " • " +
+    area;
 
   const mentionContent =
     ALERT_MENTION_MODE === "role" && roleId
