@@ -140,7 +140,7 @@ export function buildExperimentAlertEmbed(event, emojiMap = {}) {
     ":R>)";
 
   return new EmbedBuilder()
-    .setColor(0xec4899)
+    .setColor(0x22c55e)
     .setTitle("「・EXPERIMENT EVENT」")
     .setDescription(
       scrambleEmoji +
