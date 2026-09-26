@@ -27,8 +27,8 @@ test("parses a SenZ-style Riftborn rotation message", () => {
   assert.equal(event.type, "banner");
   assert.equal(event.bannerKey, "riftborn");
   assert.equal(event.bannerName, "Riftborn");
-  assert.equal(event.changedLabel, "6:00 AM (25 minutes ago)");
-  assert.equal(event.nextChangeLabel, "9:00 AM (in 3 hours)");
+  assert.equal(event.changedLabel, "9:00 AM (7 minutes ago)");
+  assert.equal(event.nextChangeLabel, "12:00 PM (in 3 hours)");
   assert.equal(event.joinUrl.includes("roblox.com/games/start"), true);
   assert.equal(
     event.possiblePets.find(p => p.name === "World Eater")?.chance,
