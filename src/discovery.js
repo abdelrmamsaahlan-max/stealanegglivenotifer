@@ -425,13 +425,22 @@ function dedupeEvents(items) {
   return [...map.values()];
 }
 
-const ALLOWED_DISCOVERY_HOSTS = new Set([
-  "roblox.com",
-  "www.roblox.com",
-  "robloxstealanegg.wiki",
-  "eggwatcher.com",
-  "eggipedia.com"
-]);
+function allowedDiscoveryHosts(baseUrl) {
+  const hosts = new Set();
+
+  try {
+    hosts.add(new URL(baseUrl).hostname.toLowerCase());
+  } catch {}
+
+  for (const host of String(process.env.DISCOVERY_ALLOWED_HOSTS || "")
+    .split(",")
+    .map(value => value.trim().toLowerCase())
+    .filter(Boolean)) {
+    hosts.add(host);
+  }
+
+  return hosts;
+}
 
 export function extractRelevantLinks(html, baseUrl, maxLinks = 4) {
   const found = [];
@@ -452,7 +461,7 @@ export function extractRelevantLinks(html, baseUrl, maxLinks = 4) {
       const parsed = new URL(url);
 
       if (!/^https?:$/i.test(parsed.protocol)) continue;
-      if (!ALLOWED_DISCOVERY_HOSTS.has(parsed.hostname.toLowerCase())) continue;
+      if (!allowedDiscoveryHosts(baseUrl).has(parsed.hostname.toLowerCase())) continue;
 
       const lower = (url + " " + label).toLowerCase();
 
