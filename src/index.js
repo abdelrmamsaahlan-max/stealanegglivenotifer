@@ -2644,71 +2644,11 @@ function discoverySummary() {
   }));
 }
 
-async function sendGameUpdateAlert(update, newEggs = [], changes = null) {
-  if (!EVENT_ALERTS_ENABLED || !CHANNEL_ID || !update?.title) return;
-
-  try {
-    const channel = await getAlertChannel();
-    const addedNames = (changes?.added || newEggs || [])
-      .slice(0, 10)
-      .map(item => item?.petName || item?.eggName || item?.title)
-      .filter(Boolean);
-
-    const changedNames = (changes?.changed || [])
-      .slice(0, 6)
-      .map(item => {
-        const name = item?.after?.eggName || item?.before?.eggName || "Unknown";
-        const before = item?.before?.area || "Unknown";
-        const after = item?.after?.area || "Unknown";
-        return name + " (" + before + " → " + after + ")";
-      });
-
-    const sections = [];
-    if (addedNames.length) {
-      sections.push("**Added:** " + addedNames.join(", "));
-    }
-    if (changedNames.length) {
-      sections.push("**Changed:** " + changedNames.join(", "));
-    }
-
-    const description =
-      "**" + String(update.title).slice(0, 180) + "**\n" +
-      String(update.description || "A game update was detected.").slice(0, 750) +
-      (sections.length ? "\n\n" + sections.join("\n") : "");
-
-    const embed = new EmbedBuilder()
-      .setColor(0x3b82f6)
-      .setTitle("🆕 Steal An Egg Update")
-      .setDescription(description.slice(0, 3900))
-      .addFields(
-        { name: "🎮 Game", value: "Steal An Egg", inline: true },
-        {
-          name: "🧠 Evidence",
-          value:
-            String(update.evidenceConfidence ?? "N/A") +
-            "% • " +
-            String(update.evidenceSourceCount ?? 1) +
-            " sources",
-          inline: true
-        },
-        {
-          name: "🕒 Detected",
-          value: "<t:" + Math.floor(Date.now() / 1000) + ":R>",
-          inline: true
-        }
-      )
-      .setFooter({ text: "Powered by FSMM • Steal An Egg" })
-      .setTimestamp();
-
-    await channel.send({
-      content: "🆕 **Steal An Egg update detected!**",
-      embeds: [embed],
-      allowedMentions: { parse: [] }
-    });
-  } catch (error) {
-    monitorErrors++;
-    console.warn("Game update alert failed:", error?.message || error);
-  }
+async function sendGameUpdateAlert(_update, _newEggs = [], _changes = null) {
+  // Auto Discovery is intentionally silent. It only receives source updates,
+  // reconciles the catalog/areas/pets, and prepares assets internally.
+  // No Discord notification is sent for a detected website/game update.
+  return;
 }
 
 async function scanForGameUpdates() {
