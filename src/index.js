@@ -2842,7 +2842,7 @@ async function warmPetImageCache(options = {}) {
   imageWarmupInFlight = true;
 
   const maxWorkers = Math.max(1, Number(options.workers || 1));
-  const entries = eggImageCatalog.filter(isLastSeenEligibleEntry);
+  const entries = eggImageCatalog.filter(isPetImageEligibleEntry);
   let warmed = 0;
   let failed = [];
   let cursor = 0;
@@ -5072,7 +5072,7 @@ async function runDailySelfCheck() {
         .some(item => item.status === "ACTIVE"),
     png: eggImageCatalog.length === 0 ||
       eggImageCatalog
-        .filter(isLastSeenEligibleEntry)
+        .filter(isPetImageEligibleEntry)
         .every(entry =>
           petPngBufferCache.has(normalizeFeedKey(entry.petName)) &&
           petPngBufferCache.get(normalizeFeedKey(entry.petName))?.buffer
@@ -5276,6 +5276,14 @@ function isLastSeenEligibleEntry(entry) {
 
 function isAlertEligibleEntry(entry) {
   return isLastSeenEligibleEntry(entry);
+}
+
+function isPetImageEligibleEntry(entry) {
+  return Boolean(
+    entry &&
+    entry.active !== false &&
+    String(entry.petName || "").trim()
+  );
 }
 
 function resolveAlertEntry(event) {
@@ -6993,7 +7001,7 @@ app.get("/dashboard", (_req, res) => {
 
 app.get("/api/images/status", (_req, res) => {
   const items = eggImageCatalog
-    .filter(isLastSeenEligibleEntry)
+    .filter(isPetImageEligibleEntry)
     .map(entry => {
       const key = normalizeFeedKey(entry.petName);
       const cached = petPngBufferCache.get(key);
@@ -7164,10 +7172,10 @@ app.get("/health", (_req, res) => {
     experimentCustomEmojiCount: experimentCustomEmojiCache.size,
     cachedPetImages: [...petPngBufferCache.keys()].length,
     transparentPetImagesReady: eggImageCatalog
-      .filter(isLastSeenEligibleEntry)
+      .filter(isPetImageEligibleEntry)
       .filter(entry => petPngBufferCache.has(normalizeFeedKey(entry.petName)))
       .length,
-    petImageCatalogSize: eggImageCatalog.filter(isLastSeenEligibleEntry).length
+    petImageCatalogSize: eggImageCatalog.filter(isPetImageEligibleEntry).length
   });
 });
 
