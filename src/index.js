@@ -35,12 +35,16 @@ import {
   parseExperimentAlert
 } from "./experiment-tracker.js";
 import {
+  calculateEvidenceConfidence,
   chooseBestUpdate,
+  detectCatalogChanges,
   discoveryFingerprint,
   extractDiscoveryEvents,
   extractRelevantLinks,
   extractSupportedEggsFromDiscovery,
-  extractUpdateSnapshot
+  extractUpdateSnapshot,
+  mergeEggObservations,
+  snapshotEggs
 } from "./discovery.js";
 
 const app = express();
@@ -81,6 +85,16 @@ const COMMANDS = [
   new SlashCommandBuilder()
     .setName("game-events")
     .setDescription("View recent detected game events, updates, and automatic catalog discoveries."),
+  new SlashCommandBuilder()
+    .setName("discovery-status")
+    .setDescription("View Auto Discovery source health, confidence, and latest scan."),
+  new SlashCommandBuilder()
+    .setName("discovery-history")
+    .setDescription("View recent Auto Discovery changes and decisions."),
+  new SlashCommandBuilder()
+    .setName("discovery-scan")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .setDescription("Admin: run an Auto Discovery scan now and reconcile the catalog."),
   new SlashCommandBuilder()
     .setName("rift")
     .setDescription("Show the current Rift banner, change times, rotation chance, and possible pets."),
@@ -137,7 +151,8 @@ const ADMIN_COMMANDS = new Set([
   "rift-test",
   "experiment-test",
   "role-test",
-  "bot-reload"
+  "bot-reload",
+  "discovery-scan"
 ]);
 
 async function registerDiscordCommands(rest, applicationId) {
@@ -342,6 +357,12 @@ let lastUpdateCheckAt = null;
 let lastUpdateTitle = null;
 let autoDiscoverySourceHealth = new Map();
 let autoDiscoveryLastSummary = null;
+let autoDiscoveryInFlight = false;
+let discoveryCatalogSnapshot = {};
+let discoveryChangelog = [];
+let discoveryLastDecision = null;
+let discoveryScanSequence = 0;
+const MAX_DISCOVERY_CHANGELOG = 50;
 const spawnHistory = [];
 const gameEventHistory = [];
 const riftHistory = [];
@@ -550,6 +571,34 @@ function loadRuntimeState() {
       lastUpdateTitle = state.lastUpdateTitle;
     }
 
+    if (state.discoveryState && typeof state.discoveryState === "object") {
+      if (state.discoveryState.catalogSnapshot && typeof state.discoveryState.catalogSnapshot === "object") {
+        discoveryCatalogSnapshot = state.discoveryState.catalogSnapshot;
+      }
+
+      if (Array.isArray(state.discoveryState.changelog)) {
+        discoveryChangelog = state.discoveryState.changelog
+          .filter(item => item && typeof item === "object")
+          .slice(0, MAX_DISCOVERY_CHANGELOG);
+      }
+
+      if (state.discoveryState.lastDecision && typeof state.discoveryState.lastDecision === "object") {
+        discoveryLastDecision = state.discoveryState.lastDecision;
+      }
+
+      if (Number.isFinite(Number(state.discoveryState.scanSequence))) {
+        discoveryScanSequence = Number(state.discoveryState.scanSequence);
+      }
+
+      if (Array.isArray(state.discoveryState.sourceHealth)) {
+        autoDiscoverySourceHealth = new Map(
+          state.discoveryState.sourceHealth
+            .filter(item => item && item.key)
+            .map(item => [item.key, item])
+        );
+      }
+    }
+
     if (Array.isArray(state.dynamicEggs)) {
       for (const entry of state.dynamicEggs.slice(0, 50)) {
         if (
@@ -587,6 +636,13 @@ function saveRuntimeState() {
       savedAt: new Date().toISOString(),
       lastUpdateFingerprint,
       lastUpdateTitle,
+      discoveryState: {
+        catalogSnapshot: discoveryCatalogSnapshot,
+        changelog: discoveryChangelog.slice(0, MAX_DISCOVERY_CHANGELOG),
+        lastDecision: discoveryLastDecision,
+        scanSequence: discoveryScanSequence,
+        sourceHealth: discoverySummary()
+      },
       spawnHistory: spawnHistory.slice(0, MAX_HISTORY),
       gameEventHistory: gameEventHistory.slice(0, MAX_EVENT_HISTORY),
       riftState,
@@ -2100,8 +2156,16 @@ function discoverySummary() {
 }
 
 async function scanForGameUpdates() {
-  if (!AUTO_DISCOVERY_ENABLED) return;
+  if (!AUTO_DISCOVERY_ENABLED || autoDiscoveryInFlight) return null;
+  autoDiscoveryInFlight = true;
+  try {
+    return await runAutoDiscoverySweep();
+  } finally {
+    autoDiscoveryInFlight = false;
+  }
+}
 
+async function runAutoDiscoverySweep() {
   lastUpdateCheckAt = new Date().toISOString();
 
   const sourceRanks = {};
@@ -2146,7 +2210,12 @@ async function scanForGameUpdates() {
         sourceUpdate.url = source.url;
         updateCandidates.push(sourceUpdate);
       }
-      supportedEggs.push(...sourceEggs);
+      supportedEggs.push(...sourceEggs.map(item => ({
+        ...item,
+        sourceKey: source.key,
+        source: source.name,
+        sourceRank: source.rank
+      })));
       detectedEvents.push(...sourceEvents);
 
       if (source.followLinks) {
@@ -2197,22 +2266,22 @@ async function scanForGameUpdates() {
         updateCandidates.push(pageUpdate);
       }
 
-      supportedEggs.push(...extractSupportedEggsFromDiscovery(body));
+      supportedEggs.push(
+        ...extractSupportedEggsFromDiscovery(body).map(item => ({
+          ...item,
+          sourceKey: link.sourceName,
+          source: link.sourceName,
+          sourceRank: 5
+        }))
+      );
       detectedEvents.push(...extractDiscoveryEvents(body, pageSource));
     } catch (error) {
       console.warn("Auto discovery linked-page fetch failed:", link.url, error?.message || error);
     }
   }
 
-  const uniqueEggs = new Map();
-  for (const item of supportedEggs) {
-    if (!item?.eggName || !item?.rarity) continue;
-
-    const key = String(item.rarity).toLowerCase() + "|" +
-      normalizeFeedKey(item.eggName);
-
-    if (!uniqueEggs.has(key)) uniqueEggs.set(key, item);
-  }
+  const mergedEggs = mergeEggObservations(supportedEggs);
+  const uniqueEggs = new Map(mergedEggs.map(item => [item.key, item]));
 
   let added = 0;
   let metadataUpdated = 0;
@@ -2268,7 +2337,74 @@ async function scanForGameUpdates() {
     }, 0);
   }
 
-  const bestUpdate = chooseBestUpdate(updateCandidates, sourceRanks);
+  const currentCatalogSnapshot = snapshotEggs(
+    [...uniqueEggs.values()].map(item => ({
+      ...item,
+      sourceCount: item.sourceCount,
+      confidence: item.confidence
+    }))
+  );
+
+  const catalogChanges = detectCatalogChanges(
+    discoveryCatalogSnapshot,
+    currentCatalogSnapshot
+  );
+
+  const changedWithConfidence = catalogChanges.changed.filter(item =>
+    Number(item.after?.confidence || 0) >= 60
+  );
+  const highConfidenceAdded = catalogChanges.added.filter(item =>
+    Number(item.confidence || 0) >= 55
+  );
+
+  const confidence = calculateEvidenceConfidence(
+    supportedEggs.map(item => ({
+      sourceKey: item.sourceKey,
+      source: item.source,
+      sourceRank: item.sourceRank
+    }))
+  );
+
+  discoveryScanSequence++;
+
+  const scanRecord = {
+    scan: discoveryScanSequence,
+    at: new Date().toISOString(),
+    confidence,
+    successfulSources,
+    totalSources: AUTO_DISCOVERY_SOURCES.length,
+    added: highConfidenceAdded.length,
+    removed: catalogChanges.removed.length,
+    changed: changedWithConfidence.length,
+    metadataUpdated,
+    bestUpdate: bestUpdate?.title || null
+  };
+
+  discoveryLastDecision = scanRecord;
+
+  if (catalogChanges.added.length || catalogChanges.removed.length || changedWithConfidence.length) {
+    discoveryChangelog.unshift({
+      ...scanRecord,
+      changes: {
+        added: highConfidenceAdded.slice(0, 20),
+        removed: catalogChanges.removed.slice(0, 20),
+        changed: changedWithConfidence.slice(0, 20)
+      }
+    });
+    discoveryChangelog = discoveryChangelog.slice(0, MAX_DISCOVERY_CHANGELOG);
+
+    if (catalogChanges.removed.length) {
+      console.warn(
+        "Auto Discovery possible removals detected; catalog entries are NOT deleted automatically:",
+        catalogChanges.removed.map(item => item.eggName).join(", ")
+      );
+    }
+  }
+
+  // Persist the observed source snapshot after the comparison so the next sweep
+  // can detect real additions/removals/metadata changes.
+  discoveryCatalogSnapshot = currentCatalogSnapshot;
+
   const nextUpdateFingerprint = discoveryFingerprint(bestUpdate);
 
   if (bestUpdate?.title && nextUpdateFingerprint) {
@@ -2375,6 +2511,12 @@ async function scanForGameUpdates() {
     totalSources: AUTO_DISCOVERY_SOURCES.length,
     updateCandidates: updateCandidates.length,
     uniqueEggs: uniqueEggs.size,
+    evidenceConfidence: confidence,
+    catalogChanges: {
+      added: highConfidenceAdded.length,
+      removed: catalogChanges.removed.length,
+      changed: changedWithConfidence.length
+    },
     events: detectedEvents.length,
     newlyAdded: newlyAdded.length,
     metadataUpdated
@@ -4044,6 +4186,18 @@ app.get("/api/events", (_req, res) => {
   });
 });
 
+app.get("/api/discovery", (_req, res) => {
+  res.json({
+    enabled: AUTO_DISCOVERY_ENABLED,
+    pollMs: AUTO_DISCOVERY_POLL_MS,
+    sources: discoverySummary(),
+    summary: autoDiscoveryLastSummary,
+    lastDecision: discoveryLastDecision,
+    catalogSnapshot: discoveryCatalogSnapshot,
+    changelog: discoveryChangelog.slice(0, 20)
+  });
+});
+
 app.get("/api/rift", (_req, res) => {
   res.json({
     enabled: RIFT_ALERTS_ENABLED,
@@ -4413,6 +4567,95 @@ client.on("interactionCreate", async interaction => {
       return await interaction.reply({
         content: "🛰️ **Game Events & Updates**\\n" + eventText.slice(0, 3900),
         flags: MessageFlags.Ephemeral
+      });
+    }
+
+    if (interaction.commandName === "discovery-status") {
+      const active = [...autoDiscoverySourceHealth.values()]
+        .filter(item => item.status === "ACTIVE").length;
+
+      const lines = [
+        "🔎 **Auto Discovery Status**",
+        "Status: " + (AUTO_DISCOVERY_ENABLED ? "✅ ENABLED" : "🟡 DISABLED"),
+        "Sources: " + active + "/" + AUTO_DISCOVERY_SOURCES.length + " active",
+        "Last scan: " + (lastUpdateCheckAt
+          ? "<t:" + Math.floor(new Date(lastUpdateCheckAt).getTime() / 1000) + ":R>"
+          : "Never"),
+        "Confidence: " + (discoveryLastDecision?.confidence != null
+          ? discoveryLastDecision.confidence + "%"
+          : "N/A"),
+        "Catalog changes: " +
+          (discoveryLastDecision
+            ? discoveryLastDecision.added + " added • " +
+              discoveryLastDecision.changed + " changed • " +
+              discoveryLastDecision.removed + " possible removed"
+            : "N/A"),
+        ""
+      ];
+
+      for (const source of AUTO_DISCOVERY_SOURCES) {
+        const state = autoDiscoverySourceHealth.get(source.key);
+        lines.push(
+          (state?.status === "ACTIVE" ? "🟢" : state?.status === "HTTP_ERROR" ? "🟠" : "🔴") +
+          " **" + source.name + "** — " +
+          (state?.status || "WAITING") +
+          " • eggs=" + (state?.eggCount ?? 0) +
+          " • events=" + (state?.eventCount ?? 0)
+        );
+      }
+
+      return await interaction.reply({
+        content: lines.join("\n").slice(0, 3900),
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    if (interaction.commandName === "discovery-history") {
+      if (!discoveryChangelog.length) {
+        return await interaction.reply({
+          content: "📭 No Auto Discovery changes recorded yet.",
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      const lines = discoveryChangelog.slice(0, 8).map(item => {
+        const added = item.changes?.added?.length || 0;
+        const removed = item.changes?.removed?.length || 0;
+        const changed = item.changes?.changed?.length || 0;
+
+        return (
+          "🔎 **Scan #" + item.scan + "** • " +
+          "<t:" + Math.floor(new Date(item.at).getTime() / 1000) + ":R>\n" +
+          "Confidence: **" + item.confidence + "%** • " +
+          "Added: **" + added + "** • Changed: **" +
+          changed + "** • Possible removed: **" + removed + "**"
+        );
+      });
+
+      return await interaction.reply({
+        content: "📜 **Auto Discovery Changelog**\n" + lines.join("\n\n").slice(0, 3900),
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    if (interaction.commandName === "discovery-scan") {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const before = discoveryScanSequence;
+      await scanForGameUpdates();
+
+      return await interaction.editReply({
+        content:
+          before === discoveryScanSequence
+            ? "⚠️ Discovery scan was already running or discovery is disabled."
+            : "✅ Discovery scan #" + discoveryScanSequence + " completed.\n" +
+              "Confidence: **" + (discoveryLastDecision?.confidence ?? 0) + "%**\n" +
+              "Sources: **" + (discoveryLastDecision?.successfulSources ?? 0) +
+              "/" + AUTO_DISCOVERY_SOURCES.length + "** active\n" +
+              "Changes: **" + (discoveryLastDecision?.added ?? 0) +
+              " added • " + (discoveryLastDecision?.changed ?? 0) +
+              " changed • " + (discoveryLastDecision?.removed ?? 0) +
+              " possible removed**"
       });
     }
 
