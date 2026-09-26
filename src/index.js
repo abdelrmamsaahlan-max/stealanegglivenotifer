@@ -2909,16 +2909,11 @@ async function resolveAlertRoleId(rarity) {
   try {
     const roles = await alertChannel.guild.roles.fetch();
     let role = roles.find(candidate =>
-      normalizeFeedKey(candidate?.name || "") === normalizeFeedKey(roleNames[rarityKey])
+      normalizeFeedKey(candidate?.name || "") === normalizeFeedKey(roleNames[rarityKey]) &&
+      candidate.editable
     );
 
     if (role) {
-      if (!role.editable) {
-        console.warn("Alert role is not editable by bot:", role.name);
-        resolvedRoleCache.set(rarityKey, { id: role.id, at: Date.now() });
-        return role.id;
-      }
-
       // These roles are strictly mention-only: zero permissions, no hoist.
       const needsPermissionsReset = role.permissions.bitfield !== 0n;
       const needsMentionable = !role.mentionable;
@@ -2936,6 +2931,15 @@ async function resolveAlertRoleId(rarity) {
       resolvedRoleCache.set(rarityKey, { id: role.id, at: Date.now() });
       console.log("Rarity alert role ready:", rarityKey, role.name);
       return role.id;
+    }
+
+    const blockedSameName = roles.find(candidate =>
+      normalizeFeedKey(candidate?.name || "") === normalizeFeedKey(roleNames[rarityKey]) &&
+      !candidate.editable
+    );
+
+    if (blockedSameName) {
+      console.warn("Found non-editable role with alert name; creating a dedicated alert role instead:", rarityKey);
     }
 
     const autoCreateRoles =
