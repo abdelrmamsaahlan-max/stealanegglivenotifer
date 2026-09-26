@@ -2846,14 +2846,31 @@ async function getPetPngBuffer(petName) {
 
     let pngBuffer;
     try {
+      const metadata = await sharp(input, { failOn: "none" }).metadata();
       pngBuffer = await sharp(input, { failOn: "none" })
         .png({
           compressionLevel: 9,
           adaptiveFiltering: true
         })
         .toBuffer();
-    } catch {
-      console.warn("Rejected unsupported pet image source:", entry.petName);
+      if (!pngBuffer?.length) {
+        throw new Error("empty_png_output");
+      }
+      console.log(
+        "Pet image converted:",
+        entry.petName,
+        "type=" + String(metadata?.format || contentType || "unknown"),
+        "size=" + input.length
+      );
+    } catch (error) {
+      console.warn(
+        "Pet image conversion failed:",
+        entry.petName,
+        "source=" + sourceUrl,
+        "contentType=" + (contentType || "unknown"),
+        "bytes=" + input.length,
+        "reason=" + (error?.message || error)
+      );
       return null;
     }
 
