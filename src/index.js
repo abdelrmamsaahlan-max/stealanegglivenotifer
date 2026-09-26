@@ -328,15 +328,30 @@ function buildAlertEmbed(event, latencyMs = null, includeImage = true) {
   return embed;
 }
 
-function buildSourceRow(messageUrl) {
-  if (!messageUrl) return null;
+function buildActionRow(event) {
+  const buttons = [];
 
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setLabel("View Spawn")
-      .setStyle(ButtonStyle.Link)
-      .setURL(messageUrl)
-  );
+  if (event.joinUrl) {
+    buttons.push(
+      new ButtonBuilder()
+        .setLabel("Join Game")
+        .setStyle(ButtonStyle.Link)
+        .setURL(event.joinUrl)
+    );
+  }
+
+  if (event.messageUrl) {
+    buttons.push(
+      new ButtonBuilder()
+        .setLabel("View Spawn")
+        .setStyle(ButtonStyle.Link)
+        .setURL(event.messageUrl)
+    );
+  }
+
+  if (!buttons.length) return null;
+
+  return new ActionRowBuilder().addComponents(...buttons.slice(0, 5));
 }
 
 async function sendAlert(event, latencyMs = null) {
@@ -362,7 +377,7 @@ async function sendAlert(event, latencyMs = null) {
     }
   };
 
-  const row = buildSourceRow(event.messageUrl);
+  const row = buildActionRow(event);
   if (row) payload.components = [row];
 
   try {
