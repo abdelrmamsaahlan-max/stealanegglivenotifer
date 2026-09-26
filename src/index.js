@@ -22,6 +22,10 @@ const SOURCE_CHANNEL_IDS = new Set((process.env.DISCORD_SOURCE_CHANNEL_IDS || ""
 const SOURCE_BOT_IDS = new Set((process.env.DISCORD_SOURCE_BOT_IDS || "").split(",").map(v => v.trim()).filter(Boolean));
 const DEDUP_WINDOW_MS = Number(process.env.DEDUP_WINDOW_SECONDS || 60) * 1000;
 const seen = new Map();
+let alertChannel = null;
+let detectedCount = 0;
+let alertCount = 0;
+let lastSpawnAt = null;
 
 function verify(req) {
   const supplied = req.header("x-live-signature") || "";
@@ -37,22 +41,71 @@ function isLiveEvent(x) {
 
 function parseSpawn(text) {
   if (!text) return null;
-  const normalized = text.replace(/\*\*/g, "").replaceAll(String.fromCharCode(96), "").trim();
+
+  const normalized = String(text)
+    .replace(/<a?:\w+:\d+>/g, "")
+    .replace(/\*\*/g, "")
+    .replace(/[_~]/g, "")
+    .replaceAll(String.fromCharCode(96), "")
+    .replace(/\\n/g, "\n")
+    .replace(/\r/g, "")
+    .trim();
+
   const rarityMatch = normalized.match(/\b(secret|eternal|divine)\b/i);
   if (!rarityMatch || !RARITIES.has(rarityMatch[1].toLowerCase())) return null;
 
-  const eggMatch =
-    normalized.match(/(?:egg\s*[:\-]?\s*|egg\s+)([A-Za-z0-9'’._ -]{2,60}?)(?=\s+(?:spawned|spawn|appeared|in|at|location|area)\b|$)/i) ||
-    normalized.match(/\b(?:secret|eternal|divine)\s+egg\s+([A-Za-z0-9'’._ -]{2,60}?)(?=\s+(?:spawned|spawn|appeared|in|at)\b|$)/i);
-
-  const areaMatch =
-    normalized.match(/\b(?:location|area|biome|zone|place)\s*[:\-]\s*([^\n|]+)/i) ||
-    normalized.match(/\b(?:in|at)\s+([A-Z][A-Za-z0-9'’ -]{2,40})\b/i);
-
-  const eggName = eggMatch?.[1]?.trim() || "Unknown Egg";
-  const area = areaMatch?.[1]?.trim() || "Unknown";
   const rarity = rarityMatch[1][0].toUpperCase() + rarityMatch[1].slice(1).toLowerCase();
-  return { live: true, eggName, displayName: eggName, rarity, biome: area, spawnedAt: new Date().toISOString(), source: "Discord live source" };
+
+  const patterns = [
+    /(?:egg|item|spawn)\s*(?:name)?\s*[:\-]\s*([^\n|]+)/i,
+    /(?:secret|eternal|divine)\s+(?:egg\s+)?(?:spawned|appeared)\s*[:\-]?\s*([^\n|]+?)(?=\s+(?:in|at|on)\s+|$)/i,
+    /(?:spawned|appeared)\s*[:\-]?\s*([^\n|]+?)(?=\s+(?:in|at|on)\s+|$)/i,
+    /\b(?:egg)\s+([A-Za-z0-9'’._ -]{2,80})\b/i
+  ];
+
+  let eggName = null;
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern);
+    if (match?.[1]) {
+      eggName = match[1]
+        .replace(/\s+(?:spawned|appeared|is\s+now|has\s+spawned)\b.*$/i, "")
+        .trim();
+      if (eggName) break;
+    }
+  }
+
+  const areaPatterns = [
+    /\b(?:location|area|biome|zone|place)\s*[:\-]\s*([^\n|]+)/i,
+    /\b(?:in|at|on)\s+(?:the\s+)?([^\n|]+?)\s*(?:[.!]|$)/i
+  ];
+
+  let area = null;
+  for (const pattern of areaPatterns) {
+    const match = normalized.match(pattern);
+    if (match?.[1]) {
+      area = match[1].trim();
+      break;
+    }
+  }
+
+  // Avoid turning an ordinary sentence fragment into an item name.
+  if (eggName) {
+    eggName = eggName
+      .replace(/^[:\-\s]+|[:\-\s]+$/g, "")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+    if (/^(spawned|appeared|now|here)$/i.test(eggName)) eggName = null;
+  }
+
+  return {
+    live: true,
+    eggName: eggName || "Unknown Egg",
+    displayName: eggName || "Unknown Egg",
+    rarity,
+    biome: area || "Unknown",
+    spawnedAt: new Date().toISOString(),
+    source: "Live Spawn"
+  };
 }
 
 function extractMessageData(message) {
@@ -78,10 +131,18 @@ function extractMessageData(message) {
   };
 }
 
-async function sendAlert(event) {
+async function getAlertChannel() {
+  if (alertChannel && alertChannel.isTextBased()) return alertChannel;
   if (!CHANNEL_ID) throw new Error("DISCORD_DEFAULT_CHANNEL_ID is not configured");
+
   const channel = await client.channels.fetch(CHANNEL_ID);
   if (!channel || !channel.isTextBased()) throw new Error("channel_unavailable");
+  alertChannel = channel;
+  return channel;
+}
+
+async function sendAlert(event) {
+  const channel = await getAlertChannel();
 
   const unix = Math.floor(new Date(event.spawnedAt).getTime() / 1000);
   const eggName = String(event.displayName || event.eggName || "Unknown Egg").trim();
@@ -92,9 +153,9 @@ async function sendAlert(event) {
     .setTitle("🥚 " + rarity.toUpperCase() + " EGG SPAWNED!")
     .setDescription("A rare egg has just spawned.")
     .addFields(
-      { name: "🥚 Egg", value: eggName, inline: true },
-      { name: "✨ Rarity", value: rarity, inline: true },
-      { name: "📍 Area", value: area, inline: true },
+      { name: "🥚 Egg", value: eggName.slice(0, 1024), inline: true },
+      { name: "✨ Rarity", value: rarity.slice(0, 1024), inline: true },
+      { name: "📍 Area", value: area.slice(0, 1024), inline: true },
       { name: "⏱️ Spawned", value: "<t:" + unix + ":R>", inline: true }
     )
     .setFooter({ text: "Steal an Egg • Live Spawn Alert" })
@@ -102,13 +163,28 @@ async function sendAlert(event) {
 
   if (event.imageUrl) embed.setImage(event.imageUrl);
 
-  await channel.send({ content: "🚨 **" + rarity.toUpperCase() + " EGG!**", embeds: [embed] });
+  await channel.send({
+    content: "🚨 **" + rarity.toUpperCase() + " EGG!**",
+    embeds: [embed],
+    allowedMentions: { parse: [] }
+  });
+
+  alertCount++;
+  lastSpawnAt = event.spawnedAt;
 }
 
 app.get("/health", (req, res) => res.status(client.isReady() ? 200 : 503).json({
-  ok: true, botReady: client.isReady(), sourceMonitorEnabled: MONITOR_ENABLED,
-  liveSourceConfigured: Boolean(SECRET), channelConfigured: Boolean(CHANNEL_ID),
-  sourceChannelFilterConfigured: SOURCE_CHANNEL_IDS.size > 0, sourceBotFilterConfigured: SOURCE_BOT_IDS.size > 0
+  ok: true,
+  botReady: client.isReady(),
+  sourceMonitorEnabled: MONITOR_ENABLED,
+  liveSourceConfigured: Boolean(SECRET),
+  channelConfigured: Boolean(CHANNEL_ID),
+  alertChannelCached: Boolean(alertChannel),
+  sourceChannelFilterConfigured: SOURCE_CHANNEL_IDS.size > 0,
+  sourceBotFilterConfigured: SOURCE_BOT_IDS.size > 0,
+  detectedCount,
+  alertCount,
+  lastSpawnAt
 }));
 
 app.post("/api/notify-egg", async (req, res) => {
@@ -127,19 +203,39 @@ client.on("messageCreate", async (message) => {
   const event = parseSpawn(messageData.text);
   if (event && messageData.imageUrl) event.imageUrl = messageData.imageUrl;
   if (!event) return;
+  detectedCount++;
 
   const key = [message.channelId, event.rarity.toLowerCase(), event.eggName.toLowerCase(), event.biome.toLowerCase()].join("|");
   const now = Date.now();
   if (now - (seen.get(key) || 0) < DEDUP_WINDOW_MS) return;
   seen.set(key, now);
 
-  try { await sendAlert(event); console.log("Forwarded live egg spawn:", key); }
-  catch (err) { console.error("Live source forwarding failed:", err); }
+  for (const [seenKey, seenAt] of seen) {
+    if (now - seenAt > DEDUP_WINDOW_MS * 2) seen.delete(seenKey);
+  }
+
+  try {
+    await sendAlert(event);
+    console.log("Forwarded live egg spawn:", key);
+  } catch (err) {
+    alertChannel = null;
+    console.error("Live source forwarding failed:", err);
+  }
 });
 
 client.once("clientReady", async () => {
   console.log("Steal An Egg notifier online as " + client.user.tag);
   console.log("Live source monitor:", MONITOR_ENABLED ? "enabled" : "disabled");
+
+  if (CHANNEL_ID) {
+    try {
+      alertChannel = await client.channels.fetch(CHANNEL_ID);
+      console.log("Alert channel cached.");
+    } catch (err) {
+      console.error("Alert channel preload failed:", err);
+    }
+  }
+
   try {
     const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_BOT_TOKEN);
     if (DEV_GUILD_ID) {
@@ -168,7 +264,9 @@ client.on("interactionCreate", async (interaction) => {
         "📡 Live monitor: " + (MONITOR_ENABLED ? "ENABLED" : "DISABLED"),
         "🎯 Rarities: " + [...RARITIES].join(", "),
         "📥 Source channel: " + (SOURCE_CHANNEL_IDS.size ? [...SOURCE_CHANNEL_IDS].join(", ") : "ALL CHANNELS"),
-        "📤 Alert channel: " + (CHANNEL_ID ? "CONFIGURED" : "NOT CONFIGURED")
+        "📤 Alert channel: " + (CHANNEL_ID ? "CONFIGURED" : "NOT CONFIGURED"),
+        "⚡ Alerts sent: " + alertCount,
+        "🟢 Last spawn: " + (lastSpawnAt ? "<t:" + Math.floor(new Date(lastSpawnAt).getTime() / 1000) + ":R>" : "NONE")
       ].join("\n");
       return await interaction.reply({ content: status, ephemeral: true });
     }
@@ -185,7 +283,7 @@ client.on("interactionCreate", async (interaction) => {
         rarity: "Secret",
         biome: "Test Area",
         spawnedAt: new Date().toISOString(),
-        source: "Manual /testegg test"
+        source: "Test"
       };
 
       await sendAlert(testEvent);
