@@ -125,11 +125,12 @@ try {
   console.warn("Egg image catalog could not be loaded:", error?.message || error);
 }
 
-function catalogImageForEgg(input) {
+
+function findCatalogEgg(input) {
   const wanted = normalizeFeedKey(input);
   if (!wanted) return null;
 
-  const match = eggImageCatalog.find(entry => {
+  return eggImageCatalog.find(entry => {
     const names = [
       entry?.eggName,
       entry?.displayName,
@@ -137,9 +138,25 @@ function catalogImageForEgg(input) {
     ].filter(Boolean);
 
     return names.some(name => normalizeFeedKey(name) === wanted);
-  });
+  }) || null;
+}
 
-  return normalizeImageUrl(match?.image);
+function canonicalEggName(input) {
+  return findCatalogEgg(input)?.eggName || String(input || "").trim();
+}
+
+function eggNameMatchesTarget(value, targetName) {
+  const left = normalizeFeedKey(value);
+  const right = normalizeFeedKey(targetName);
+  if (!left || !right) return false;
+  if (left === right) return true;
+
+  return left.replace(/\begg\b/g, "").trim() === right.replace(/\begg\b/g, "").trim();
+}
+
+function extractAttribute(tag, name) {
+  const match = tag.match(new RegExp("\\b" + name + "\\s*=\\s*\\"([^\\"]+)\\"", "i"));
+  return match?.[1] || "";
 }
 
 const API_RATE_LIMIT_PER_MINUTE =
@@ -295,37 +312,45 @@ function slugify(value) {
 const imageFallbackCache = new Map();
 const IMAGE_CACHE_TTL_MS = 60 * 60 * 1000;
 
-async function fetchPageImage(pageUrl) {
+
+async function fetchExactEggImage(pageUrl, targetEggName) {
   try {
     const { response, body } = await fetchLiveFeed(pageUrl);
     if (!response.ok) return null;
 
-    const patterns = [
-      /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i,
-      /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i,
-      /<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']/i,
-      /<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image["']/i,
-      /<img[^>]+src=["']([^"']+)["']/i
-    ];
+    const tags = body.match(/<img\\b[^>]*>/gi) || [];
+    const candidates = tags.map(tag => {
+      const src = extractAttribute(tag, "src") ||
+        extractAttribute(tag, "data-src") ||
+        extractAttribute(tag, "data-lazy-src");
+      const alt = extractAttribute(tag, "alt");
+      const title = extractAttribute(tag, "title");
+      const className = extractAttribute(tag, "class");
+      const metadata = (alt + " " + title + " " + className + " " + src).toLowerCase();
 
-    for (const pattern of patterns) {
-      const match = body.match(pattern);
-      const candidate = normalizeImageUrl(match?.[1]);
-      if (candidate) return candidate;
-    }
+      let score = 0;
+      if (eggNameMatchesTarget(alt, targetEggName)) score += 100;
+      if (eggNameMatchesTarget(title, targetEggName)) score += 70;
+      if (metadata.includes(normalizeFeedKey(targetEggName))) score += 40;
+      if (/\\begg\\b/i.test(alt) || /\\begg\\b/i.test(title)) score += 20;
+
+      if (/\\b(og|hero|banner|logo|site-header|favicon)\\b/i.test(metadata)) score -= 150;
+      if (/\\b(article|author|avatar|profile)\\b/i.test(metadata)) score -= 80;
+
+      return { src: normalizeImageUrl(src), score };
+    })
+      .filter(item => item.src && item.score >= 60)
+      .sort((a, b) => b.score - a.score);
+
+    return candidates[0]?.src || null;
   } catch {
-    // Image fallback is best-effort; the live alert must still work without it.
+    return null;
   }
-
-  return null;
 }
 
 async function resolveImageUrl(eggName, providedUrl = null) {
   const direct = normalizeImageUrl(providedUrl);
-  if (direct) return direct;
-
-  const catalogImage = catalogImageForEgg(eggName);
-  if (catalogImage) return catalogImage;
+  if (direct && /\\.(?:png|jpe?g|gif|webp)(?:\\?|$)/i.test(direct)) return direct;
 
   const key = normalizeFeedKey(eggName);
   if (!key) return null;
@@ -335,20 +360,23 @@ async function resolveImageUrl(eggName, providedUrl = null) {
     return cached.url;
   }
 
-  const slug = slugify(eggName);
-  const variants = [...new Set([
-    slug,
-    slug.endsWith("-egg") ? slug.slice(0, -4) : slug + "-egg"
-  ].filter(Boolean))];
-
+  const canonicalName = canonicalEggName(eggName);
+  const catalogEntry = findCatalogEgg(eggName);
+  const slug = slugify(canonicalName.replace(/\\s+Egg$/i, ""));
   const pages = [];
-  for (const variant of variants) {
-    pages.push(`https://steal-an-egg-roblox.wiki/eggs/${variant}/`);
-    pages.push(`https://steal-an-egg-roblox.wiki/pets/${variant}/`);
+
+  if (catalogEntry?.sourcePage) pages.push(catalogEntry.sourcePage);
+
+  if (slug) {
+    pages.push(
+      "https://stealanegg-hub.wiki/wiki/pets/" + slug + "/",
+      "https://steal-an-egg-roblox.wiki/eggs/" + slug + "-egg/",
+      "https://steal-an-egg-roblox.wiki/pets/" + slug + "/"
+    );
   }
 
-  for (const page of pages) {
-    const imageUrl = await fetchPageImage(page);
+  for (const page of [...new Set(pages)]) {
+    const imageUrl = await fetchExactEggImage(page, canonicalName);
     if (imageUrl) {
       imageFallbackCache.set(key, { url: imageUrl, at: Date.now() });
       return imageUrl;
@@ -381,7 +409,8 @@ function collectEggCandidates(value, path = [], out = []) {
   };
 
   const eggName = get(
-    "displayName", "eggName", "egg", "itemName", "item", "name", "title"
+    "eggName", "eggLabel", "eggDisplayName", "egg",
+    "itemName", "item", "displayName", "name", "title"
   );
 
   const rarity = get("rarity", "tier", "rarityName");
@@ -410,7 +439,7 @@ function collectEggCandidates(value, path = [], out = []) {
       if (typeof area === "string" && area.trim()) score += 2;
 
       out.push({
-        eggName: eggName.trim(),
+        eggName: canonicalEggName(eggName.trim()),
         rarity: rarityKey[0].toUpperCase() + rarityKey.slice(1),
         biome: typeof area === "string" && area.trim() ? area.trim() : "Unknown",
         spawnedAt: parsedTime ? parsedTime.toISOString() : null,
@@ -459,12 +488,6 @@ function feedStateLooksOffline(payload) {
 
 function parseEggWatchHtml(html) {
   const rawHtml = String(html || "");
-  const pageImageUrl = normalizeImageUrl(
-    rawHtml.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
-    rawHtml.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i)?.[1] ||
-    rawHtml.match(/<img[^>]+src=["']([^"']+)["']/i)?.[1]
-  );
-
   const text = rawHtml
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
@@ -494,7 +517,7 @@ function parseEggWatchHtml(html) {
   }
 
   return {
-    eggName: eggMatch[1].replace(/\s+/g, " ").trim(),
+    eggName: canonicalEggName(eggMatch[1].replace(/\s+/g, " ").trim()),
     rarity: rarity[0].toUpperCase() + rarity.slice(1).toLowerCase(),
     biome: areaMatch?.[1]?.replace(/\s+/g, " ").trim() || "Unknown",
     spawnedAt,
