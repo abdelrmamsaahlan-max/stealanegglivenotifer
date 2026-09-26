@@ -127,7 +127,7 @@ const LIVE_FEED_URLS = [
   .filter((value, index, array) => array.indexOf(value) === index);
 
 const LIVE_FEED_POLL_MS =
-  Math.max(1000, Number(process.env.LIVE_FEED_POLL_MS || 2000));
+  Math.max(500, Number(process.env.LIVE_FEED_POLL_MS || 800));
 
 const LIVE_FEED_TIMEOUT_MS =
   Math.max(1000, Number(process.env.LIVE_FEED_TIMEOUT_MS || 5000));
@@ -136,7 +136,21 @@ const LIVE_FEED_MAX_AGE_MS =
   Math.max(60, Number(process.env.LIVE_FEED_MAX_AGE_SECONDS || 600)) * 1000;
 
 const LIVE_FEED_STALE_AFTER_MS =
-  Math.max(30, Number(process.env.LIVE_FEED_STALE_AFTER_SECONDS || 45)) * 1000;
+  Math.max(15, Number(process.env.LIVE_FEED_STALE_AFTER_SECONDS || 30)) * 1000;
+
+const AUTO_DISCOVERY_ENABLED =
+  (process.env.AUTO_DISCOVERY_ENABLED || "true").toLowerCase() === "true";
+
+const AUTO_DISCOVERY_POLL_MS =
+  Math.max(30_000, Number(process.env.AUTO_DISCOVERY_POLL_SECONDS || 120) * 1000);
+
+const AUTO_DISCOVERY_URLS = [
+  "https://eggwatcher.com/guides/how-the-live-feed-works",
+  "https://eggipedia.com/updates"
+];
+
+let autoDiscoveryTimer = null;
+let imageWarmupInFlight = false;
 
 function normalizePublicBaseUrl(value) {
   const raw = String(value || "").trim();
@@ -187,6 +201,55 @@ function findCatalogEgg(input) {
 
     return names.some(name => normalizeFeedKey(name) === wanted);
   }) || null;
+}
+
+function normalizeRarityName(value) {
+  const key = String(value || "").trim().toLowerCase();
+  return key ? key[0].toUpperCase() + key.slice(1) : "";
+}
+
+function buildDynamicCatalogEntry(eggName, rarity, area = "Unknown") {
+  const cleanEgg = String(eggName || "").replace(/\s+/g, " ").trim();
+  const cleanRarity = normalizeRarityName(rarity);
+  if (!cleanEgg || !["Secret", "Eternal", "Divine"].includes(cleanRarity)) return null;
+
+  const petName = cleanEgg.replace(/\s+Egg$/i, "").trim() || cleanEgg;
+  const normalized = normalizeFeedKey(cleanEgg);
+
+  return {
+    eggName: cleanEgg,
+    displayName: cleanEgg,
+    petName,
+    rarity: cleanRarity,
+    biome: String(area || "Unknown").trim() || "Unknown",
+    aliases: [cleanEgg, petName],
+    sourcePage: "https://robloxstealanegg.wiki/eggs/" + slugify(cleanEgg.replace(/\s+Egg$/i, "")) + "-egg/",
+    active: true,
+    discoveredAt: new Date().toISOString(),
+    source: "EggWatch live auto-discovery",
+    _runtimeOnlyKey: normalized
+  };
+}
+
+function ensureCatalogEgg(eggName, rarity, area = "Unknown") {
+  const existing = findCatalogEgg(eggName);
+  if (existing) return existing;
+
+  if (!AUTO_DISCOVERY_ENABLED) return null;
+
+  const dynamic = buildDynamicCatalogEntry(eggName, rarity, area);
+  if (!dynamic) return null;
+
+  eggImageCatalog.push(dynamic);
+
+  console.log(
+    "Auto-discovered new egg:",
+    dynamic.rarity,
+    dynamic.eggName,
+    "area=" + dynamic.biome
+  );
+
+  return dynamic;
 }
 
 function canonicalEggName(input) {
@@ -416,7 +479,10 @@ async function fetchPetPage(petName) {
 
   if (slug) {
     pages.push(
-      "https://robloxstealanegg.wiki/pets/" + slug + "/"
+      "https://robloxstealanegg.wiki/pets/" + slug + "/",
+      "https://robloxstealanegg.wiki/eggs/" + slug + "-egg/",
+      "https://steal-an-egg-roblox.wiki/eggs/" + slug + "-egg/",
+      "https://steal-an-egg-roblox.wiki/pets/" + slug + "/"
     );
   }
 
@@ -429,7 +495,7 @@ async function fetchPetPage(petName) {
       petPageCache.set(key, result);
       return result;
     } catch {
-      // Try the next verified page source.
+      // Try the next source.
     }
   }
 
@@ -461,6 +527,7 @@ function parseImgCandidates(html, pageUrl, targetPetName) {
 
     let score = 0;
     if (eggNameMatchesTarget(alt, targetPetName)) score += 150;
+    if (normalizeFeedKey(alt).includes(normalizeFeedKey(targetPetName) + " in steal an egg")) score += 80;
     if (eggNameMatchesTarget(title, targetPetName)) score += 120;
     if (normalizeFeedKey(alt) === normalizeFeedKey(targetPetName)) score += 35;
     if (metadata.includes(normalizeFeedKey(targetPetName))) score += 35;
@@ -684,10 +751,14 @@ async function resolveImageUrl(eggName, _providedUrl = null) {
   return resolvePetImageSource(petName);
 }
 
-async function warmPetImageCache() {
+async function warmPetImageCache(options = {}) {
+  if (imageWarmupInFlight) return;
+  imageWarmupInFlight = true;
+
+  const maxWorkers = Math.max(1, Number(options.workers || 2));
+  const entries = eggImageCatalog.filter(entry => entry?.active !== false);
   let warmed = 0;
   let cursor = 0;
-  const entries = eggImageCatalog.filter(entry => entry?.active !== false);
 
   async function worker() {
     while (true) {
@@ -695,24 +766,46 @@ async function warmPetImageCache() {
       if (index >= entries.length) return;
 
       const entry = entries[index];
+
       try {
         const source = await resolvePetImageSource(entry.petName);
-        if (source) {
-          warmed++;
-          if (PUBLIC_BASE_URL) await getPetPngBuffer(entry.petName);
-        }
+        if (!source) continue;
+
+        const buffer = await getPetPngBuffer(entry.petName);
+        if (buffer) warmed++;
       } catch (error) {
-        console.warn("Image warm-up failed for " + entry.petName + ":", error?.message || error);
+        console.warn(
+          "Image warm-up failed for " + entry.petName + ":",
+          error?.message || error
+        );
       }
     }
   }
 
-  await Promise.all(Array.from({ length: Math.min(4, entries.length) }, () => worker()));
-  console.log(
-    "Pet image cache warm:",
-    warmed + "/" + entries.length,
-    PUBLIC_BASE_URL ? "(PNG proxy ready)" : "(source image fallback)"
-  );
+  try {
+    await Promise.all(
+      Array.from(
+        { length: Math.min(maxWorkers, entries.length) },
+        () => worker()
+      )
+    );
+
+    console.log(
+      "Pet image cache warm:",
+      warmed + "/" + entries.length,
+      "(transparent PNG cache)"
+    );
+  } finally {
+    imageWarmupInFlight = false;
+  }
+}
+
+function scheduleImageWarmup() {
+  setTimeout(() => {
+    warmPetImageCache({ workers: 2 }).catch(error => {
+      console.error("Background image warm-up failed:", error);
+    });
+  }, 1000);
 }
 
 app.get("/cdn/pets/:pet.png", async (req, res) => {
@@ -780,8 +873,9 @@ function collectEggCandidates(value, path = [], out = []) {
     const rarityKey = rarity.trim().toLowerCase();
 
     if (["secret", "eternal", "divine"].includes(rarityKey)) {
-      const catalogEgg = findCatalogEgg(eggName.trim());
       const parsedTime = parseTimestamp(spawnedAt);
+      const catalogEgg = findCatalogEgg(eggName.trim()) ||
+        (parsedTime ? ensureCatalogEgg(eggName.trim(), rarity, area) : null);
 
       if (catalogEgg && parsedTime && catalogEgg.rarity.toLowerCase() === rarityKey) {
         const pathText = path.join(".").toLowerCase();
@@ -801,6 +895,7 @@ function collectEggCandidates(value, path = [], out = []) {
           eggName: catalogEgg.eggName,
           rarity: catalogEgg.rarity,
           biome: catalogEgg.biome || (typeof area === "string" && area.trim() ? area.trim() : "Unknown"),
+          petName: catalogEgg.petName || catalogEgg.eggName.replace(/s+Egg$/i, "").trim(),
           spawnedAt: parsedTime.toISOString(),
           sourceEventId: sourceEventId ? String(sourceEventId) : null,
           imageUrl: normalizeImageUrl(imageUrl),
@@ -1097,6 +1192,57 @@ async function pollEggWatch() {
   }
 }
 
+async function scanForGameUpdates() {
+  if (!AUTO_DISCOVERY_ENABLED) return;
+
+  const discovered = [];
+
+  for (const url of AUTO_DISCOVERY_URLS) {
+    try {
+      const { response, body } = await fetchLiveFeed(url);
+      if (!response.ok) continue;
+
+      const plain = String(body)
+        .replace(/<script[\s\S]*?<\/script>/gi, " ")
+        .replace(/<style[\s\S]*?<\/style>/gi, " ")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/&(?:nbsp|amp);/gi, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      const rareMatches = plain.match(
+        /\b(?:secret|eternal|divine)\b.{0,80}\begg\b/gi
+      ) || [];
+
+      for (const match of rareMatches) discovered.push(match);
+    } catch (error) {
+      console.warn("Update discovery fetch failed:", url, error?.message || error);
+    }
+  }
+
+  if (discovered.length) {
+    console.log(
+      "Update discovery scan:",
+      discovered.length,
+      "rare-egg references found."
+    );
+  }
+}
+
+function startAutoDiscovery() {
+  if (!AUTO_DISCOVERY_ENABLED) return;
+
+  scanForGameUpdates().catch(error => {
+    console.warn("Initial update discovery failed:", error);
+  });
+
+  autoDiscoveryTimer = setInterval(() => {
+    scanForGameUpdates().catch(error => {
+      console.warn("Scheduled update discovery failed:", error);
+    });
+  }, AUTO_DISCOVERY_POLL_MS);
+}
+
 function startEggWatchPoller() {
   if (!LIVE_FEED_ENABLED) {
     console.log("EggWatch direct feed: disabled.");
@@ -1321,25 +1467,6 @@ function buildAlertEmbed(event, _latencyMs = null, includeImage = true) {
     { name: "🕒 Spawned", value: "<t:" + unix + ":R>", inline: true }
   ];
 
-  const money = event.gameStats?.income || event.income;
-  const speed = event.gameStats?.speed || event.speed;
-
-  if (money) {
-    fields.push({
-      name: "💰 Money",
-      value: String(money).slice(0, 1024),
-      inline: true
-    });
-  }
-
-  if (speed) {
-    fields.push({
-      name: "⚡ Recommended Speed",
-      value: String(speed).slice(0, 1024),
-      inline: true
-    });
-  }
-
   const embed = new EmbedBuilder()
     .setColor(
       {
@@ -1350,10 +1477,10 @@ function buildAlertEmbed(event, _latencyMs = null, includeImage = true) {
     )
     .setTitle(emoji + "  " + rarity + " Egg Spawned!")
     .setDescription(
-      "**" + eggName.slice(0, 200) + "** has spawned in **" + area.slice(0, 200) + "**."
+      "**" + eggName.slice(0, 200) + "** spawned in **" + area.slice(0, 200) + "**."
     )
     .addFields(fields)
-    .setFooter({ text: "Steal An Egg • Live Spawn" })
+    .setFooter({ text: "Steal An Egg • Live Spawn • EggWatch" })
     .setTimestamp(Number.isFinite(timestamp) ? new Date(timestamp) : new Date());
 
   if (includeImage) {
@@ -1395,10 +1522,21 @@ async function enrichAlertEvent(event) {
   event.displayName = entry.petName || entry.displayName || entry.eggName;
   event.biome = event.biome || entry.biome || "Unknown";
   event.imageUrl = event.imageUrl || await resolveImageUrl(entry.eggName);
-  event.imageBuffer = await getPetPngBuffer(entry.petName);
 
-  const stats = await fetchPetGameStats(entry.petName);
-  event.gameStats = stats;
+  // Use an already-cached transparent PNG immediately. On a cache miss,
+  // generate it in the background and let the current alert use the verified
+  // source image instead of blocking the live alert.
+  const imageKey = normalizeFeedKey(entry.petName);
+  const cachedPng = petPngBufferCache.get(imageKey);
+  if (cachedPng && Date.now() - cachedPng.at < PET_PNG_CACHE_TTL_MS) {
+    event.imageBuffer = cachedPng.buffer;
+  } else {
+    getPetPngBuffer(entry.petName).then(buffer => {
+      if (buffer) {
+        console.log("Transparent PNG ready:", entry.petName);
+      }
+    }).catch(() => {});
+  }
 
   return event;
 }
@@ -1668,11 +1806,7 @@ client.once("clientReady", async () => {
     }
   }
 
-  try {
-    await warmPetImageCache();
-  } catch (error) {
-    console.error("Pet image cache warm-up failed:", error);
-  }
+  scheduleImageWarmup();
 
   try {
     const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_BOT_TOKEN);
@@ -1700,6 +1834,7 @@ setInterval(() => {
 }, 60_000);
 
 startEggWatchPoller();
+startAutoDiscovery();
 
 setInterval(() => {
   updateLiveFeedHealth();
@@ -1865,7 +2000,9 @@ client.on("interactionCreate", async interaction => {
         await validateAlertRoles();
       }
 
-      await warmPetImageCache();
+      warmPetImageCache({ workers: 2 }).catch(error => {
+        console.error("Reload image warm-up failed:", error);
+      });
 
       const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_BOT_TOKEN);
 
