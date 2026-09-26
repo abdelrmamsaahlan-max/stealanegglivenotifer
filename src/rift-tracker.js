@@ -275,8 +275,8 @@ export function buildRiftAlertEmbed(event) {
     });
   }
 
-  if (event?.imageUrl) {
-    embed.setImage(event.imageUrl);
+  if (event?.imageBuffer) {
+    embed.setImage("attachment://rift-event.png");
   }
 
   return embed;
