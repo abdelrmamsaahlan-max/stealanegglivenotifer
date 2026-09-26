@@ -1048,6 +1048,12 @@ function absolutizeUrl(value, pageUrl) {
 const API_RATE_LIMIT_PER_MINUTE =
   Math.max(1, Number(process.env.INGEST_RATE_LIMIT_PER_MINUTE || 120));
 
+const ADMIN_API_RATE_LIMIT_PER_MINUTE =
+  Math.max(1, Number(process.env.ADMIN_API_RATE_LIMIT_PER_MINUTE || 6));
+
+const IMAGE_PROXY_RATE_LIMIT_PER_MINUTE =
+  Math.max(1, Number(process.env.IMAGE_PROXY_RATE_LIMIT_PER_MINUTE || 30));
+
 const MAX_INGEST_SKEW_SECONDS =
   Math.max(0, Number(process.env.INGEST_MAX_SKEW_SECONDS || 60));
 
@@ -1082,6 +1088,8 @@ const seen = new Map();
 const alertedMessageIds = new Map();
 const recentSpawns = [];
 const apiRate = new Map();
+const adminApiRate = new Map();
+const imageProxyRate = new Map();
 const inFlightKeys = new Set();
 const deliveredAlertKeys = new Map();
 const alertDeliveryInFlight = new Set();
@@ -1360,14 +1368,22 @@ function alertQueuePriority(event) {
   return rarityScore + sourceScore;
 }
 
+function alertQueueJobPriority(job) {
+  const base = alertQueuePriority(job?.event);
+  const ageMs = Math.max(0, Date.now() - Number(job?.enqueuedAt || Date.now()));
+  const ageBonus = Math.min(30, Math.floor(ageMs / 1000) * 2);
+
+  return base + ageBonus;
+}
+
 function dequeueNextAlert() {
   if (!alertQueue.length) return null;
 
   let bestIndex = 0;
-  let bestPriority = alertQueuePriority(alertQueue[0].event);
+  let bestPriority = alertQueueJobPriority(alertQueue[0]);
 
   for (let i = 1; i < alertQueue.length; i++) {
-    const priority = alertQueuePriority(alertQueue[i].event);
+    const priority = alertQueueJobPriority(alertQueue[i]);
 
     if (priority > bestPriority) {
       bestPriority = priority;
@@ -2178,6 +2194,12 @@ function scheduleImageWarmup() {
 }
 
 app.get("/cdn/pets/:pet.png", async (req, res) => {
+  const key = rateLimitKey(req);
+  if (!consumeImageProxyRateLimit(key)) {
+    setRetryAfter(res, 60);
+    return res.status(429).end();
+  }
+
   const rawPet = String(req.params.pet || "")
     .replace(/\.png$/i, "")
     .replace(/-/g, " ")
@@ -3821,12 +3843,13 @@ function cleanupCaches(now = Date.now()) {
     if (now - timestamp > SEEN_TTL_MS) alertedMessageIds.delete(key);
   }
 
-  for (const [key, timestamps] of apiRate) {
-    const fresh = timestamps.filter(timestamp => now - timestamp < 60_000);
-    if (fresh.length) apiRate.set(key, fresh);
-    else apiRate.delete(key);
+  for (const store of [apiRate, adminApiRate, imageProxyRate]) {
+    for (const [key, timestamps] of store) {
+      const fresh = timestamps.filter(timestamp => now - timestamp < 60_000);
+      if (fresh.length) store.set(key, fresh);
+      else store.delete(key);
+    }
   }
-}
 
 function rateLimitKey(req) {
   const forwarded = req.headers["x-forwarded-for"];
@@ -3836,18 +3859,44 @@ function rateLimitKey(req) {
   return req.ip || "unknown";
 }
 
-function consumeApiRateLimit(key) {
+function consumeWindowRateLimit(store, key, max, windowMs = 60_000) {
   const now = Date.now();
-  const timestamps = (apiRate.get(key) || []).filter(timestamp => now - timestamp < 60_000);
+  const timestamps = (store.get(key) || []).filter(
+    timestamp => now - timestamp < windowMs
+  );
 
-  if (timestamps.length >= API_RATE_LIMIT_PER_MINUTE) {
-    apiRate.set(key, timestamps);
+  if (timestamps.length >= max) {
+    store.set(key, timestamps);
     return false;
   }
 
   timestamps.push(now);
-  apiRate.set(key, timestamps);
+  store.set(key, timestamps);
   return true;
+}
+
+function consumeApiRateLimit(key) {
+  return consumeWindowRateLimit(apiRate, key, API_RATE_LIMIT_PER_MINUTE);
+}
+
+function consumeAdminApiRateLimit(key) {
+  return consumeWindowRateLimit(
+    adminApiRate,
+    key,
+    ADMIN_API_RATE_LIMIT_PER_MINUTE
+  );
+}
+
+function consumeImageProxyRateLimit(key) {
+  return consumeWindowRateLimit(
+    imageProxyRate,
+    key,
+    IMAGE_PROXY_RATE_LIMIT_PER_MINUTE
+  );
+}
+
+function setRetryAfter(res, seconds) {
+  res.setHeader("Retry-After", String(Math.max(1, Math.ceil(Number(seconds) || 1))));
 }
 
 function verifyRequest(req) {
@@ -3861,6 +3910,17 @@ function verifyRequest(req) {
     Buffer.from(supplied, "utf8"),
     Buffer.from(expected, "utf8")
   );
+}
+
+function verifyAdminToken(req) {
+  const supplied = String(req.header("x-admin-token") || "");
+  if (!SECRET || !supplied) return false;
+
+  const suppliedBuffer = Buffer.from(supplied, "utf8");
+  const expectedBuffer = Buffer.from(SECRET, "utf8");
+
+  return suppliedBuffer.length === expectedBuffer.length &&
+    crypto.timingSafeEqual(suppliedBuffer, expectedBuffer);
 }
 
 function isLiveEvent(value) {
@@ -5355,7 +5415,13 @@ app.get("/health", (_req, res) => {
       alertQueueWorkers: ALERT_QUEUE_WORKERS,
       alertQueueRejected: alertMetrics.queueRejected,
       alertQueueRetried: alertMetrics.queueRetried,
-      alertQueueReservedLiveSlots: ALERT_QUEUE_RESERVED_LIVE_SLOTS
+      alertQueueReservedLiveSlots: ALERT_QUEUE_RESERVED_LIVE_SLOTS,
+      alertQueueOldestAgeMs: alertQueue.length
+        ? Math.max(0, Date.now() - Number(alertQueue.reduce(
+            (oldest, job) => Math.min(oldest, Number(job?.enqueuedAt || Date.now())),
+            Date.now()
+          )))
+        : 0
     },
     ingestGlobalPerSecond: INGEST_GLOBAL_PER_SECOND,
     monitorErrors,
@@ -5439,13 +5505,30 @@ app.get("/api/discovery", (_req, res) => {
   });
 });
 
-app.post("/api/discovery/scan", async (_req, res) => {
+app.post("/api/discovery/scan", async (req, res) => {
   if (!AUTO_DISCOVERY_ENABLED) {
     return res.status(503).json({ error: "discovery_disabled" });
   }
 
+  if (!verifyAdminToken(req)) {
+    return res.status(401).json({ error: "invalid_admin_token" });
+  }
+
+  const key = rateLimitKey(req);
+  if (!consumeAdminApiRateLimit(key)) {
+    setRetryAfter(res, 60);
+    return res.status(429).json({
+      error: "admin_rate_limited",
+      retryable: true
+    });
+  }
+
   if (autoDiscoveryInFlight) {
-    return res.status(409).json({ error: "scan_in_progress" });
+    setRetryAfter(res, 5);
+    return res.status(409).json({
+      error: "scan_in_progress",
+      retryable: true
+    });
   }
 
   try {
@@ -5511,6 +5594,7 @@ app.post("/api/notify-egg", async (req, res) => {
   cleanupCaches();
 
   if (!consumeGlobalIngestRate()) {
+    setRetryAfter(res, 1);
     return res.status(429).json({
       error: "global_rate_limited",
       retryable: true
@@ -5522,6 +5606,7 @@ app.post("/api/notify-egg", async (req, res) => {
   }
 
   if (!consumeApiRateLimit(key)) {
+    setRetryAfter(res, 60);
     return res.status(429).json({
       error: "rate_limited",
       retryable: true
@@ -5538,6 +5623,7 @@ app.post("/api/notify-egg", async (req, res) => {
     const queued = enqueueAlert(req.body, null);
 
     if (queued.full) {
+      setRetryAfter(res, 1);
       return res.status(429).json({
         error: "alert_queue_full",
         retryable: true
