@@ -3681,7 +3681,11 @@ app.get("/health", (_req, res) => {
     memoryRssMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
     memorySoftLimitMb: MEMORY_SOFT_LIMIT_MB,
     memoryHardLimitMb: MEMORY_HARD_LIMIT_MB,
-    statePersistence: true,
+    statePersistence: {
+      localRuntimeFile: true,
+      durableVolume: false,
+      lastSeenFeedRestore: true
+    },
     lastSeenMessagesReady,
     customEggEmojisReady: eggCustomEmojiSetupState.ready,
     customEggEmojiCount: eggCustomEmojiCache.size,
@@ -3927,6 +3931,13 @@ client.on("interactionCreate", async interaction => {
           ? (lastSeenMessagesReady ? "READY" : "WAITING")
           : "DISABLED")
       );
+      for (const rarity of ["secret", "eternal", "divine"]) {
+        const roleId = await resolveAlertRoleId(rarity);
+        checks.push(
+          "🔔 " + rarity[0].toUpperCase() + rarity.slice(1) +
+          " role: " + (roleId ? "READY" : "MISSING")
+        );
+      }
       checks.push(
         "🧾 Spawn history: " + spawnHistory.length
       );
@@ -3944,6 +3955,10 @@ client.on("interactionCreate", async interaction => {
 
     if (interaction.commandName === "bot-status") {
       const uptimeSeconds = Math.floor(process.uptime());
+      const roleStatus = {};
+      for (const rarity of ["secret", "eternal", "divine"]) {
+        roleStatus[rarity] = await resolveAlertRoleId(rarity);
+      }
       const days = Math.floor(uptimeSeconds / 86400);
       const hours = Math.floor((uptimeSeconds % 86400) / 3600);
       const minutes = Math.floor((uptimeSeconds % 3600) / 60);
@@ -3979,9 +3994,9 @@ client.on("interactionCreate", async interaction => {
         "🧾 **Spawn history:** " + spawnHistory.length,
         "🎮 **Game events:** " + gameEventHistory.length,
         "🥚 **Catalog entries:** " + eggImageCatalog.length,
-        "🟣 **Secret role:** " + (ALERT_ROLE_IDS.secret ? "SET" : "NOT SET"),
-        "🟠 **Eternal role:** " + (ALERT_ROLE_IDS.eternal ? "SET" : "NOT SET"),
-        "🔴 **Divine role:** " + (ALERT_ROLE_IDS.divine ? "SET" : "NOT SET"),
+        "🟣 **Secret role:** " + (roleStatus.secret ? "READY" : "MISSING"),
+        "🟠 **Eternal role:** " + (roleStatus.eternal ? "READY" : "MISSING"),
+        "🔴 **Divine role:** " + (roleStatus.divine ? "READY" : "MISSING"),
         "🩺 **Detailed diagnostics:** /health-check"
       ].join("\n");
 
@@ -4270,12 +4285,21 @@ client.on("interactionCreate", async interaction => {
         source: "Test"
       };
 
-      await sendAlert(testEvent);
+      const sent = await sendAlert(testEvent);
 
       alertCount = beforeAlerts;
       lastSpawnAt = beforeLastSpawn;
       if (recentSpawns.length > beforeRecentLength) {
         recentSpawns.splice(beforeRecentLength);
+      }
+
+      if (!sent) {
+        return await interaction.editReply({
+          content:
+            "⚠️ No test alert was sent because **" +
+            entry.petName +
+            "** is not eligible for the normal live-spawn alert pipeline."
+        });
       }
 
       return await interaction.editReply({
