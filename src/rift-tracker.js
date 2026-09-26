@@ -112,7 +112,9 @@ function extractLabel(combined, marker) {
   if (!match?.[1]) return "";
 
   return match[1]
-    .split(/\s+(?:Next Change|Join Game|Possible Pets|Rotation Chance)\b/i)[0]
+    .split(
+      /\s+(?:Next Change|Join Game|Possible Pets|Rotation Chance)\b|\s+<a?:\w+:\d+>/i
+    )[0]
     .trim();
 }
 
