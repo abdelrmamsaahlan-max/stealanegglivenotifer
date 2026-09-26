@@ -213,6 +213,18 @@ const SEMANTIC_DEDUP_WINDOW_MS =
 const SEEN_TTL_MS =
   Math.max(60, Number(process.env.SEEN_TTL_SECONDS || 900)) * 1000;
 
+const INGEST_GLOBAL_PER_SECOND =
+  Math.max(5, Number(process.env.INGEST_GLOBAL_PER_SECOND || 60));
+
+const ALERT_QUEUE_MAX =
+  Math.max(20, Number(process.env.ALERT_QUEUE_MAX || 100));
+
+const ALERT_QUEUE_WORKERS =
+  Math.max(1, Math.min(6, Number(process.env.ALERT_QUEUE_WORKERS || 3)));
+
+const ALERT_RETRY_LIMIT =
+  Math.max(0, Math.min(3, Number(process.env.ALERT_RETRY_LIMIT || 2)));
+
 const SOURCE_STALE_AFTER_MS =
   Math.max(30, Number(process.env.SOURCE_STALE_AFTER_SECONDS || 180)) * 1000;
 
@@ -227,7 +239,7 @@ const LIVE_FEED_URLS = [
   .filter((value, index, array) => array.indexOf(value) === index);
 
 const LIVE_FEED_POLL_MS =
-  Math.min(800, Math.max(500, Number(process.env.LIVE_FEED_POLL_MS || 800)));
+  Math.min(800, Math.max(500, Number(process.env.LIVE_FEED_POLL_MS || 500)));
 
 const LIVE_FEED_TIMEOUT_MS =
   Math.max(1000, Number(process.env.LIVE_FEED_TIMEOUT_MS || 5000));
@@ -1035,11 +1047,18 @@ const inFlightKeys = new Set();
 const deliveredAlertKeys = new Map();
 const alertDeliveryInFlight = new Set();
 const ALERT_DELIVERY_DEDUP_MS =
-  Math.max(15, Number(process.env.ALERT_DELIVERY_DEDUP_SECONDS || 120)) * 1000;
+  Math.max(120, Number(process.env.ALERT_DELIVERY_DEDUP_SECONDS || 900)) * 1000;
+
+const alertQueue = [];
+const alertQueueKeys = new Set();
+let alertQueueActive = 0;
+const ingestGlobalTimestamps = [];
 
 const alertMetrics = {
   duplicateSuppressed: 0,
   sendFailures: 0,
+  queueRejected: 0,
+  queueRetried: 0,
   lastSuccessAt: null,
   lastFailureAt: null,
   byRarity: {
@@ -1159,9 +1178,10 @@ function alertDeliveryKeys(event) {
   const egg = normalizeFeedKey(event?.eggName || event?.displayName);
   const area = normalizeFeedKey(event?.biome || "unknown");
   const parsedTime = Date.parse(event?.spawnedAt || "");
+  // Absorb tiny source timestamp differences while keeping separate spawns distinct.
   const timeBucket = Number.isFinite(parsedTime)
-    ? Math.floor(parsedTime / 5000)
-    : Math.floor(Date.now() / 5000);
+    ? Math.floor(parsedTime / 10_000)
+    : Math.floor(Date.now() / 10_000);
 
   const keys = [
     "core|" + rarity + "|" + egg + "|" + area + "|" + timeBucket
@@ -1202,6 +1222,179 @@ function releaseAlertDelivery(keys, success) {
     alertDeliveryInFlight.delete(key);
     if (!success) deliveredAlertKeys.delete(key);
   }
+}
+
+function consumeGlobalIngestRate() {
+  const now = Date.now();
+
+  while (
+    ingestGlobalTimestamps.length &&
+    now - ingestGlobalTimestamps[0] >= 1000
+  ) {
+    ingestGlobalTimestamps.shift();
+  }
+
+  if (ingestGlobalTimestamps.length >= INGEST_GLOBAL_PER_SECOND) {
+    return false;
+  }
+
+  ingestGlobalTimestamps.push(now);
+  return true;
+}
+
+function retryDelayMs(error, attempt) {
+  const retryAfter = Number(
+    error?.retryAfter ??
+    error?.rawError?.retry_after ??
+    error?.data?.retry_after ??
+    0
+  );
+
+  if (Number.isFinite(retryAfter) && retryAfter > 0) {
+    return Math.min(10_000, Math.max(250, retryAfter * 1000));
+  }
+
+  return Math.min(5_000, 500 * (2 ** attempt));
+}
+
+function isRetryableAlertError(error) {
+  const status = Number(
+    error?.status ??
+    error?.httpStatus ??
+    error?.rawError?.status ??
+    0
+  );
+
+  if ([429, 500, 502, 503, 504].includes(status)) return true;
+
+  return /timeout|timed\s*out|network|econn|etimedout|eai_again|socket|fetch/i.test(
+    String(error?.message || error || "")
+  );
+}
+
+async function deliverQueuedAlert(job) {
+  for (let attempt = 0; attempt <= ALERT_RETRY_LIMIT; attempt++) {
+    try {
+      const sent = await sendAlert(job.event, job.latencyMs);
+      if (!sent) return;
+
+      if (attempt > 0) {
+        console.log(
+          "Alert delivery recovered on retry:",
+          job.event?.rarity,
+          job.event?.eggName,
+          "attempt=" + (attempt + 1)
+        );
+      }
+
+      return;
+    } catch (error) {
+      if (!isRetryableAlertError(error) || attempt >= ALERT_RETRY_LIMIT) {
+        throw error;
+      }
+
+      alertMetrics.queueRetried++;
+      const delay = retryDelayMs(error, attempt);
+
+      console.warn(
+        "Transient alert send failure; retrying:",
+        job.event?.rarity,
+        job.event?.eggName,
+        "attempt=" + (attempt + 1),
+        "delayMs=" + delay
+      );
+
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+}
+
+function dequeueNextAlert() {
+  if (!alertQueue.length) return null;
+
+  let bestIndex = 0;
+  let bestPriority = rarityPriority(alertQueue[0].event?.rarity);
+
+  for (let i = 1; i < alertQueue.length; i++) {
+    const priority = rarityPriority(alertQueue[i].event?.rarity);
+    if (priority > bestPriority) {
+      bestPriority = priority;
+      bestIndex = i;
+    }
+  }
+
+  return alertQueue.splice(bestIndex, 1)[0] || null;
+}
+
+function pumpAlertQueue() {
+  while (alertQueueActive < ALERT_QUEUE_WORKERS && alertQueue.length) {
+    const job = dequeueNextAlert();
+    if (!job) return;
+
+    for (const key of job.deliveryKeys || []) {
+      alertQueueKeys.delete(key);
+    }
+
+    alertQueueActive++;
+
+    deliverQueuedAlert(job)
+      .catch(error => {
+        alertMetrics.sendFailures++;
+        alertMetrics.lastFailureAt = new Date().toISOString();
+        monitorErrors++;
+
+        console.error(
+          "Queued alert delivery failed:",
+          job.event?.rarity,
+          job.event?.eggName,
+          error
+        );
+      })
+      .finally(() => {
+        alertQueueActive--;
+        pumpAlertQueue();
+      });
+  }
+}
+
+function enqueueAlert(event, latencyMs = null) {
+  const deliveryKeys = alertDeliveryKeys(event);
+
+  if (deliveryKeys.some(key =>
+    alertQueueKeys.has(key) ||
+    deliveredAlertKeys.has(key) ||
+    alertDeliveryInFlight.has(key)
+  )) {
+    alertMetrics.duplicateSuppressed++;
+    return { queued: false, duplicate: true, full: false };
+  }
+
+  if (alertQueue.length >= ALERT_QUEUE_MAX) {
+    alertMetrics.queueRejected++;
+    console.error(
+      "Alert queue full; rejecting new alert:",
+      event?.rarity,
+      event?.eggName,
+      "depth=" + alertQueue.length
+    );
+
+    return { queued: false, duplicate: false, full: true };
+  }
+
+  for (const key of deliveryKeys) {
+    alertQueueKeys.add(key);
+  }
+
+  alertQueue.push({
+    event: { ...event },
+    latencyMs,
+    deliveryKeys,
+    enqueuedAt: Date.now()
+  });
+
+  pumpAlertQueue();
+
+  return { queued: true, duplicate: false, full: false };
 }
 
 function recordAlertMetric(event, area) {
@@ -2246,15 +2439,24 @@ async function processAdditionalLiveCandidates(payload, primaryCandidate, url) {
     try {
       seen.set(feedEventKey, Date.now());
       recordSpawnHistory(event, "Live Feed");
-      await sendAlert(event, Math.max(0, Date.now() - primaryTime));
-      liveFeedEventsAccepted++;
-      sent++;
+      const queued = enqueueAlert(
+        event,
+        Math.max(0, Date.now() - primaryTime)
+      );
+
+      if (queued.queued) {
+        liveFeedEventsAccepted++;
+        sent++;
+      } else if (queued.full) {
+        seen.delete(feedEventKey);
+      }
+
       console.log(
-        "Forwarded additional Live feed event:",
+        "Queued additional Live feed event:",
         candidate.rarity,
         candidate.eggName,
         "area=" + candidate.biome,
-        "endpointCount=" + LIVE_FEED_URLS.length
+        "queueDepth=" + alertQueue.length
       );
     } catch (error) {
       seen.delete(feedEventKey);
@@ -2505,17 +2707,33 @@ async function pollLiveFeed() {
 
       try {
         recordSpawnHistory(event, "Live Feed");
-        await sendAlert(event, ageMs >= 0 ? ageMs : null);
-        liveFeedEventsAccepted++;
-        acceptedThisPoll++;
 
-        console.log(
-          "Forwarded Live feed event:",
-          semanticKey,
-          "latencyMs=" + (ageMs >= 0 ? ageMs : "unknown"),
-          "sourceEndpoint=" + (index + 1),
-          "image=" + (candidate.imageUrl ? "attached" : "background")
+        const queued = enqueueAlert(
+          event,
+          ageMs >= 0 ? ageMs : null
         );
+
+        if (queued.queued) {
+          liveFeedEventsAccepted++;
+          acceptedThisPoll++;
+
+          console.log(
+            "Queued Live feed event:",
+            semanticKey,
+            "latencyMs=" + (ageMs >= 0 ? ageMs : "unknown"),
+            "sourceEndpoint=" + (index + 1),
+            "queueDepth=" + alertQueue.length
+          );
+        } else if (queued.full) {
+          liveFeedProcessedEvents.delete(fingerprint);
+          seen.delete(semanticKey);
+          console.warn(
+            "Live alert queue full; candidate will be retried:",
+            candidate.eggName
+          );
+        } else if (queued.duplicate) {
+          console.log("Live feed duplicate suppressed:", semanticKey);
+        }
       } catch (error) {
         liveFeedProcessedEvents.delete(fingerprint);
         seen.delete(semanticKey);
@@ -4925,23 +5143,28 @@ async function processSpawnMessage(message) {
     ? Math.max(0, now - messageData.createdTimestamp)
     : null;
 
-  try {
-    await sendAlert(event, latencyMs);
+  const queued = enqueueAlert(event, latencyMs);
 
-    console.log(
-      "Forwarded live egg spawn:",
-      semanticKey,
-      "priority=" + rarityPriority(event.rarity),
-      "latencyMs=" + (latencyMs ?? "unknown")
-    );
-  } catch (error) {
-    monitorErrors++;
+  if (!queued.queued && queued.full) {
     alertedMessageIds.delete(message.id);
     seen.delete(semanticKey);
-    console.error("Live source forwarding failed:", error);
-  } finally {
-    inFlightKeys.delete(semanticKey);
+    console.warn(
+      "Discord alert queue full; source message will be retried:",
+      message.id
+    );
+  } else if (queued.queued) {
+    console.log(
+      "Queued live egg spawn:",
+      semanticKey,
+      "priority=" + rarityPriority(event.rarity),
+      "latencyMs=" + (latencyMs ?? "unknown"),
+      "queueDepth=" + alertQueue.length
+    );
+  } else if (queued.duplicate) {
+    console.log("Live source duplicate suppressed:", semanticKey);
   }
+
+  inFlightKeys.delete(semanticKey);
 }
 
 function safeRun(promise, context) {
@@ -5006,8 +5229,15 @@ app.get("/health", (_req, res) => {
         .sort((a, b) => b[1] - a[1])
         .slice(0, 10)
         .map(([area, count]) => ({ area, count })),
-      trackedDeliveryKeys: deliveredAlertKeys.size
+      trackedDeliveryKeys: deliveredAlertKeys.size,
+      alertQueueDepth: alertQueue.length,
+      alertQueueActive: alertQueueActive,
+      alertQueueMax: ALERT_QUEUE_MAX,
+      alertQueueWorkers: ALERT_QUEUE_WORKERS,
+      alertQueueRejected: alertMetrics.queueRejected,
+      alertQueueRetried: alertMetrics.queueRetried
     },
+    ingestGlobalPerSecond: INGEST_GLOBAL_PER_SECOND,
     monitorErrors,
     cacheSize: seen.size,
     recentSpawns: recentSpawns.length,
@@ -5160,12 +5390,22 @@ app.post("/api/notify-egg", async (req, res) => {
   const key = rateLimitKey(req);
   cleanupCaches();
 
-  if (!consumeApiRateLimit(key)) {
-    return res.status(429).json({ error: "rate_limited" });
+  if (!consumeGlobalIngestRate()) {
+    return res.status(429).json({
+      error: "global_rate_limited",
+      retryable: true
+    });
   }
 
   if (!verifyRequest(req)) {
     return res.status(401).json({ error: "invalid_signature" });
+  }
+
+  if (!consumeApiRateLimit(key)) {
+    return res.status(429).json({
+      error: "rate_limited",
+      retryable: true
+    });
   }
 
   if (!isLiveEvent(req.body)) {
@@ -5174,12 +5414,32 @@ app.post("/api/notify-egg", async (req, res) => {
 
   try {
     recordSpawnHistory(req.body, "Signed API");
-    await sendAlert(req.body);
-    return res.json({ accepted: true });
+
+    const queued = enqueueAlert(req.body, null);
+
+    if (queued.full) {
+      return res.status(429).json({
+        error: "alert_queue_full",
+        retryable: true
+      });
+    }
+
+    if (queued.duplicate) {
+      return res.json({
+        accepted: true,
+        duplicate: true,
+        queued: false
+      });
+    }
+
+    return res.status(202).json({
+      accepted: true,
+      queued: true
+    });
   } catch (error) {
     monitorErrors++;
-    console.error("API alert failed:", error);
-    return res.status(500).json({ error: "discord_send_failed" });
+    console.error("API alert queueing failed:", error);
+    return res.status(500).json({ error: "alert_queue_failed" });
   }
 });
 
@@ -5296,6 +5556,8 @@ setInterval(() => {
     "avgLatencyMs=" + (latencySamples
       ? Math.round(totalLatencyMs / latencySamples)
       : "N/A"),
+    "queue=" + alertQueue.length + "/" + ALERT_QUEUE_MAX,
+    "workers=" + alertQueueActive + "/" + ALERT_QUEUE_WORKERS,
     "rift=" + (RIFT_ALERTS_ENABLED
       ? (riftState.currentBannerName || "waiting")
       : "disabled")
