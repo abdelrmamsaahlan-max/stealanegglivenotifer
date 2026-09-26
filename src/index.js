@@ -1299,9 +1299,13 @@ function isTrustedPetImageUrl(value) {
 
     const trustedHost =
       host === "robloxstealanegg.wiki" ||
-      host === "steal-an-egg-roblox.wiki";
+      host === "steal-an-egg-roblox.wiki" ||
+      host === "stealanegg-wiki.com";
 
-    const petPath = /\/images\/pets\//.test(pathName);
+    const petPath =
+      /\/images\/pets\//.test(pathName) ||
+      (host === "stealanegg-wiki.com" &&
+        pathName.startsWith("/images/optimized/"));
     const imageExtension = /\.(?:png|webp|jpe?g)(?:$)/.test(pathName);
     const blockedPath = /(?:\/og\/|\/hero\/|\/banner\/|\/logo\/|\/favicon|sprite)/i.test(pathName);
 
@@ -1333,6 +1337,12 @@ async function resolvePetImageSource(petName) {
 
   const directArtUrls = [];
   const slug = petSlugForEntry(entry);
+
+  if (key === "nightflame") {
+    directArtUrls.push(
+      "https://stealanegg-wiki.com/images/optimized/e99d6b41b772cf59-500.webp"
+    );
+  }
 
   for (const base of directArtBases) {
     for (const extension of [".webp", ".png", ".jpg", ".jpeg"]) {
