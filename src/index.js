@@ -47,6 +47,14 @@ import {
   parseExperimentAlert
 } from "./experiment-tracker.js";
 import {
+  SCRAMBLE_ACTIVE_MINUTES,
+  SCRAMBLE_CYCLE_MINUTES,
+  buildScrambleActionRow,
+  buildScrambleBossEmbed,
+  parseScrambleBoss,
+  scrambleEventKey
+} from "./scramble-boss-tracker.js";
+import {
   calculateEvidenceConfidence,
   chooseBestUpdate,
   detectCatalogChanges,
@@ -115,6 +123,13 @@ const COMMANDS = [
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .setDescription("Admin: send a sample Dr. Scramble experiment alert with the live-style countdown."),
   new SlashCommandBuilder()
+    .setName("scramble")
+    .setDescription("Show the current Dr. Scramble boss cycle and live tracker state."),
+  new SlashCommandBuilder()
+    .setName("scramble-test")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .setDescription("Admin: send a sample Dr. Scramble boss alert.") ,
+  new SlashCommandBuilder()
     .setName("rift-test")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .setDescription("Admin: send a sample Rift alert to test the Rift embed and Join Game button.")
@@ -162,6 +177,7 @@ const ADMIN_COMMANDS = new Set([
   "egg-test",
   "rift-test",
   "experiment-test",
+  "scramble-test",
   "role-test",
   "bot-reload",
   "discovery-scan"
@@ -415,6 +431,16 @@ const experimentState = {
 };
 
 const seenExperimentAlerts = new Map();
+const seenScrambleAlerts = new Map();
+const scrambleState = {
+  lastAppearedAt: null,
+  nextBossAt: null,
+  lastSourceMessageId: null,
+  lastSourceName: null,
+  lastAlertMessageId: null,
+  lastTier: null,
+  lastSamples: null
+};
 const experimentCustomEmojiCache = new Map();
 const experimentCustomEmojiSetupState = {
   ready: false,
@@ -595,6 +621,38 @@ function loadRuntimeState() {
       riftState = { ...riftState, ...state.riftState };
     }
 
+    if (state.scrambleState && typeof state.scrambleState === "object") {
+      scrambleState.lastAppearedAt = Number.isFinite(Number(state.scrambleState.lastAppearedAt))
+        ? Number(state.scrambleState.lastAppearedAt)
+        : null;
+      scrambleState.nextBossAt = Number.isFinite(Number(state.scrambleState.nextBossAt))
+        ? Number(state.scrambleState.nextBossAt)
+        : null;
+      scrambleState.lastSourceMessageId = typeof state.scrambleState.lastSourceMessageId === "string"
+        ? state.scrambleState.lastSourceMessageId
+        : null;
+      scrambleState.lastSourceName = typeof state.scrambleState.lastSourceName === "string"
+        ? state.scrambleState.lastSourceName
+        : null;
+      scrambleState.lastAlertMessageId = typeof state.scrambleState.lastAlertMessageId === "string"
+        ? state.scrambleState.lastAlertMessageId
+        : null;
+      scrambleState.lastTier = Number.isFinite(Number(state.scrambleState.lastTier))
+        ? Number(state.scrambleState.lastTier)
+        : null;
+      scrambleState.lastSamples = Number.isFinite(Number(state.scrambleState.lastSamples))
+        ? Number(state.scrambleState.lastSamples)
+        : null;
+    }
+
+    if (state.seenScrambleAlerts && typeof state.seenScrambleAlerts === "object") {
+      for (const [key, value] of Object.entries(state.seenScrambleAlerts)) {
+        if (key && Number.isFinite(Number(value)) && Number(value) > Date.now() - 15 * 60 * 1000) {
+          seenScrambleAlerts.set(key, Number(value));
+        }
+      }
+    }
+
     if (state.experimentState && typeof state.experimentState === "object") {
       experimentState.lastAppearedAt = Number.isFinite(Number(state.experimentState.lastAppearedAt))
         ? Number(state.experimentState.lastAppearedAt)
@@ -764,7 +822,7 @@ function saveRuntimeState() {
     fs.mkdirSync(stateDir, { recursive: true });
 
     const payload = {
-      version: 3,
+      version: 4,
       savedAt: new Date().toISOString(),
       lastUpdateFingerprint,
       lastUpdateTitle,
@@ -806,6 +864,11 @@ function saveRuntimeState() {
       gameEventHistory: gameEventHistory.slice(0, MAX_EVENT_HISTORY),
       riftState,
       experimentState,
+      scrambleState,
+      seenScrambleAlerts: Object.fromEntries(
+        [...seenScrambleAlerts.entries()]
+          .slice(-300)
+      ),
       riftHistory: riftHistory.slice(0, MAX_RIFT_HISTORY),
       lastSeenMessageIds,
       lastSeenByRarity: Object.fromEntries(
@@ -4539,6 +4602,10 @@ function cleanupCaches(now = Date.now()) {
     if (now - timestamp > RIFT_DEDUP_TTL_MS) seenRiftAlerts.delete(key);
   }
 
+  for (const [key, timestamp] of seenScrambleAlerts) {
+    if (now - timestamp > 15 * 60 * 1000) seenScrambleAlerts.delete(key);
+  }
+
   for (const [key, timestamp] of seenExperimentAlerts) {
     if (now - timestamp > 15 * 60 * 1000) seenExperimentAlerts.delete(key);
   }
@@ -5667,6 +5734,81 @@ async function sendRiftAlert(event, options = {}) {
   return true;
 }
 
+function recordScrambleEvent(event) {
+  const now = Date.now();
+  const seenAt = seenScrambleAlerts.get(scrambleEventKey(event)) || 0;
+
+  scrambleState.lastAppearedAt = Number(event.appearedAt || now);
+  scrambleState.nextBossAt = Number(
+    event.nextBossAt || (scrambleState.lastAppearedAt + SCRAMBLE_CYCLE_MINUTES * 60_000)
+  );
+  scrambleState.lastSourceMessageId = event.sourceMessageId || null;
+  scrambleState.lastSourceName = event.sourceName || null;
+  scrambleState.lastTier = Number.isFinite(Number(event.tier)) ? Number(event.tier) : null;
+  scrambleState.lastSamples = Number.isFinite(Number(event.samples)) ? Number(event.samples) : null;
+
+  if (!seenAt || now - seenAt >= 15 * 60 * 1000) {
+    seenScrambleAlerts.set(scrambleEventKey(event), now);
+  }
+
+  persistGameEvent({
+    ...event,
+    type: "scramble_boss",
+    title: event.title || "Dr. Scramble",
+    description: event.sourceText || ""
+  }).catch(error => {
+    recordMonitorError("storage", error, "Supabase Dr. Scramble persistence failed");
+  });
+
+  scheduleStateSave();
+  return now - seenAt >= 15 * 60 * 1000;
+}
+
+async function sendScrambleAlert(event, options = {}) {
+  if (!EVENT_ALERTS_ENABLED || !CHANNEL_ID || !event) return false;
+
+  const isTest = options.test === true;
+  const key = scrambleEventKey(event);
+
+  if (!isTest) {
+    const previous = seenScrambleAlerts.get(key) || 0;
+    if (Date.now() - previous < 15 * 60 * 1000) return false;
+  }
+
+  const channel = await getAlertChannel();
+  const payload = {
+    content: "🤖 **DR. SCRAMBLE IS HERE!**",
+    embeds: [buildScrambleBossEmbed(event)],
+    allowedMentions: { parse: [] }
+  };
+
+  const row = buildScrambleActionRow(event);
+  if (row) payload.components = [row];
+
+  try {
+    const message = await sendDiscordPayload(channel, payload);
+    if (!message) return false;
+
+    if (!isTest) {
+      seenScrambleAlerts.set(key, Date.now());
+    }
+
+    scrambleState.lastAlertMessageId = message.id;
+    scheduleStateSave();
+
+    console.log(
+      "Dr. Scramble boss alert sent:",
+      "nextAt=" + new Date(scrambleState.nextBossAt || event.nextBossAt).toISOString(),
+      "message=" + message.id
+    );
+
+    return true;
+  } catch (error) {
+    recordMonitorError("discord", error, "Dr. Scramble alert send failed");
+    return false;
+  }
+}
+
 async function sendExperimentAlert(event, options = {}) {
   if (!EVENT_ALERTS_ENABLED || !CHANNEL_ID || !event) return false;
 
@@ -6045,6 +6187,25 @@ async function processSpawnMessage(message) {
     }
   }
 
+  const scrambleEvent = parseScrambleBoss({
+    ...messageData,
+    sourceMessageId: message.id || null,
+    authorId: message.author?.id || null
+  });
+
+  if (scrambleEvent) {
+    scrambleEvent.sourceMessageId = message.id || null;
+    scrambleEvent.sourceName =
+      message.author?.tag ||
+      message.author?.username ||
+      "Discord Source";
+
+    const shouldAlert = recordScrambleEvent(scrambleEvent);
+    if (shouldAlert) {
+      safeRun(sendScrambleAlert(scrambleEvent), "Dr. Scramble alert");
+    }
+  }
+
   // Rare-egg processing deliberately continues immediately. Event alerts are
   // isolated in their own async jobs so a slow/failing Doctor Scramble or Rift
   // send can never block a Secret/Eternal/Divine spawn from being evaluated.
@@ -6228,6 +6389,13 @@ app.get("/health", (_req, res) => {
     publicPngProxy: Boolean(PUBLIC_BASE_URL),
     sourceImageAlphaOnly: SOURCE_IMAGE_ALPHA_ONLY,
     persistence: persistenceStats(),
+    scramble: {
+      enabled: EVENT_ALERTS_ENABLED,
+      lastAppearedAt: scrambleState.lastAppearedAt,
+      nextBossAt: scrambleState.nextBossAt,
+      lastTier: scrambleState.lastTier,
+      lastSamples: scrambleState.lastSamples
+    },
 
     autoDiscoveryEnabled: AUTO_DISCOVERY_ENABLED,
     autoDiscoveredCount,
@@ -6390,6 +6558,23 @@ app.get("/api/rift", (_req, res) => {
     bossAlertsEnabled: RIFT_BOSS_ALERTS_ENABLED,
     state: publicRiftState,
     history: publicHistory
+  });
+});
+
+app.get("/api/scramble", (_req, res) => {
+  const nextBossAt = scrambleState.nextBossAt;
+  const remainingMs = nextBossAt
+    ? Math.max(0, Number(nextBossAt) - Date.now())
+    : null;
+
+  res.json({
+    enabled: EVENT_ALERTS_ENABLED,
+    cycleMinutes: SCRAMBLE_CYCLE_MINUTES,
+    activeMinutes: SCRAMBLE_ACTIVE_MINUTES,
+    state: {
+      ...scrambleState,
+      remainingMs
+    }
   });
 });
 
@@ -6751,6 +6936,8 @@ client.on("interactionCreate", async interaction => {
             : "⚪ Off"),
         "🖼️ **PNG cache:** " + petPngBufferCache.size,
         "🧪 **Experiment:** " + (EVENT_ALERTS_ENABLED ? "🟢 On" : "⚪ Off") +
+          " • 🤖 **Dr. Scramble:** " +
+          (EVENT_ALERTS_ENABLED ? "🟢 On" : "⚪ Off") +
           " • 🟣 **Rift:** " + (RIFT_ALERTS_ENABLED ? "🟢 On" : "⚪ Off"),
         "💾 **State:** " + STATE_PERSISTENCE_MODE +
           (DURABLE_VOLUME_CONFIGURED ? " • durable" : " • no volume detected"),
@@ -6969,6 +7156,57 @@ client.on("interactionCreate", async interaction => {
 
       return await interaction.editReply({
         content: "✅ Rift test alert sent for **" + data.name + "**."
+      });
+    }
+
+    if (interaction.commandName === "scramble") {
+      const next = scrambleState.nextBossAt;
+      const last = scrambleState.lastAppearedAt;
+
+      return await interaction.reply({
+        content: [
+          "🤖 **Dr. Scramble Tracker**",
+          "Status: " + (EVENT_ALERTS_ENABLED ? "✅ Enabled" : "🟡 Alerts muted"),
+          "Last Boss: " + (last ? "<t:" + Math.floor(last / 1000) + ":R>" : "Waiting for first detection"),
+          "Next Boss: " + (next ? "<t:" + Math.floor(next / 1000) + ":t> (<t:" + Math.floor(next / 1000) + ":R>)" : "Waiting"),
+          "Cycle: **" + SCRAMBLE_CYCLE_MINUTES + " minutes**",
+          "Active window: **" + SCRAMBLE_ACTIVE_MINUTES + " minutes**",
+          "Tier: " + (scrambleState.lastTier ?? "Not detected"),
+          "Samples: " + (scrambleState.lastSamples ?? "Not detected"),
+          "Tier 100 reward: **OP Eternal**",
+          "Secret drop: **Newest Divine — super rare chance**"
+        ].join("\n"),
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    if (interaction.commandName === "scramble-test") {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const now = Date.now();
+      const testEvent = {
+        type: "scramble_boss",
+        eventName: "Dr. Scramble Event — Part 2",
+        title: "Dr. Scramble has returned in his Mecha!",
+        appearedAt: now,
+        nextBossAt: now + SCRAMBLE_CYCLE_MINUTES * 60_000,
+        cycleMinutes: SCRAMBLE_CYCLE_MINUTES,
+        activeMinutes: SCRAMBLE_ACTIVE_MINUTES,
+        tier: 100,
+        samples: 0,
+        reward: "Tier 100 → OP Eternal",
+        secretDrop: "Super rare chance for the newest Divine",
+        joinUrl: STEAL_AN_EGG_GAME_URL,
+        sourceName: interaction.user?.tag || interaction.user?.username || "Manual Test",
+        sourceMessageId: "manual-test"
+      };
+
+      const sent = await sendScrambleAlert(testEvent, { test: true });
+
+      return await interaction.editReply({
+        content: sent
+          ? "✅ Dr. Scramble test alert sent."
+          : "⚠️ Dr. Scramble test alert was not sent."
       });
     }
 
