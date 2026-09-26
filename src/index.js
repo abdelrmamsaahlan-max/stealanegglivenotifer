@@ -1541,6 +1541,7 @@ let liveFeedLastEventAt = null;
 let alertPipelineSelfTestAt = null;
 let alertPipelineSelfTestResult = null;
 let alertPipelineSelfTestInFlight = false;
+let alertPipelineSelfTestRunThisProcess = false;
 let liveFeedLastUrl = null;
 let liveFeedLastPollAt = null;
 let liveFeedEventsReceived = 0;
@@ -6183,12 +6184,13 @@ async function enrichAlertEvent(event, entryOverride = null) {
 }
 
 async function runAlertPipelineSelfTest() {
-  if (!ALERT_PIPELINE_SELF_TEST_ONCE || alertPipelineSelfTestInFlight) {
+  if (!ALERT_PIPELINE_SELF_TEST_ONCE || alertPipelineSelfTestRunThisProcess || alertPipelineSelfTestInFlight) {
     return alertPipelineSelfTestResult;
   }
 
   if (!client.isReady() || !CHANNEL_ID) return null;
 
+  alertPipelineSelfTestRunThisProcess = true;
   alertPipelineSelfTestInFlight = true;
 
   try {
@@ -8372,7 +8374,7 @@ client.on("shardReconnecting", shardId => {
 client.on("shardReady", shardId => {
   console.log("Discord shard ready:", shardId);
 
-  if (ALERT_PIPELINE_SELF_TEST_ONCE && !alertPipelineSelfTestAt) {
+  if (ALERT_PIPELINE_SELF_TEST_ONCE && !alertPipelineSelfTestRunThisProcess) {
     setTimeout(() => {
       runAlertPipelineSelfTest().catch(error => {
         console.error("Alert pipeline self-test scheduling failed:", error);
