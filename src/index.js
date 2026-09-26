@@ -27,7 +27,8 @@ import {
   persistCatalog,
   persistAlertDelivery,
   persistSourceHealth,
-  persistenceStats
+  persistenceStats,
+  cleanupStorage
 } from "./database.js";
 import {
   buildRiftActionRow,
@@ -4445,6 +4446,14 @@ let lastDailySelfCheckAt = null;
 let lastDailySelfCheckResult = null;
 
 async function runDailySelfCheck() {
+  if (persistenceStats().enabled) {
+    try {
+      await cleanupStorage(Number(process.env.EVENT_RETENTION_DAYS || 30));
+    } catch (error) {
+      recordMonitorError("storage", error, "Supabase retention cleanup failed");
+    }
+  }
+
   const checks = {
     discord: client.isReady(),
     alertChannel: Boolean(CHANNEL_ID),
