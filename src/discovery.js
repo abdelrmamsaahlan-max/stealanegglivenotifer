@@ -89,7 +89,11 @@ function cleanDiscoveryName(value) {
     .replace(/\s+Egg$/i, "")
     .trim();
 
-  if (!name || name.length > 90) return "";
+  if (
+    !name ||
+    name.length > 90 ||
+    /^(?:update|version)\s*\d+/i.test(name)
+  ) return "";
 
   const normalized = name.toLowerCase().replace(/[^a-z0-9]+/g, "");
   if (normalized.length >= 6 && normalized.length % 2 === 0) {
