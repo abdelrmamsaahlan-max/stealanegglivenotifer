@@ -2575,15 +2575,7 @@ async function updateLastSeenMessage(rarity) {
   }
 
   const promise = (async () => {
-    let message = null;
-
-    if (lastSeenMessageIds[rarity]) {
-      try {
-        message = await channel.messages.fetch(lastSeenMessageIds[rarity]);
-      } catch {
-        message = null;
-      }
-    }
+    const message = await findExistingLastSeenMessage(channel, rarity);
 
     if (message) {
       await message.edit({ embeds: [embed] });
