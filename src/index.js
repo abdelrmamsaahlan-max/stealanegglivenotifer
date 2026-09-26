@@ -129,18 +129,18 @@ const COMMANDS = [
     .setName("egg-history")
     .setDescription("View recent rare-egg spawn history with rarity, location, and detection time."),
   new SlashCommandBuilder()
-    .setName("game-events")
-    .setDescription("View recent detected game events, updates, and automatic catalog discoveries."),
-  new SlashCommandBuilder()
-    .setName("discovery-status")
-    .setDescription("View Auto Discovery source health, confidence, and latest scan."),
-  new SlashCommandBuilder()
-    .setName("discovery-history")
-    .setDescription("View recent Auto Discovery changes and decisions."),
-  new SlashCommandBuilder()
-    .setName("discovery-scan")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .setDescription("Admin: run an Auto Discovery scan now and reconcile the catalog."),
+    .setName("find")
+    .setDescription("Find the most recent sighting of a rare egg.")
+    .addStringOption(option =>
+      option
+        .setName("egg")
+        .setDescription("Egg or pet name to search.")
+        .setRequired(true)
+    ),
+
+
+
+
   new SlashCommandBuilder()
     .setName("rift")
     .setDescription("Show the current Rift banner, change times, rotation chance, and possible pets."),
@@ -166,9 +166,7 @@ const COMMANDS = [
         .setRequired(false)
         .addChoices(...riftBannerChoices())
     ),
-  new SlashCommandBuilder()
-    .setName("health-check")
-    .setDescription("Run a full health check for Discord, live feeds, Rift, alerts, images, memory, and storage."),
+
   new SlashCommandBuilder()
     .setName("role-test")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
@@ -184,22 +182,12 @@ const COMMANDS = [
           { name: "Divine", value: "divine" }
         )
     ),
-  new SlashCommandBuilder()
-    .setName("image-check")
-    .setDescription("Verify the transparent character image and game data for a specific egg.")
-    .addStringOption(option =>
-      option
-        .setName("egg")
-        .setDescription("Egg or pet name to inspect from the verified catalog.")
-        .setRequired(true)
-    ),
+
   new SlashCommandBuilder()
     .setName("bot-reload")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .setDescription("Admin: clear runtime caches, refresh image data, reload roles, and sync Discord commands."),
-  new SlashCommandBuilder()
-    .setName("ops-report")
-    .setDescription("View reliability, alert latency, lifecycle, dead-letter, and source-conflict metrics."),
+
   new SlashCommandBuilder()
     .setName("spawn-stats")
     .setDescription("View recent tracked spawn statistics by rarity, area, and egg."),
@@ -7919,113 +7907,6 @@ client.on("interactionCreate", async interaction => {
   }
 
   try {
-    if (interaction.commandName === "health-check") {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
-      const checks = [];
-      const memoryMb = Math.round(process.memoryUsage().rss / 1024 / 1024);
-
-      checks.push(
-        (client.isReady() ? "✅" : "❌") + " Discord connection"
-      );
-      checks.push(
-        (CHANNEL_ID ? "✅" : "❌") + " Alert channel configuration"
-      );
-      checks.push(
-        (LAST_SEEN_CHANNEL_ID ? "✅" : "🟡") + " Last Seen channel configuration"
-      );
-      checks.push(
-        (liveFeedHealth() === "ACTIVE" ? "✅" : liveFeedHealth() === "WAITING" ? "🟡" : "❌") +
-        " Live feed: " + liveFeedHealth()
-      );
-      checks.push(
-        (AUTO_DISCOVERY_ENABLED ? "✅" : "🟡") +
-        " Auto update discovery"
-      );
-      checks.push(
-        (RIFT_ALERTS_ENABLED ? "✅" : "🟡") +
-        " Rift tracker: " +
-        (riftState.currentBannerName || "WAITING")
-      );
-      checks.push(
-        (RIFT_ALERTS_ENABLED && RIFT_SOURCE_BOT_IDS.size
-          ? "✅"
-          : "🟡") +
-        " Rift source bot filter: " +
-        (RIFT_SOURCE_BOT_IDS.size ? "CONFIGURED" : "ALL")
-      );
-      checks.push(
-        (SOURCE_IMAGE_ALPHA_ONLY ? "✅" : "🟡") +
-        " Transparent source image mode"
-      );
-      checks.push(
-        (memoryMb < MEMORY_SOFT_LIMIT_MB ? "✅" : memoryMb < MEMORY_HARD_LIMIT_MB ? "🟡" : "❌") +
-        " Memory: " + memoryMb + "MB"
-      );
-      checks.push(
-        "🥚 Catalog: " + eggImageCatalog.length + " entries"
-      );
-      checks.push(
-        "🧩 Custom egg emojis: " +
-        eggCustomEmojiCache.size + "/" +
-        eggImageCatalog.filter(isLastSeenEligibleEntry).length
-      );
-      checks.push(
-        "🕒 Last Seen messages: " +
-        (LAST_SEEN_CHANNEL_ID
-          ? (lastSeenMessagesReady ? "READY" : "WAITING")
-          : "DISABLED")
-      );
-      for (const rarity of ["secret", "eternal", "divine"]) {
-        const roleId = await resolveAlertRoleId(rarity);
-        checks.push(
-          "🔔 " + rarity[0].toUpperCase() + rarity.slice(1) +
-          " role: " + (roleId ? "READY" : "MISSING")
-        );
-      }
-      checks.push(
-        "🧾 Spawn history: " + spawnHistory.length
-      );
-      checks.push(
-        "🎮 Event history: " + gameEventHistory.length
-      );
-      checks.push(
-        "🧪 Experiment tracker: " +
-        (EVENT_ALERTS_ENABLED ? "ENABLED" : "DISABLED")
-      );
-      checks.push(
-        "⏭️ Next Experiment: " +
-        (experimentState.nextExperimentAt
-          ? "<t:" + Math.floor(experimentState.nextExperimentAt / 1000) + ":R>"
-          : "WAITING")
-      );
-      checks.push(
-        "🧪 Experiment emojis: " +
-        experimentCustomEmojiCache.size + "/" +
-        EXPERIMENT_EMOJI_TEMPLATES.length
-      );
-      const ops = getOpsSummary();
-      checks.push(
-        "⏱️ Uptime: " + Math.floor(process.uptime()) + "s"
-      );
-      checks.push(
-        "📈 Alert latency P95: " +
-        (ops.latency.p95Ms == null ? "N/A" : ops.latency.p95Ms + "ms")
-      );
-      checks.push(
-        "🧾 Dead-letter alerts: " + ops.deadLetter.count
-      );
-      checks.push(
-        "🛰️ Source conflicts: " + (ops.sourceConflicts?.length || 0)
-      );
-      checks.push(
-        "⏸️ Public alerts: " + (alertsPaused ? "PAUSED" : "ACTIVE")
-      );
-
-      return await interaction.editReply({
-        content: "**🩺 Notifier Doctor**\\n" + checks.join("\\n")
-      });
-    }
 
     if (interaction.commandName === "spawn-stats") {
       const cutoff = Date.now() - 24 * 60 * 60 * 1000;
@@ -8064,40 +7945,12 @@ client.on("interactionCreate", async interaction => {
           "Secret: **" + rarityCounts.secret + "** • Eternal: **" + rarityCounts.eternal + "** • Divine: **" + rarityCounts.divine + "**",
           "Top areas: " + (top(areaCounts).join(", ") || "N/A"),
           "Top eggs: " + (top(eggCounts).join(", ") || "N/A"),
-          "Alert latency: P50 **" + (ops.latency.p50Ms == null ? "N/A" : ops.latency.p50Ms + "ms") +
-            "** • P95 **" + (ops.latency.p95Ms == null ? "N/A" : ops.latency.p95Ms + "ms") + "**"
+          "Delivery tracking is active"
         ].join("\n"),
         flags: MessageFlags.Ephemeral
       });
     }
 
-    if (interaction.commandName === "ops-report") {
-      const summary = getOpsSummary();
-      const latency = summary.latency || {};
-      const lifecycle = summary.lifecycle || {};
-      const rel = summary.reliability || {};
-      const dead = summary.deadLetter || {};
-
-      const lines = [
-        "**🧠 Notifier Ops Report**",
-        "Latency: P50 **" + (latency.p50Ms == null ? "N/A" : latency.p50Ms + "ms") +
-          "**, P95 **" + (latency.p95Ms == null ? "N/A" : latency.p95Ms + "ms") +
-          "**, Avg **" + (latency.averageMs == null ? "N/A" : latency.averageMs + "ms") + "**",
-        "Lifecycle: detected **" + lifecycle.detected + "** • verified **" + lifecycle.verified +
-          "** • queued **" + lifecycle.queued + "** • sent **" + lifecycle.sent +
-          "** • failed **" + lifecycle.failed + "** • suppressed **" + lifecycle.suppressed + "**",
-        "Delivery success: **" + (rel.deliverySuccessRate == null ? "N/A" : rel.deliverySuccessRate + "%") + "**",
-        "Dead-letter queue: **" + dead.count + "**",
-        "Source conflicts tracked: **" + (summary.sourceConflicts?.length || 0) + "**",
-        "Alert delivery: **" + (alertsPaused ? "PAUSED" : "ACTIVE") + "**",
-        "Last weekly report: **" + (summary.weeklyReportLastAt || "not sent yet") + "**"
-      ];
-
-      return await interaction.reply({
-        content: lines.join("\n"),
-        flags: MessageFlags.Ephemeral
-      });
-    }
 
     if (interaction.commandName === "alerts-pause") {
       alertsPaused = true;
@@ -8122,7 +7975,6 @@ client.on("interactionCreate", async interaction => {
       const days = Math.floor(uptimeSeconds / 86400);
       const hours = Math.floor((uptimeSeconds % 86400) / 3600);
       const minutes = Math.floor((uptimeSeconds % 3600) / 60);
-      const ping = Math.max(0, Math.round(client.ws.ping));
       const activeFeed = [...liveFeedEndpointHealth.values()]
         .filter(item => item.status === "ACTIVE").length;
       const discoveryActive = [...autoDiscoverySourceHealth.values()]
@@ -8136,8 +7988,6 @@ client.on("interactionCreate", async interaction => {
         "🌐 **Live Feed:** " + liveFeedHealth() + " • " + activeFeed + "/" + LIVE_FEED_URLS.length,
         "🔌 **Sources:** " + sources,
         "🥚 **Alerts:** " + alertCount + " • queue " + alertQueueDepth() + "/" + ALERT_QUEUE_MAX,
-        "⚡ **Latency:** " + (latencySamples ? Math.round(totalLatencyMs / latencySamples) + "ms avg" : "N/A") +
-          " • Discord " + ping + "ms",
         "🕒 **Last Seen:** " +
           (LAST_SEEN_CHANNEL_ID
             ? (lastSeenMessagesReady ? "🟢 Ready" : "🟡 Starting")
@@ -8191,104 +8041,73 @@ client.on("interactionCreate", async interaction => {
         flags: MessageFlags.Ephemeral
       });
     }
+    if (interaction.commandName === "find") {
+      const requested = interaction.options.getString("egg", true);
+      const wanted = normalizeFeedKey(requested);
 
-    if (interaction.commandName === "game-events") {
-      if (!gameEventHistory.length) {
+      const matches = [];
+      for (const rarity of LAST_SEEN_RARITIES) {
+        const record = lastSeenByRarity[rarity].get(eggIdentityKey(wanted));
+        if (record) {
+          matches.push({ rarity, ...record });
+          continue;
+        }
+
+        for (const item of lastSeenByRarity[rarity].values()) {
+          const names = [
+            item?.eggName,
+            item?.petName,
+            item?.eggName ? item.eggName + " Egg" : ""
+          ].filter(Boolean);
+
+          if (names.some(name =>
+            eggIdentityKey(name) === eggIdentityKey(wanted) ||
+            normalizeFeedKey(name) === wanted
+          )) {
+            matches.push({ rarity, ...item });
+            break;
+          }
+        }
+      }
+
+      if (!matches.length) {
+        const entry = findCatalogEgg(requested) || findCatalogPet(requested);
         return await interaction.reply({
-          content: "📭 No game events or updates discovered yet.",
+          content: entry
+            ? "📭 **" + (entry.petName || entry.eggName) + "** has not been seen yet."
+            : "❌ I couldn't find that egg in the tracked catalog.",
           flags: MessageFlags.Ephemeral
         });
       }
 
-      const eventText = gameEventHistory.slice(0, 10).map(item =>
-        "🎮 **" + item.title + "**\\n" +
-        (item.description || "No description available.")
-      ).join("\\n\\n");
+      matches.sort((a, b) =>
+        Date.parse(b.spawnedAt || b.detectedAt || 0) -
+        Date.parse(a.spawnedAt || a.detectedAt || 0)
+      );
+
+      const latest = matches[0];
+      const ts = Date.parse(latest.spawnedAt || latest.detectedAt || "");
+      const when = Number.isFinite(ts)
+        ? "<t:" + Math.floor(ts / 1000) + ":R>"
+        : "Unknown";
 
       return await interaction.reply({
-        content: "🛰️ **Game Events & Updates**\\n" + eventText.slice(0, 3900),
+        content: [
+          getEggAlertEmoji(latest),
+          " **" + (latest.petName || latest.eggName) + "**",
+          "",
+          "Rarity: **" + String(latest.rarity || "").replace(/^./, c => c.toUpperCase()) + "**",
+          "Location: **" + String(latest.area || "Unknown") + "**",
+          "Last seen: " + when
+        ].join("\n"),
         flags: MessageFlags.Ephemeral
       });
     }
 
-    if (interaction.commandName === "discovery-status") {
-      const active = AUTO_DISCOVERY_SOURCES.filter(source =>
-        autoDiscoverySourceHealth.get(source.key)?.status === "ACTIVE"
-      ).length;
 
-      const lines = [
-        "🔎 **Auto Discovery Status**",
-        "Status: " + (AUTO_DISCOVERY_ENABLED ? "✅ ENABLED" : "🟡 DISABLED"),
-        "Sources: " + active + "/" + AUTO_DISCOVERY_SOURCES.length + " active",
-        "Last scan: " + (lastUpdateCheckAt
-          ? "<t:" + Math.floor(new Date(lastUpdateCheckAt).getTime() / 1000) + ":R>"
-          : "Never"),
-        "Evidence confidence: " +
-          (discoveryLastDecision?.confidence != null
-            ? discoveryLastDecision.confidence + "%"
-            : "N/A"),
-        "Latest changes: " +
-          (discoveryLastDecision
-            ? discoveryLastDecision.added + " added • " +
-              discoveryLastDecision.changed + " changed • " +
-              discoveryLastDecision.removed + " possible removed"
-            : "N/A")
-      ];
 
-      return await interaction.reply({
-        content: lines.join("\n").slice(0, 3900),
-        flags: MessageFlags.Ephemeral
-      });
-    }
 
-    if (interaction.commandName === "discovery-history") {
-      if (!discoveryChangelog.length) {
-        return await interaction.reply({
-          content: "📭 No Auto Discovery changes recorded yet.",
-          flags: MessageFlags.Ephemeral
-        });
-      }
 
-      const lines = discoveryChangelog.slice(0, 8).map(item => {
-        const added = item.changes?.added?.length || 0;
-        const removed = item.changes?.removed?.length || 0;
-        const changed = item.changes?.changed?.length || 0;
-
-        return (
-          "🔎 **Scan #" + item.scan + "** • " +
-          "<t:" + Math.floor(new Date(item.at).getTime() / 1000) + ":R>\n" +
-          "Confidence: **" + item.confidence + "%** • " +
-          "Added: **" + added + "** • Changed: **" +
-          changed + "** • Possible removed: **" + removed + "**"
-        );
-      });
-
-      return await interaction.reply({
-        content: "📜 **Auto Discovery Changelog**\n" + lines.join("\n\n").slice(0, 3900),
-        flags: MessageFlags.Ephemeral
-      });
-    }
-
-    if (interaction.commandName === "discovery-scan") {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
-      const before = discoveryScanSequence;
-      await scanForGameUpdates();
-
-      return await interaction.editReply({
-        content:
-          before === discoveryScanSequence
-            ? "⚠️ Discovery scan was already running or discovery is disabled."
-            : "✅ Discovery scan #" + discoveryScanSequence + " completed.\n" +
-              "Confidence: **" + (discoveryLastDecision?.confidence ?? 0) + "%**\n" +
-              "Sources: **" + (discoveryLastDecision?.successfulSources ?? 0) +
-              "/" + AUTO_DISCOVERY_SOURCES.length + "** active\n" +
-              "Changes: **" + (discoveryLastDecision?.added ?? 0) +
-              " added • " + (discoveryLastDecision?.changed ?? 0) +
-              " changed • " + (discoveryLastDecision?.removed ?? 0) +
-              " possible removed**"
-      });
-    }
 
     if (interaction.commandName === "rift") {
       if (!RIFT_ALERTS_ENABLED) {
@@ -8460,48 +8279,6 @@ client.on("interactionCreate", async interaction => {
       });
     }
 
-    if (interaction.commandName === "image-check") {
-      const requested = interaction.options.getString("egg", true);
-      const entry = findCatalogEgg(requested) || findCatalogPet(requested);
-
-      if (!entry) {
-        return await interaction.reply({
-          content: "❌ I couldn't find that egg in the verified Secret/Eternal/Divine catalog.",
-          flags: MessageFlags.Ephemeral
-        });
-      }
-
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
-      const imageUrl = await resolveImageUrl(entry.eggName);
-      const imageBuffer = await getPetPngBuffer(entry.petName);
-      const testEvent = {
-        live: true,
-        eggName: entry.eggName,
-        displayName: entry.petName,
-        rarity: entry.rarity,
-        biome: entry.biome,
-        spawnedAt: new Date().toISOString(),
-        imageUrl,
-        imageBuffer
-      };
-
-      const embed = buildAlertEmbed(testEvent, null, true);
-
-      return await interaction.editReply({
-        content: imageBuffer
-          ? "✅ Transparent PNG character image verified for **" + entry.petName + "**."
-          : "⚠️ The game record is valid, but no character image was generated for **" + entry.petName + "** yet.",
-        embeds: [embed],
-        files: imageBuffer
-          ? [{
-              attachment: imageBuffer,
-              name: "egg-character.png",
-              description: "Transparent Steal An Egg character image"
-            }]
-          : undefined
-      });
-    }
 
     if (interaction.commandName === "bot-reload") {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
