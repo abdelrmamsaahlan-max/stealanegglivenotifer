@@ -157,7 +157,7 @@ function eggNameMatchesTarget(value, targetName) {
 
 function extractTagAttributes(tag) {
   const attrs = {};
-  const pattern = /([:\\w-]+)\\s*=\\s*"([^"]*)"/g;
+  const pattern = /([:\w-]+)\s*=\s*"([^"]*)"/g;
   for (const match of tag.matchAll(pattern)) {
     attrs[match[1].toLowerCase()] = match[2];
   }
