@@ -278,6 +278,38 @@ let riftState = {
 const seenRiftAlerts = new Map();
 
 const LAST_SEEN_RARITIES = ["secret", "eternal", "divine"];
+const NON_NEST_SPAWN_EGGS = new Set([
+  "bomboclat crocolat egg",
+  "strawberry elephant egg",
+  "luminous egg",
+  "monster egg",
+  "brainrot egg"
+]);
+const NON_NEST_SPAWN_PETS = new Set([
+  "bomboclat crocolat",
+  "strawberry elephant",
+  "cthulhu",
+  "electric eel",
+  "terra snapper",
+  "luminous spike",
+  "luminous spirit manta",
+  "luminous abyss shark",
+  "luminous electric eel",
+  "luminous terra snapper",
+  "luminous cthulhu",
+  "scorpio",
+  "mecha scorpio",
+  "froggo",
+  "mecha froggo",
+  "crawler",
+  "mecha crawler",
+  "dreadscale",
+  "mecha dreadscale",
+  "krakenoid",
+  "mecha krakenoid",
+  "crocodon",
+  "mecha crocodon"
+]);
 const LAST_SEEN_UPDATE_DELAY_MS = 1000;
 const LAST_SEEN_RETRY_DELAY_MS = 2000;
 const lastSeenByRarity = {
@@ -511,6 +543,19 @@ function buildDynamicCatalogEntry(eggName, rarity, area = "Unknown") {
 }
 
 function ensureCatalogEgg(eggName, rarity, area = "Unknown") {
+  const eggKey = normalizeFeedKey(eggName);
+  const areaKey = normalizeFeedKey(area);
+
+  if (
+    NON_NEST_SPAWN_EGGS.has(eggKey) ||
+    areaKey === "event" ||
+    areaKey === "shop" ||
+    areaKey === "robux" ||
+    areaKey === "area not listed"
+  ) {
+    return null;
+  }
+
   const existing = findCatalogEgg(eggName);
   if (existing) return existing;
 
@@ -2399,12 +2444,33 @@ function lastSeenLabel(rarity) {
   return rarity[0].toUpperCase() + rarity.slice(1);
 }
 
+function isLastSeenEligibleEntry(entry) {
+  if (!entry || entry.active === false) return false;
+
+  const eggKey = normalizeFeedKey(entry.eggName);
+  const petKey = normalizeFeedKey(entry.petName);
+  const areaKey = normalizeFeedKey(entry.biome);
+
+  if (NON_NEST_SPAWN_EGGS.has(eggKey) || NON_NEST_SPAWN_PETS.has(petKey)) {
+    return false;
+  }
+
+  if (areaKey === "event" || areaKey === "shop" || areaKey === "robux") {
+    return false;
+  }
+
+  return true;
+}
+
 function getLastSeenEntries(rarity) {
   const map = lastSeenByRarity[rarity];
   if (!map) return [];
 
   return eggImageCatalog
-    .filter(entry => entry?.active !== false && entry?.rarity?.toLowerCase() === rarity)
+    .filter(entry =>
+      isLastSeenEligibleEntry(entry) &&
+      entry?.rarity?.toLowerCase() === rarity
+    )
     .map(entry => ({
       entry,
       record: map.get(normalizeFeedKey(entry.eggName)) || null
@@ -2629,6 +2695,8 @@ function recordLastSeen(event) {
   const entry = findCatalogEgg(eggName) ||
     ensureCatalogEgg(eggName, event.rarity, event.biome);
 
+  if (!isLastSeenEligibleEntry(entry)) return;
+
   const canonical = entry?.eggName || eggName;
   const petName = entry?.petName || event?.displayName || canonical.replace(/\\s+Egg$/i, "").trim();
 
@@ -2657,7 +2725,7 @@ async function rebuildLastSeenFromHistory() {
 
     const eggName = canonicalEggName(record.eggName || record.petName);
     const entry = findCatalogEgg(eggName);
-    if (!entry) continue;
+    if (!isLastSeenEligibleEntry(entry)) continue;
 
     const mapKey = normalizeFeedKey(entry.eggName);
     if (!lastSeenByRarity[key].has(mapKey)) {
