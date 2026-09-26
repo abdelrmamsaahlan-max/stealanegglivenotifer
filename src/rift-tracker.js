@@ -115,6 +115,7 @@ function extractLabel(combined, marker) {
     .split(
       /\s+(?:Next Change|Join Game|Possible Pets|Rotation Chance)\b|\s+<a?:\w+:\d+>/i
     )[0]
+    .replace(/^[\s*_~|:：-]+|[\s*_~|]+$/g, "")
     .trim();
 }
 
