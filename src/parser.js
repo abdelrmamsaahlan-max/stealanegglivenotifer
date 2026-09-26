@@ -82,7 +82,11 @@ export function parseSpawn(data, allowedRarities) {
     .filter(Boolean)
     .join("\n");
 
-  const rarityMatch = combined.match(/\b(secret|eternal|divine)\b/i);
+  const explicitRarity = getField("rarity", "tier", "rarity name");
+  const rarityMatch = explicitRarity
+    ? explicitRarity.match(/\b(secret|eternal|divine)\b/i)
+    : combined.match(/\b(secret|eternal|divine)\b/i);
+
   if (!rarityMatch) return null;
 
   const rarityKey = rarityMatch[1].toLowerCase();
