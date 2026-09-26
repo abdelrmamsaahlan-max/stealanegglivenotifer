@@ -71,17 +71,23 @@ async function sendAlert(event) {
   if (!channel || !channel.isTextBased()) throw new Error("channel_unavailable");
 
   const unix = Math.floor(new Date(event.spawnedAt).getTime() / 1000);
+  const eggName = String(event.displayName || event.eggName || "Unknown Egg").trim();
+  const rarity = String(event.rarity || "Unknown").trim();
+  const area = String(event.biome || "Unknown").trim();
+
   const embed = new EmbedBuilder()
-    .setTitle("🚨 " + String(event.rarity).toUpperCase() + " EGG SPAWNED")
+    .setTitle("🥚 " + rarity.toUpperCase() + " EGG SPAWNED!")
+    .setDescription("A rare egg has just spawned.")
     .addFields(
-      { name: "🥚 Egg", value: String(event.displayName || event.eggName), inline: true },
-      { name: "✨ Rarity", value: String(event.rarity), inline: true },
-      { name: "🌍 Area", value: String(event.biome || "Unknown"), inline: true },
-      { name: "🕒 Spawned", value: "<t:" + unix + ":R>", inline: true },
-      { name: "⚡ Detection", value: "LIVE", inline: true },
-      { name: "📡 Source", value: String(event.source || "Verified live feed"), inline: true }
-    ).setTimestamp(new Date(event.spawnedAt));
-  await channel.send({ embeds: [embed] });
+      { name: "🥚 Egg", value: eggName, inline: true },
+      { name: "✨ Rarity", value: rarity, inline: true },
+      { name: "📍 Area", value: area, inline: true },
+      { name: "⏱️ Spawned", value: "<t:" + unix + ":R>", inline: true }
+    )
+    .setFooter({ text: "Steal an Egg • Live Spawn Alert" })
+    .setTimestamp(new Date(event.spawnedAt));
+
+  await channel.send({ content: "🚨 **" + rarity.toUpperCase() + " EGG!**", embeds: [embed] });
 }
 
 app.get("/health", (req, res) => res.status(client.isReady() ? 200 : 503).json({
