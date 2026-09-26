@@ -1192,64 +1192,6 @@ async function getPetPngBuffer(petName) {
     return null;
   }
 }
-async function getPetPngBuffer(petName) {
-  const entry = findCatalogPet(petName);
-  if (!entry) return null;
-
-  const key = normalizeFeedKey(entry.petName);
-  const cached = petPngBufferCache.get(key);
-  if (cached && Date.now() - cached.at < PET_PNG_CACHE_TTL_MS) {
-    return cached.buffer;
-  }
-
-  const sourceUrl = await resolvePetImageSource(entry.petName);
-  if (!sourceUrl) return null;
-
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), LIVE_FEED_TIMEOUT_MS);
-
-    const response = await fetch(sourceUrl, {
-      headers: {
-        "accept": "image/avif,image/webp,image/png,image/*;q=0.9,*/*;q=0.8",
-        "user-agent": "FSMM-SAB-Live-Notifier/5.0"
-      },
-      signal: controller.signal
-    });
-
-    clearTimeout(timeout);
-
-    if (!response.ok) return null;
-
-    const contentLength = Number(response.headers.get("content-length") || 0);
-    if (contentLength && contentLength > MAX_REMOTE_IMAGE_BYTES) return null;
-
-    const input = Buffer.from(await response.arrayBuffer());
-    if (input.length > MAX_REMOTE_IMAGE_BYTES) return null;
-
-    if (SOURCE_IMAGE_ALPHA_ONLY && !await imageHasTransparentPixels(input)) {
-      console.warn("Skipping non-transparent pet source:", entry.petName, sourceUrl);
-      return null;
-    }
-
-    const pngBuffer = await sharp(input, { failOn: "none" })
-      .ensureAlpha()
-      .trim()
-      .png({ compressionLevel: 9 })
-      .toBuffer();
-
-    petPngBufferCache.set(key, { buffer: pngBuffer, at: Date.now() });
-    trimImageCaches();
-    return pngBuffer;
-  } catch (error) {
-    console.warn(
-      "Pet transparent PNG processing failed for " + entry.petName + ":",
-      error?.message || error
-    );
-    return null;
-  }
-}
-
 async function resolveImageUrl(eggName, _providedUrl = null) {
   const entry = findCatalogEgg(eggName);
   if (!entry?.petName) return null;
