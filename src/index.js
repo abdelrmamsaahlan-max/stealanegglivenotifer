@@ -66,6 +66,16 @@ import {
   mergeEggObservations,
   snapshotEggs
 } from "./discovery.js";
+import {
+  addEvidence,
+  anomalyGuard,
+  calculateEventConfidence,
+  createIncidentId,
+  eventFingerprint,
+  rankSourceHealth,
+  timestampGuard,
+  transitionEventState
+} from "./reliability.js";
 
 const app = express();
 
@@ -744,6 +754,23 @@ function loadRuntimeState() {
       }
     }
 
+    if (state.reliability && typeof state.reliability === "object") {
+      for (const [key, values] of Object.entries(state.reliability.evidence || {})) {
+        if (key && Array.isArray(values)) reliabilityEvidence.set(key, values.slice(0, 8));
+      }
+      for (const [key, value] of Object.entries(state.reliability.incidents || {})) {
+        if (key && typeof value === "string") reliabilityIncidents.set(key, value);
+      }
+      for (const [key, values] of Object.entries(state.reliability.occurrences || {})) {
+        if (key && Array.isArray(values)) {
+          reliabilityOccurrences.set(
+            key,
+            values.map(Number).filter(Number.isFinite).slice(-30)
+          );
+        }
+      }
+    }
+
     if (typeof state.lastUpdateFingerprint === "string") {
       lastUpdateFingerprint = state.lastUpdateFingerprint;
     }
@@ -860,6 +887,19 @@ function saveRuntimeState() {
         [...seenExperimentAlerts.entries()]
           .slice(-300)
       ),
+      reliability: {
+        evidence: Object.fromEntries(
+          [...reliabilityEvidence.entries()]
+            .slice(-300)
+            .map(([key, values]) => [key, Array.isArray(values) ? values.slice(0, 8) : []])
+        ),
+        incidents: Object.fromEntries([...reliabilityIncidents.entries()].slice(-300)),
+        occurrences: Object.fromEntries(
+          [...reliabilityOccurrences.entries()]
+            .slice(-300)
+            .map(([key, values]) => [key, Array.isArray(values) ? values.slice(-30) : []])
+        )
+      },
       spawnHistory: spawnHistory.slice(0, MAX_HISTORY),
       gameEventHistory: gameEventHistory.slice(0, MAX_EVENT_HISTORY),
       riftState,
@@ -1301,6 +1341,20 @@ const alertDeliveryInFlight = new Set();
 const ALERT_DELIVERY_DEDUP_MS =
   Math.max(120, Number(process.env.ALERT_DELIVERY_DEDUP_SECONDS || 900)) * 1000;
 
+const MIN_ALERT_CONFIDENCE =
+  Math.min(0.95, Math.max(0.50, Number(process.env.MIN_ALERT_CONFIDENCE || 0.70)));
+
+const reliabilityEvidence = new Map();
+const reliabilityIncidents = new Map();
+const reliabilityOccurrences = new Map();
+const reliabilityMetrics = {
+  corroborated: 0,
+  anomalyFlags: 0,
+  timestampSuppressions: 0,
+  confidenceSuppressions: 0,
+  lastSuppression: null
+};
+
 const alertQueues = {
   live: [],
   source: [],
@@ -1558,6 +1612,266 @@ function normalizeFeedKey(value) {
     .trim();
 }
 
+function reliabilityCorrelationKey(event) {
+  const timestamp = event?.spawnedAt ||
+    event?.occurredAt ||
+    event?.appearedAt ||
+    event?.createdTimestamp ||
+    event?.date ||
+    Date.now();
+  const parsed = new Date(timestamp).getTime();
+  const bucket = Number.isFinite(parsed)
+    ? Math.floor(parsed / 30_000)
+    : Math.floor(Date.now() / 30_000);
+
+  return [
+    normalizeFeedKey(event?.rarity || event?.type || "event"),
+    normalizeFeedKey(
+      event?.eggName ||
+      event?.bannerKey ||
+      event?.bossName ||
+      event?.title ||
+      "event"
+    ),
+    normalizeFeedKey(event?.biome || event?.area || "unknown"),
+    bucket
+  ].join("|");
+}
+
+function reliabilitySourceName(event) {
+  return String(
+    event?.source ||
+    event?.sourceName ||
+    "unknown"
+  ).trim() || "unknown";
+}
+
+function reliabilitySourceRank(event) {
+  const source = reliabilitySourceName(event);
+  if (source === "Live Feed") return 10;
+  if (source === "Signed API") return 9;
+  if (source === "Discord Source") return 8;
+  if (source === PUBLIC_DISCOVERY_SOURCE_LABEL || source === "Auto Discovery") return 7;
+  if (source === "Manual Test" || source === "Test") return 10;
+  return 5;
+}
+
+function eventOccurredAt(event) {
+  return event?.spawnedAt ||
+    event?.occurredAt ||
+    event?.appearedAt ||
+    event?.createdTimestamp ||
+    event?.date ||
+    null;
+}
+
+function persistSuppressedDetection(event, reason, confidence, evidence) {
+  persistGameEvent({
+    source: reliabilitySourceName(event),
+    type: "suppressed_detection",
+    title: String(
+      event?.title ||
+      event?.eggName ||
+      event?.bannerName ||
+      event?.bossName ||
+      "Detection"
+    ).slice(0, 200),
+    description: String(reason || "reliability_guard").slice(0, 800),
+    date: eventOccurredAt(event)
+      ? new Date(eventOccurredAt(event)).toISOString()
+      : new Date().toISOString(),
+    sourceEventId:
+      event?.sourceEventId ||
+      event?.sourceMessageId ||
+      event?.messageId ||
+      null,
+    incidentId: event?.incidentId || null,
+    confidence: Number(confidence || 0),
+    eventState: "SUPPRESSED",
+    evidence: Array.isArray(evidence) ? evidence.slice(0, 8) : []
+  }).catch(error => {
+    recordMonitorError("storage", error, "Suppressed detection persistence failed");
+  });
+}
+
+function evaluateEventReliability(event, options = {}) {
+  if (!event || typeof event !== "object") {
+    return { ok: false, reason: "invalid_event", confidence: 0, evidence: [] };
+  }
+
+  const source = reliabilitySourceName(event);
+  const sourceRank = reliabilitySourceRank(event);
+  const correlationKey = reliabilityCorrelationKey(event);
+  const now = Date.now();
+  const occurredAt = eventOccurredAt(event);
+
+  const timeGuard = timestampGuard(occurredAt, {
+    now,
+    maxPastMs:
+      source === "Live Feed"
+        ? Math.max(LIVE_FEED_MAX_AGE_MS, 10 * 60_000)
+        : 2 * 60 * 60_000,
+    maxFutureMs: Math.max(30_000, MAX_INGEST_SKEW_SECONDS * 1000)
+  });
+
+  if (!timeGuard.ok) {
+    reliabilityMetrics.timestampSuppressions++;
+    reliabilityMetrics.lastSuppression = {
+      reason: timeGuard.reason,
+      source,
+      at: new Date().toISOString()
+    };
+    persistSuppressedDetection(
+      event,
+      timeGuard.reason,
+      0,
+      reliabilityEvidence.get(correlationKey) || []
+    );
+    event.suppressedReason = timeGuard.reason;
+    return {
+      ok: false,
+      reason: timeGuard.reason,
+      confidence: 0,
+      evidence: reliabilityEvidence.get(correlationKey) || []
+    };
+  }
+
+  const evidence = addEvidence(
+    reliabilityEvidence.get(correlationKey) || [],
+    {
+      source,
+      sourceKey: source,
+      sourceEventId:
+        event?.sourceEventId ||
+        event?.sourceMessageId ||
+        event?.messageId ||
+        null,
+      observedAt: new Date(now).toISOString(),
+      parser: options.parser || String(event?.type || "event")
+    }
+  );
+
+  reliabilityEvidence.set(correlationKey, evidence);
+
+  const confidence = calculateEventConfidence({
+    source,
+    sourceRank,
+    parserConfidence: Number.isFinite(Number(options.parserConfidence))
+      ? Number(options.parserConfidence)
+      : 0.85,
+    evidence,
+    occurredAt,
+    now
+  });
+
+  if (new Set(evidence.map(item => item?.sourceKey || item?.source).filter(Boolean)).size > 1) {
+    reliabilityMetrics.corroborated++;
+  }
+
+  const occurrenceKey = eventFingerprint({
+    ...event,
+    source: undefined,
+    sourceEventId: undefined
+  });
+
+  const recentOccurrences = (reliabilityOccurrences.get(occurrenceKey) || [])
+    .filter(at => now - Number(at) <= 60_000)
+    .slice(-30);
+
+  const anomaly = anomalyGuard({
+    event,
+    now,
+    occurrenceTimes: recentOccurrences,
+    burstWindowMs: 30_000,
+    burstLimit: 8
+  });
+
+  if (anomaly.anomaly) reliabilityMetrics.anomalyFlags++;
+  recentOccurrences.push(now);
+  reliabilityOccurrences.set(occurrenceKey, recentOccurrences.slice(-30));
+
+  let incidentId = reliabilityIncidents.get(correlationKey);
+  if (!incidentId) {
+    incidentId = createIncidentId(
+      event?.rarity ? "EGG" :
+      event?.type === "scramble_boss" ? "SCR" :
+      (event?.bannerKey || event?.bossName) ? "RIFT" : "EVT"
+    );
+    reliabilityIncidents.set(correlationKey, incidentId);
+  }
+
+  const effectiveConfidence = anomaly.anomaly
+    ? Math.max(0, confidence * 0.65)
+    : confidence;
+
+  event.incidentId = incidentId;
+  event.evidence = evidence;
+  event.verificationCount = new Set(
+    evidence.map(item => item?.sourceKey || item?.source).filter(Boolean)
+  ).size;
+  event.confidence = Number(effectiveConfidence.toFixed(4));
+  event.eventState = transitionEventState({
+    occurredAt,
+    now,
+    cycleMs:
+      event?.type === "scramble_boss"
+        ? SCRAMBLE_CYCLE_MINUTES * 60_000
+        : 30 * 60_000,
+    activeMs:
+      event?.type === "scramble_boss"
+        ? SCRAMBLE_ACTIVE_MINUTES * 60_000
+        : 5 * 60_000
+  });
+
+  if (effectiveConfidence < MIN_ALERT_CONFIDENCE) {
+    reliabilityMetrics.confidenceSuppressions++;
+    reliabilityMetrics.lastSuppression = {
+      reason: "low_confidence",
+      source,
+      confidence: effectiveConfidence,
+      at: new Date().toISOString()
+    };
+    persistSuppressedDetection(event, "low_confidence", effectiveConfidence, evidence);
+    event.suppressedReason = "low_confidence";
+    return {
+      ok: false,
+      reason: "low_confidence",
+      confidence: effectiveConfidence,
+      evidence
+    };
+  }
+
+  return {
+    ok: true,
+    incidentId,
+    confidence: effectiveConfidence,
+    evidence,
+    verificationCount: event.verificationCount,
+    eventState: event.eventState,
+    anomaly: anomaly.anomaly,
+    correlationKey
+  };
+}
+
+function reliabilitySummary() {
+  const corroboratedEvents = [...reliabilityEvidence.values()].filter(items =>
+    new Set(
+      (items || []).map(item => item?.sourceKey || item?.source).filter(Boolean)
+    ).size > 1
+  ).length;
+
+  return {
+    minConfidence: MIN_ALERT_CONFIDENCE,
+    trackedCorrelations: reliabilityEvidence.size,
+    trackedIncidents: reliabilityIncidents.size,
+    corroboratedEvents,
+    anomalyFlags: reliabilityMetrics.anomalyFlags,
+    timestampSuppressions: reliabilityMetrics.timestampSuppressions,
+    confidenceSuppressions: reliabilityMetrics.confidenceSuppressions,
+    lastSuppression: reliabilityMetrics.lastSuppression
+  };
+}
+
 function alertDeliveryKeys(event) {
   const rarity = normalizeFeedKey(event?.rarity);
   const egg = normalizeFeedKey(event?.eggName || event?.displayName);
@@ -1790,6 +2104,34 @@ function pumpAlertQueue() {
 }
 
 function enqueueAlert(event, latencyMs = null) {
+  const reliability = evaluateEventReliability(event, {
+    parser: event?.source === "Live Feed" ? "live-feed-egg" : "discord-egg",
+    parserConfidence:
+      event?.source === "Live Feed"
+        ? 0.92
+        : event?.source === "Signed API"
+          ? 0.90
+          : 0.84
+  });
+
+  if (!reliability.ok) {
+    console.warn(
+      "Detection suppressed by reliability guard:",
+      reliability.reason,
+      event?.rarity,
+      event?.eggName,
+      reliability.confidence ?? 0
+    );
+    return {
+      queued: false,
+      duplicate: false,
+      full: false,
+      suppressed: true,
+      reason: reliability.reason,
+      confidence: reliability.confidence ?? 0
+    };
+  }
+
   const deliveryKeys = alertDeliveryKeys(event);
 
   if (deliveryKeys.some(key =>
@@ -2274,7 +2616,7 @@ async function removeSimpleBackground(input) {
     let head = 0;
     let tail = 0;
 
-    const maxDistance = 58;
+    const maxDistance = 76;
     const pixelsToCheck = [];
 
     function trySeed(x, y) {
@@ -2405,20 +2747,11 @@ async function getPetPngBuffer(petName) {
     }
 
     if (!pngBuffer) {
-      pngBuffer = await sharp(input, { failOn: "none" })
-        .ensureAlpha()
-        .trim()
-        .resize({
-          width: 1024,
-          height: 1024,
-          fit: "inside",
-          withoutEnlargement: true
-        })
-        .png({
-          compressionLevel: 9,
-          adaptiveFiltering: true
-        })
-        .toBuffer();
+      console.warn(
+        "Opaque pet artwork rejected; no transparent cutout available:",
+        entry.petName
+      );
+      return null;
     } else {
       pngBuffer = await sharp(pngBuffer, { failOn: "none" })
         .ensureAlpha()
@@ -2437,6 +2770,10 @@ async function getPetPngBuffer(petName) {
 
     if (!isPngBuffer(pngBuffer)) {
       throw new Error("pet_output_is_not_png");
+    }
+
+    if (!(await imageHasTransparentPixels(pngBuffer))) {
+      throw new Error("pet_output_is_not_transparent");
     }
 
     petPngBufferCache.set(key, { buffer: pngBuffer, at: Date.now() });
@@ -2932,10 +3269,24 @@ async function pollLiveFeed() {
   liveFeedLastPollAt = new Date().toISOString();
 
   try {
+    const orderedLiveFeedTargets = LIVE_FEED_URLS
+      .map((url, index) => ({ url, index }))
+      .sort((a, b) => {
+        const left = liveFeedEndpointHealth.get(a.index + 1) || {};
+        const right = liveFeedEndpointHealth.get(b.index + 1) || {};
+        const activeScore = value =>
+          String(value?.status || "").toUpperCase() === "ACTIVE" ? 0 : 1;
+        return (
+          activeScore(left) - activeScore(right) ||
+          Number(left?.failures || 0) - Number(right?.failures || 0) ||
+          Number(left?.latencyMs || 999999) - Number(right?.latencyMs || 999999) ||
+          a.index - b.index
+        );
+      })
+      .filter(item => !liveFeedEndpointCoolingDown(item.url));
+
     const results = await Promise.allSettled(
-      LIVE_FEED_URLS
-        .map((url, index) => ({ url, index }))
-        .filter(item => !liveFeedEndpointCoolingDown(item.url))
+      orderedLiveFeedTargets
         .map(async ({ url, index }) => {
           try {
             const { response, body } = await fetchLiveFeed(url);
@@ -3292,7 +3643,16 @@ function recordSpawnHistory(event, source = "Live Feed") {
       ? new Date(timestamp).toISOString()
       : new Date().toISOString(),
     detectedAt: new Date().toISOString(),
-    source
+    source,
+    sourceEventId: event?.sourceEventId || event?.id || null,
+    incidentId: event?.incidentId || null,
+    confidence: Number.isFinite(Number(event?.confidence))
+      ? Number(event.confidence)
+      : null,
+    eventState: event?.eventState || "DETECTED",
+    evidence: Array.isArray(event?.evidence) ? event.evidence.slice(0, 8) : [],
+    verificationCount: Number(event?.verificationCount || 0),
+    suppressedReason: event?.suppressedReason || null
   };
 
   const same = spawnHistory.find(item => item.id === record.id);
@@ -3324,10 +3684,18 @@ function recordGameEvent(event) {
     title: String(event.title || "Game Event").slice(0, 200),
     description: String(event.description || "").slice(0, 800),
     date: event.date || null,
-    source:
+    source: event.source || (
       event.source === "Manual Test"
         ? "Manual Test"
-        : PUBLIC_DISCOVERY_SOURCE_LABEL,
+        : PUBLIC_DISCOVERY_SOURCE_LABEL
+    ),
+    sourceEventId: event.sourceEventId || event.id || null,
+    incidentId: event.incidentId || null,
+    confidence: Number.isFinite(Number(event.confidence)) ? Number(event.confidence) : null,
+    eventState: event.eventState || "DETECTED",
+    evidence: Array.isArray(event.evidence) ? event.evidence.slice(0, 8) : [],
+    verificationCount: Number(event.verificationCount || 0),
+    suppressedReason: event.suppressedReason || null,
     detectedAt: new Date().toISOString()
   };
 
@@ -4533,6 +4901,84 @@ async function runSystemWatchdog() {
 let dailySelfCheckTimer = null;
 let lastDailySelfCheckAt = null;
 let lastDailySelfCheckResult = null;
+let recoverySelfTestResult = null;
+
+function runInternalRecoverySelfTests() {
+  const now = Date.now();
+  const checks = {};
+
+  try {
+    checks.stateMachine =
+      transitionEventState({
+        occurredAt: now - 2 * 60_000,
+        now,
+        cycleMs: 30 * 60_000,
+        activeMs: 5 * 60_000
+      }) === "ACTIVE";
+  } catch {
+    checks.stateMachine = false;
+  }
+
+  try {
+    checks.discoveryGuard =
+      shouldAnnounceDiscoveredEvent({
+        type: "generic_event_hint",
+        title: "Historical Light vs Darkness",
+        description: "archived page content",
+        date: new Date().toISOString()
+      }, false) === false;
+  } catch {
+    checks.discoveryGuard = false;
+  }
+
+  try {
+    const patchNote = parseScrambleBoss({
+      text: "UPDATE 6: Dr. Scramble returns every 30 minutes in his Mecha. 15 new pets. Extinction Egg.",
+      createdTimestamp: now
+    });
+    const liveBoss = parseScrambleBoss({
+      text: "Dr. Scramble has returned in his Mecha! Next boss (in 30 minutes).",
+      createdTimestamp: now
+    });
+    checks.scrambleParser = !patchNote && Boolean(liveBoss);
+  } catch {
+    checks.scrambleParser = false;
+  }
+
+  try {
+    checks.imageOutputContract =
+      isPngBuffer(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  } catch {
+    checks.imageOutputContract = false;
+  }
+
+  try {
+    checks.queueIntegrity =
+      Number.isFinite(alertQueueDepth()) &&
+      alertQueueDepth() <= ALERT_QUEUE_MAX;
+  } catch {
+    checks.queueIntegrity = false;
+  }
+
+  try {
+    checks.discordCircuit =
+      ["CLOSED", "OPEN", "HALF_OPEN"].includes(discordCircuit.state);
+  } catch {
+    checks.discordCircuit = false;
+  }
+
+  const failed = Object.entries(checks)
+    .filter(([, ok]) => !ok)
+    .map(([name]) => name);
+
+  recoverySelfTestResult = {
+    ok: failed.length === 0,
+    checks,
+    failed,
+    at: new Date().toISOString()
+  };
+  return recoverySelfTestResult;
+}
 
 async function runDailySelfCheck() {
   if (persistenceStats().enabled) {
@@ -4542,6 +4988,8 @@ async function runDailySelfCheck() {
       recordMonitorError("storage", error, "Supabase retention cleanup failed");
     }
   }
+
+  const recovery = runInternalRecoverySelfTests();
 
   const checks = {
     discord: client.isReady(),
@@ -4555,7 +5003,8 @@ async function runDailySelfCheck() {
       [...autoDiscoverySourceHealth.values()]
         .some(item => item.status === "ACTIVE"),
     png: petPngBufferCache.size > 0 || eggImageCatalog.length === 0,
-    circuit: discordCircuit.state !== "OPEN"
+    circuit: discordCircuit.state !== "OPEN",
+    recoverySelfTests: recovery.ok
   };
 
   const failed = Object.entries(checks)
@@ -5562,6 +6011,12 @@ function recordRiftHistory(event, test = false) {
     joinUrl: event.joinUrl || null,
     messageUrl: event.messageUrl || null,
     sourceName: event.sourceName || null,
+    sourceEventId: event.sourceEventId || event.id || null,
+    incidentId: event.incidentId || null,
+    confidence: Number.isFinite(Number(event.confidence)) ? Number(event.confidence) : null,
+    eventState: event.eventState || "DETECTED",
+    evidence: Array.isArray(event.evidence) ? event.evidence.slice(0, 8) : [],
+    verificationCount: Number(event.verificationCount || 0),
     test
   };
 
@@ -5637,6 +6092,28 @@ async function sendRiftAlert(event, options = {}) {
   if (!RIFT_ALERTS_ENABLED || !CHANNEL_ID) return false;
   if (event?.type === "boss" && !RIFT_BOSS_ALERTS_ENABLED) return false;
 
+  const reliability = evaluateEventReliability({
+    ...event,
+    source: event?.source || event?.sourceName || "Discord Source",
+    type: event?.type === "boss" ? "rift_boss" : "rift"
+  }, {
+    parser: "rift",
+    parserConfidence: 0.86
+  });
+
+  if (!reliability.ok && !isTest) {
+    console.warn("Rift detection suppressed:", reliability.reason);
+    return false;
+  }
+
+  if (reliability.ok) {
+    event.incidentId = reliability.incidentId;
+    event.confidence = reliability.confidence;
+    event.evidence = reliability.evidence;
+    event.verificationCount = reliability.verificationCount;
+    event.eventState = reliability.eventState;
+  }
+
   const dedupKey = [
     "rift",
     event?.type || "unknown",
@@ -5685,7 +6162,7 @@ async function sendRiftAlert(event, options = {}) {
   let message = null;
 
   try {
-    message = await channel.send(riftPayload);
+    message = await sendDiscordPayload(channel, riftPayload);
   } catch (error) {
     recordMonitorError("discord", error, "Rift alert send failed");
     throw error;
@@ -5768,6 +6245,28 @@ async function sendScrambleAlert(event, options = {}) {
   if (!EVENT_ALERTS_ENABLED || !CHANNEL_ID || !event) return false;
 
   const isTest = options.test === true;
+
+  const reliability = evaluateEventReliability({
+    ...event,
+    source: event?.source || event?.sourceName || "Discord Source",
+    type: "scramble_boss"
+  }, {
+    parser: "scramble-boss",
+    parserConfidence: 0.90
+  });
+
+  if (!reliability.ok && !isTest) {
+    console.warn("Dr. Scramble detection suppressed:", reliability.reason);
+    return false;
+  }
+
+  if (reliability.ok) {
+    event.incidentId = reliability.incidentId;
+    event.confidence = reliability.confidence;
+    event.evidence = reliability.evidence;
+    event.verificationCount = reliability.verificationCount;
+    event.eventState = reliability.eventState;
+  }
   const key = scrambleEventKey(event);
 
   if (!isTest) {
@@ -5813,6 +6312,27 @@ async function sendExperimentAlert(event, options = {}) {
   if (!EVENT_ALERTS_ENABLED || !CHANNEL_ID || !event) return false;
 
   const isTest = options.test === true;
+
+  const reliability = evaluateEventReliability({
+    ...event,
+    source: event?.source || "Discord Source"
+  }, {
+    parser: "experiment",
+    parserConfidence: 0.84
+  });
+
+  if (!reliability.ok && !isTest) {
+    console.warn("Experiment detection suppressed:", reliability.reason);
+    return false;
+  }
+
+  if (reliability.ok) {
+    event.incidentId = reliability.incidentId;
+    event.confidence = reliability.confidence;
+    event.evidence = reliability.evidence;
+    event.verificationCount = reliability.verificationCount;
+    event.eventState = reliability.eventState;
+  }
   const key = experimentEventKey(event);
 
   if (!isTest) {
@@ -5843,7 +6363,7 @@ async function sendExperimentAlert(event, options = {}) {
   const row = buildExperimentActionRow(event);
   if (row) payload.components = [row];
 
-  const message = await channel.send(payload);
+  const message = await sendDiscordPayload(channel, payload);
 
   if (!isTest) {
     seenExperimentAlerts.set(key, Date.now());
@@ -6389,6 +6909,8 @@ app.get("/health", (_req, res) => {
     publicPngProxy: Boolean(PUBLIC_BASE_URL),
     sourceImageAlphaOnly: SOURCE_IMAGE_ALPHA_ONLY,
     persistence: persistenceStats(),
+    reliability: reliabilitySummary(),
+    recoverySelfTests: recoverySelfTestResult,
     scramble: {
       enabled: EVENT_ALERTS_ENABLED,
       lastAppearedAt: scrambleState.lastAppearedAt,
