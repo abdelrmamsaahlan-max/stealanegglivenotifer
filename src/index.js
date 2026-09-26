@@ -454,6 +454,7 @@ let lastSeenMessagesReady = false;
 let lastSeenMessagesInitInFlight = null;
 const lastSeenUpdateTimers = new Map();
 const lastSeenUpdateInFlight = new Map();
+const lastSeenContentFingerprints = new Map();
 const eggCustomEmojiCache = new Map();
 const eggCustomEmojiSetupState = {
   running: false,
@@ -898,6 +899,23 @@ const alertedMessageIds = new Map();
 const recentSpawns = [];
 const apiRate = new Map();
 const inFlightKeys = new Set();
+const deliveredAlertKeys = new Map();
+const alertDeliveryInFlight = new Set();
+const ALERT_DELIVERY_DEDUP_MS =
+  Math.max(15, Number(process.env.ALERT_DELIVERY_DEDUP_SECONDS || 120)) * 1000;
+
+const alertMetrics = {
+  duplicateSuppressed: 0,
+  sendFailures: 0,
+  lastSuccessAt: null,
+  lastFailureAt: null,
+  byRarity: {
+    secret: 0,
+    eternal: 0,
+    divine: 0
+  },
+  byArea: new Map()
+};
 
 let alertChannel = null;
 let detectedCount = 0;
@@ -921,8 +939,44 @@ let liveFeedPrimed = false;
 let liveFeedLastSuccessAt = null;
 let liveFeedHealthState = "WAITING";
 const liveFeedEndpointCooldownUntil = new Map();
+const liveFeedEndpointHealth = new Map();
+let liveFeedConsecutiveFailures = 0;
+let liveFeedRecoveryCount = 0;
 const LIVE_FEED_404_COOLDOWN_MS = 5 * 60 * 1000;
 const LIVE_FEED_ERROR_COOLDOWN_MS = 15 * 1000;
+
+function updateLiveFeedEndpointHealth(url, patch = {}) {
+  const index = LIVE_FEED_URLS.indexOf(url);
+  const key = index >= 0 ? index + 1 : "unknown";
+  const previous = liveFeedEndpointHealth.get(key) || {
+    endpoint: key,
+    status: "WAITING",
+    checkedAt: null,
+    httpStatus: null,
+    failures: 0,
+    lastErrorAt: null,
+    lastSuccessAt: null
+  };
+
+  const next = {
+    ...previous,
+    ...patch,
+    endpoint: key,
+    checkedAt: new Date().toISOString()
+  };
+
+  if (
+    next.status === "ACTIVE" &&
+    previous.status &&
+    previous.status !== "ACTIVE" &&
+    (previous.failures || 0) > 0
+  ) {
+    liveFeedRecoveryCount++;
+    console.log("Live feed endpoint recovered:", "endpoint=" + key);
+  }
+
+  liveFeedEndpointHealth.set(key, next);
+}
 
 function liveFeedEndpointCoolingDown(url) {
   return Date.now() < (liveFeedEndpointCooldownUntil.get(url) || 0);
@@ -965,6 +1019,76 @@ function normalizeFeedKey(value) {
     .replace(/[^a-z0-9]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function alertDeliveryKeys(event) {
+  const rarity = normalizeFeedKey(event?.rarity);
+  const egg = normalizeFeedKey(event?.eggName || event?.displayName);
+  const area = normalizeFeedKey(event?.biome || "unknown");
+  const parsedTime = Date.parse(event?.spawnedAt || "");
+  const timeBucket = Number.isFinite(parsedTime)
+    ? Math.floor(parsedTime / 5000)
+    : Math.floor(Date.now() / 5000);
+
+  const keys = [
+    "core|" + rarity + "|" + egg + "|" + area + "|" + timeBucket
+  ];
+
+  if (event?.sourceEventId) {
+    keys.push("source|" + String(event.sourceEventId).slice(0, 200));
+  }
+
+  return keys.filter(Boolean);
+}
+
+function reserveAlertDelivery(event) {
+  const keys = alertDeliveryKeys(event);
+  const now = Date.now();
+
+  for (const [key, expiresAt] of deliveredAlertKeys) {
+    if (expiresAt <= now) deliveredAlertKeys.delete(key);
+  }
+
+  if (keys.some(key =>
+    deliveredAlertKeys.has(key) || alertDeliveryInFlight.has(key)
+  )) {
+    alertMetrics.duplicateSuppressed++;
+    return null;
+  }
+
+  for (const key of keys) {
+    deliveredAlertKeys.set(key, now + ALERT_DELIVERY_DEDUP_MS);
+    alertDeliveryInFlight.add(key);
+  }
+
+  return keys;
+}
+
+function releaseAlertDelivery(keys, success) {
+  for (const key of keys || []) {
+    alertDeliveryInFlight.delete(key);
+    if (!success) deliveredAlertKeys.delete(key);
+  }
+}
+
+function recordAlertMetric(event, area) {
+  const rarityKey = normalizeFeedKey(event?.rarity);
+  if (Object.prototype.hasOwnProperty.call(alertMetrics.byRarity, rarityKey)) {
+    alertMetrics.byRarity[rarityKey]++;
+  }
+
+  const areaKey = String(area || "Unknown").trim() || "Unknown";
+  alertMetrics.byArea.set(
+    areaKey,
+    (alertMetrics.byArea.get(areaKey) || 0) + 1
+  );
+
+  if (alertMetrics.byArea.size > 50) {
+    const oldest = alertMetrics.byArea.keys().next().value;
+    if (oldest != null) alertMetrics.byArea.delete(oldest);
+  }
+
+  alertMetrics.lastSuccessAt = new Date().toISOString();
 }
 
 function isValidHttpUrl(value) {
@@ -1533,6 +1657,13 @@ async function warmPetImageCache(options = {}) {
       if (index >= entries.length) return;
 
       const entry = entries[index];
+      const imageKey = normalizeFeedKey(entry.petName);
+      const cached = petPngBufferCache.get(imageKey);
+
+      if (cached && Date.now() - cached.at < PET_PNG_CACHE_TTL_MS) {
+        warmed++;
+        continue;
+      }
 
       try {
         const source = await resolvePetImageSource(entry.petName);
@@ -1583,12 +1714,20 @@ async function warmPetImageCache(options = {}) {
   }
 }
 
+let imageWarmupTimer = null;
+
 function scheduleImageWarmup() {
-  setTimeout(() => {
+  const run = () => {
     warmPetImageCache({ workers: 2 }).catch(error => {
       console.error("Background image warm-up failed:", error);
     });
-  }, 1500);
+  };
+
+  setTimeout(run, 1500);
+
+  if (!imageWarmupTimer) {
+    imageWarmupTimer = setInterval(run, 15 * 60 * 1000);
+  }
 }
 
 app.get("/cdn/pets/:pet.png", async (req, res) => {
@@ -1951,10 +2090,18 @@ async function pollLiveFeed() {
             const { response, body } = await fetchLiveFeed(url);
 
             if (!response.ok) {
-              if (response.status === 404) {
+              const status = Number(response.status) || 0;
+              if (status === 404) {
                 coolDownLiveFeedEndpoint(url, 404);
               }
-              return { ok: false, index, url, status: response.status };
+              updateLiveFeedEndpointHealth(url, {
+                status: status === 404 ? "HTTP_404" : "HTTP_ERROR",
+                httpStatus: status,
+                failures:
+                  (liveFeedEndpointHealth.get(index + 1)?.failures || 0) + 1,
+                lastErrorAt: new Date().toISOString()
+              });
+              return { ok: false, index, url, status };
             }
 
         let payload = body;
@@ -1981,9 +2128,23 @@ async function pollLiveFeed() {
             ? pickLatestEggFromFeed(payload)
             : null;
 
+            updateLiveFeedEndpointHealth(url, {
+              status: "ACTIVE",
+              httpStatus: response.status,
+              failures: 0,
+              lastSuccessAt: new Date().toISOString(),
+              lastErrorAt: null
+            });
+
             return { ok: true, index, url, status: response.status, payload, candidate };
           } catch (error) {
             coolDownLiveFeedEndpoint(url);
+            updateLiveFeedEndpointHealth(url, {
+              status: "ERROR",
+              failures:
+                (liveFeedEndpointHealth.get(index + 1)?.failures || 0) + 1,
+              lastErrorAt: new Date().toISOString()
+            });
             throw error;
           }
         })
@@ -2018,8 +2179,13 @@ async function pollLiveFeed() {
       }
     }
 
-    if (!successful.length) return;
+    if (!successful.length) {
+      liveFeedConsecutiveFailures++;
+      updateLiveFeedHealth();
+      return;
+    }
 
+    liveFeedConsecutiveFailures = 0;
     liveFeedLastSuccessAt = new Date().toISOString();
     updateLiveFeedHealth();
 
@@ -3500,6 +3666,22 @@ function getEggVisuals(entry) {
   };
 }
 
+function lastSeenContentFingerprint(rarity) {
+  return JSON.stringify(
+    getLastSeenEntries(rarity).map(({ entry, record }) => ({
+      egg: entry?.eggName || null,
+      pet: entry?.petName || null,
+      biome: entry?.biome || "Unknown",
+      seen: record
+        ? {
+            area: record.area || "Unknown",
+            spawnedAt: record.spawnedAt || null
+          }
+        : null
+    }))
+  );
+}
+
 function buildLastSeenEmbed(rarity) {
   const entries = getLastSeenEntries(rarity);
   const seenEntries = entries
@@ -3656,9 +3838,13 @@ async function ensureLastSeenMessages() {
       const message = await findExistingLastSeenMessage(channel, rarity);
 
       if (message) {
-        // Startup can refresh the canonical message, but never duplicates it.
+        // Refresh once at startup so the canonical message matches current state.
         await message.edit({ embeds: [embed] });
         lastSeenMessageCache.set(rarity, message);
+        lastSeenContentFingerprints.set(
+          rarity,
+          lastSeenContentFingerprint(rarity)
+        );
         continue;
       }
 
@@ -3666,6 +3852,10 @@ async function ensureLastSeenMessages() {
       const created = await channel.send({ embeds: [embed] });
       lastSeenMessageIds[rarity] = created.id;
       lastSeenMessageCache.set(rarity, created);
+      lastSeenContentFingerprints.set(
+        rarity,
+        lastSeenContentFingerprint(rarity)
+      );
       console.log("Created canonical Last Seen message:", rarity, created.id);
     }
 
@@ -3696,6 +3886,12 @@ async function updateLastSeenMessage(rarity) {
     if (!ready) return;
 
     const channel = await getLastSeenChannel();
+    const contentFingerprint = lastSeenContentFingerprint(rarity);
+
+    if (lastSeenContentFingerprints.get(rarity) === contentFingerprint) {
+      return;
+    }
+
     const embed = buildLastSeenEmbed(rarity);
     const message = await findExistingLastSeenMessage(channel, rarity);
 
@@ -3704,6 +3900,7 @@ async function updateLastSeenMessage(rarity) {
       const created = await channel.send({ embeds: [embed] });
       lastSeenMessageIds[rarity] = created.id;
       lastSeenMessageCache.set(rarity, created);
+      lastSeenContentFingerprints.set(rarity, contentFingerprint);
       console.warn("Canonical Last Seen message was missing; recreated:", rarity, created.id);
     } else {
       // Normal update path: EDIT the existing Discord message.
@@ -3711,6 +3908,7 @@ async function updateLastSeenMessage(rarity) {
       lastSeenMessageCache.set(rarity, message);
     }
 
+    lastSeenContentFingerprints.set(rarity, contentFingerprint);
     scheduleStateSave();
   })();
 
@@ -4141,8 +4339,22 @@ async function sendAlert(event, latencyMs = null) {
     return false;
   }
 
+  const bypassDeliveryDedup = event?.source === "Test";
+  const deliveryKeys = bypassDeliveryDedup ? [] : reserveAlertDelivery({
+    ...event,
+    eggName: entry.eggName,
+    displayName: entry.petName || event.displayName,
+    rarity: entry.rarity,
+    biome: event.biome || entry.biome || "Unknown"
+  });
+
+  if (!bypassDeliveryDedup && !deliveryKeys) return false;
+
   const enriched = await enrichAlertEvent(event, entry);
-  if (!enriched) return false;
+  if (!enriched) {
+    releaseAlertDelivery(deliveryKeys, false);
+    return false;
+  }
 
   const channel = await getAlertChannel();
   const rarity = String(event.rarity || "Unknown").trim();
@@ -4193,15 +4405,24 @@ async function sendAlert(event, latencyMs = null) {
     sentMessage = await channel.send(payload);
   } catch (firstError) {
     console.error("Primary alert send failed:", firstError);
+    alertMetrics.sendFailures++;
+    alertMetrics.lastFailureAt = new Date().toISOString();
     alertChannel = null;
 
-    const freshChannel = await getAlertChannel();
+    try {
+      const freshChannel = await getAlertChannel();
 
-    if (event.imageUrl || event.imageBuffer) {
-      payload.embeds = [buildAlertEmbed(event, latencyMs, true)];
+      if (event.imageUrl || event.imageBuffer) {
+        payload.embeds = [buildAlertEmbed(event, latencyMs, true)];
+      }
+
+      sentMessage = await freshChannel.send(payload);
+    } catch (retryError) {
+      alertMetrics.sendFailures++;
+      alertMetrics.lastFailureAt = new Date().toISOString();
+      releaseAlertDelivery(deliveryKeys, false);
+      throw retryError;
     }
-
-    sentMessage = await freshChannel.send(payload);
   }
 
   if (!event.imageBuffer && sentMessage) {
@@ -4236,6 +4457,7 @@ async function sendAlert(event, latencyMs = null) {
   }
 
   alertCount++;
+  recordAlertMetric(event, area);
   lastSpawnAt = event.spawnedAt;
   lastAlertLatencyMs = Number.isFinite(latencyMs) ? latencyMs : null;
 
@@ -4256,6 +4478,7 @@ async function sendAlert(event, latencyMs = null) {
 
   if (recentSpawns.length > 25) recentSpawns.length = 25;
 
+  releaseAlertDelivery(deliveryKeys, true);
   return true;
 }
 
@@ -4450,6 +4673,18 @@ app.get("/health", (_req, res) => {
     averageAlertLatencyMs: latencySamples
       ? Math.round(totalLatencyMs / latencySamples)
       : null,
+    alertDelivery: {
+      duplicateSuppressed: alertMetrics.duplicateSuppressed,
+      sendFailures: alertMetrics.sendFailures,
+      lastSuccessAt: alertMetrics.lastSuccessAt,
+      lastFailureAt: alertMetrics.lastFailureAt,
+      byRarity: alertMetrics.byRarity,
+      topAreas: [...alertMetrics.byArea.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10)
+        .map(([area, count]) => ({ area, count })),
+      trackedDeliveryKeys: deliveredAlertKeys.size
+    },
     monitorErrors,
     cacheSize: seen.size,
     recentSpawns: recentSpawns.length,
@@ -4459,6 +4694,9 @@ app.get("/health", (_req, res) => {
     liveFeedLastEventAt,
     liveFeedLastSuccessAt,
     liveFeedHealth: liveFeedHealth(),
+    liveFeedConsecutiveFailures,
+    liveFeedRecoveryCount,
+    liveFeedEndpointHealth: [...liveFeedEndpointHealth.values()],
     liveFeedEventsReceived,
     liveFeedEventsAccepted,
     liveFeedErrors,
@@ -4726,6 +4964,9 @@ setInterval(() => {
     "detected=" + detectedCount,
     "alerts=" + alertCount,
     "errors=" + monitorErrors,
+    "duplicates=" + alertMetrics.duplicateSuppressed,
+    "feedFailures=" + liveFeedConsecutiveFailures,
+    "feedEndpoints=" + [...liveFeedEndpointHealth.values()].filter(item => item.status === "ACTIVE").length + "/" + LIVE_FEED_URLS.length,
     "autoDiscovery=" + (AUTO_DISCOVERY_ENABLED ? "active" : "disabled") + ":" + [...autoDiscoverySourceHealth.values()].filter(item => item.status === "ACTIVE").length + "/" + AUTO_DISCOVERY_SOURCES.length,
     "avgLatencyMs=" + (latencySamples
       ? Math.round(totalLatencyMs / latencySamples)
@@ -5199,6 +5440,7 @@ client.on("interactionCreate", async interaction => {
       alertChannel = null;
       lastSeenMessagesReady = false;
       lastSeenMessageCache.clear();
+      lastSeenContentFingerprints.clear();
       lastSeenMessagesInitInFlight = null;
       petPageCache.clear();
       petPngBufferCache.clear();
@@ -5357,6 +5599,7 @@ client.on("shardReconnecting", shardId => {
   experimentCustomEmojiSetupState.ready = false;
   lastSeenMessagesReady = false;
   lastSeenMessageCache.clear();
+  lastSeenContentFingerprints.clear();
   lastSeenMessagesInitInFlight = null;
   resolvedRoleCache.clear();
   eventRoleCache.clear();
@@ -5373,6 +5616,7 @@ client.on("shardDisconnect", (event, shardId) => {
   experimentCustomEmojiSetupState.ready = false;
   lastSeenMessagesReady = false;
   lastSeenMessageCache.clear();
+  lastSeenContentFingerprints.clear();
   lastSeenMessagesInitInFlight = null;
   resolvedRoleCache.clear();
   eventRoleCache.clear();
