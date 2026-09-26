@@ -698,7 +698,60 @@ try {
   console.warn("Egg image catalog could not be loaded:", error?.message || error);
 }
 
+function dedupeCatalogEntries() {
+  const unique = new Map();
+  let removed = 0;
+
+  for (const entry of eggImageCatalog) {
+    if (!entry || typeof entry !== "object") continue;
+
+    const key = normalizeFeedKey(
+      entry.eggName ||
+      entry.displayName ||
+      (entry.petName ? entry.petName + " Egg" : "")
+    );
+
+    if (!key) continue;
+
+    const existing = unique.get(key);
+    if (!existing) {
+      unique.set(key, entry);
+      continue;
+    }
+
+    removed++;
+    existing.aliases = [
+      ...new Set([
+        ...(Array.isArray(existing.aliases) ? existing.aliases : []),
+        ...(Array.isArray(entry.aliases) ? entry.aliases : []),
+        entry.eggName,
+        entry.displayName,
+        entry.petName
+      ].filter(Boolean))
+    ];
+
+    if ((!existing.biome || existing.biome === "Unknown") && entry.biome) {
+      existing.biome = entry.biome;
+    }
+
+    if (!existing.sourcePage && entry.sourcePage) {
+      existing.sourcePage = entry.sourcePage;
+    }
+
+    if (!existing.petName && entry.petName) {
+      existing.petName = entry.petName;
+    }
+  }
+
+  if (removed) {
+    eggImageCatalog = [...unique.values()];
+    scheduleStateSave();
+    console.warn("Catalog duplicate cleanup removed:", removed, "duplicate entries");
+  }
+}
+
 loadRuntimeState();
+dedupeCatalogEntries();
 rebuildLastSeenFromHistory().catch(error => {
   console.warn("Last Seen history rebuild failed:", error?.message || error);
 });
@@ -2594,7 +2647,7 @@ async function sendGameUpdateAlert(update, newEggs = [], changes = null) {
           inline: true
         }
       )
-      .setFooter({ text: "Steal An Egg • Auto Discovery" })
+      .setFooter({ text: "Powered by FSMM • Steal An Egg" })
       .setTimestamp();
 
     await channel.send({
@@ -3585,15 +3638,26 @@ function getLastSeenEntries(rarity) {
   const map = lastSeenByRarity[rarity];
   if (!map) return [];
 
-  return eggImageCatalog
-    .filter(entry =>
-      isLastSeenEligibleEntry(entry) &&
-      entry?.rarity?.toLowerCase() === rarity
-    )
-    .map(entry => ({
+  const unique = new Map();
+
+  for (const entry of eggImageCatalog) {
+    if (
+      !isLastSeenEligibleEntry(entry) ||
+      entry?.rarity?.toLowerCase() !== rarity
+    ) {
+      continue;
+    }
+
+    const key = normalizeFeedKey(entry.eggName);
+    if (!key || unique.has(key)) continue;
+
+    unique.set(key, {
       entry,
-      record: map.get(normalizeFeedKey(entry.eggName)) || null
-    }));
+      record: map.get(key) || null
+    });
+  }
+
+  return [...unique.values()];
 }
 function customEmojiNameForEgg(entry) {
   const raw = String(entry?.eggName || entry?.petName || "egg")
@@ -3907,7 +3971,7 @@ function buildLastSeenEmbed(rarity) {
     .setTitle("🕒 " + lastSeenLabel(rarity) + " • Last Seen")
     .setDescription(lines.join("\n").slice(0, 4090))
     .setFooter({
-      text: "Steal An Egg • Auto-updated"
+      text: "Powered by FSMM • Steal An Egg"
     })
     .setTimestamp();
 }
@@ -4268,7 +4332,7 @@ function buildAlertEmbed(event, _latencyMs = null, includeImage = true) {
       "**" + rarity + " Egg** • " + eggName.slice(0, 200)
     )
     .addFields(fields)
-    .setFooter({ text: "Steal An Egg • Live Spawn" })
+    .setFooter({ text: "Powered by FSMM • Steal An Egg" })
     .setTimestamp(Number.isFinite(timestamp) ? new Date(timestamp) : new Date());
 
   if (includeImage) {
