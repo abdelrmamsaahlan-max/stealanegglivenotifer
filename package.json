@@ -9,7 +9,8 @@
   },
   "scripts": {
     "start": "node src/index.js",
-    "test": "node --test && node --check src/index.js"
+    "test": "node --test && node --check src/index.js",
+    "build": "npm test"
   },
   "dependencies": {
     "discord.js": "14.26.2",
