@@ -201,6 +201,133 @@ function normalizeFeedKey(value) {
     .trim();
 }
 
+function isValidHttpUrl(value) {
+  try {
+    const url = new URL(String(value || "").trim());
+    return (url.protocol === "https:" || url.protocol === "http:");
+  } catch {
+    return false;
+  }
+}
+
+function normalizeImageUrl(value) {
+  if (typeof value !== "string") return null;
+  const cleaned = value.trim();
+  return isValidHttpUrl(cleaned) ? cleaned : null;
+}
+
+function firstImageUrl(value) {
+  if (!value || typeof value !== "object") return null;
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = firstImageUrl(item);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  const preferredKeys = [
+    "imageUrl", "image_url", "image",
+    "thumbnailUrl", "thumbnail_url", "thumbnail",
+    "iconUrl", "icon_url", "icon",
+    "avatarUrl", "avatar_url"
+  ];
+
+  for (const key of preferredKeys) {
+    const raw = value[key];
+    if (typeof raw === "string") {
+      const found = normalizeImageUrl(raw);
+      if (found) return found;
+    } else if (raw && typeof raw === "object") {
+      const found = firstImageUrl(raw);
+      if (found) return found;
+    }
+  }
+
+  for (const [key, child] of Object.entries(value)) {
+    if (/image|thumbnail|icon|avatar/i.test(key)) {
+      const found = firstImageUrl(child);
+      if (found) return found;
+    }
+  }
+
+  return null;
+}
+
+function slugify(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/['’]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+}
+
+const imageFallbackCache = new Map();
+const IMAGE_CACHE_TTL_MS = 60 * 60 * 1000;
+
+async function fetchPageImage(pageUrl) {
+  try {
+    const { response, body } = await fetchLiveFeed(pageUrl);
+    if (!response.ok) return null;
+
+    const patterns = [
+      /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i,
+      /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i,
+      /<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']/i,
+      /<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image["']/i,
+      /<img[^>]+src=["']([^"']+)["']/i
+    ];
+
+    for (const pattern of patterns) {
+      const match = body.match(pattern);
+      const candidate = normalizeImageUrl(match?.[1]);
+      if (candidate) return candidate;
+    }
+  } catch {
+    // Image fallback is best-effort; the live alert must still work without it.
+  }
+
+  return null;
+}
+
+async function resolveImageUrl(eggName, providedUrl = null) {
+  const direct = normalizeImageUrl(providedUrl);
+  if (direct) return direct;
+
+  const key = normalizeFeedKey(eggName);
+  if (!key) return null;
+
+  const cached = imageFallbackCache.get(key);
+  if (cached && Date.now() - cached.at < IMAGE_CACHE_TTL_MS) {
+    return cached.url;
+  }
+
+  const slug = slugify(eggName);
+  const variants = [...new Set([
+    slug,
+    slug.endsWith("-egg") ? slug.slice(0, -4) : slug + "-egg"
+  ].filter(Boolean))];
+
+  const pages = [];
+  for (const variant of variants) {
+    pages.push(`https://steal-an-egg-roblox.wiki/eggs/${variant}/`);
+    pages.push(`https://steal-an-egg-roblox.wiki/pets/${variant}/`);
+  }
+
+  for (const page of pages) {
+    const imageUrl = await fetchPageImage(page);
+    if (imageUrl) {
+      imageFallbackCache.set(key, { url: imageUrl, at: Date.now() });
+      return imageUrl;
+    }
+  }
+
+  imageFallbackCache.set(key, { url: null, at: Date.now() });
+  return null;
+}
+
 function collectEggCandidates(value, path = [], out = []) {
   if (!value || typeof value !== "object") return out;
 
@@ -232,6 +359,7 @@ function collectEggCandidates(value, path = [], out = []) {
     "spawnedAt", "spawned_at", "detectedAt", "detected_at",
     "timestamp", "time", "createdAt", "created_at", "date"
   );
+  const imageUrl = firstImageUrl(value);
 
   if (typeof eggName === "string" && typeof rarity === "string") {
     const rarityKey = rarity.trim().toLowerCase();
@@ -255,6 +383,7 @@ function collectEggCandidates(value, path = [], out = []) {
         rarity: rarityKey[0].toUpperCase() + rarityKey.slice(1),
         biome: typeof area === "string" && area.trim() ? area.trim() : "Unknown",
         spawnedAt: parsedTime ? parsedTime.toISOString() : null,
+        imageUrl: normalizeImageUrl(imageUrl),
         score,
         path: path.join(".")
       });
@@ -298,7 +427,14 @@ function feedStateLooksOffline(payload) {
 }
 
 function parseEggWatchHtml(html) {
-  const text = String(html || "")
+  const rawHtml = String(html || "");
+  const pageImageUrl = normalizeImageUrl(
+    rawHtml.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
+    rawHtml.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i)?.[1] ||
+    rawHtml.match(/<img[^>]+src=["']([^"']+)["']/i)?.[1]
+  );
+
+  const text = rawHtml
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
     .replace(/<[^>]+>/g, " ")
@@ -331,6 +467,7 @@ function parseEggWatchHtml(html) {
     rarity: rarity[0].toUpperCase() + rarity.slice(1).toLowerCase(),
     biome: areaMatch?.[1]?.replace(/\s+/g, " ").trim() || "Unknown",
     spawnedAt,
+    imageUrl: pageImageUrl,
     score: 1,
     path: "html"
   };
@@ -445,6 +582,11 @@ async function pollEggWatch() {
         return;
       }
 
+      const imageUrl = await resolveImageUrl(
+        candidate.eggName,
+        candidate.imageUrl
+      );
+
       const event = {
         live: true,
         eggName: candidate.eggName,
@@ -452,6 +594,7 @@ async function pollEggWatch() {
         rarity: candidate.rarity,
         biome: candidate.biome || "Unknown",
         spawnedAt: candidate.spawnedAt,
+        imageUrl,
         source: "EggWatch Global Feed"
       };
 
@@ -478,7 +621,8 @@ async function pollEggWatch() {
         console.log(
           "Forwarded EggWatch feed event:",
           existingKey,
-          "latencyMs=" + (ageMs >= 0 ? ageMs : "unknown")
+          "latencyMs=" + (ageMs >= 0 ? ageMs : "unknown"),
+          "image=" + (imageUrl ? "attached" : "not-found")
         );
       } catch (error) {
         liveFeedErrors++;
