@@ -295,10 +295,29 @@ const MEMORY_SOFT_LIMIT_MB =
 const MEMORY_HARD_LIMIT_MB =
   Math.max(MEMORY_SOFT_LIMIT_MB + 50, Number(process.env.MEMORY_HARD_LIMIT_MB || 450));
 
+const CONFIGURED_STATE_FILE = String(process.env.RUNTIME_STATE_FILE || "").trim();
 const STATE_FILE = path.resolve(
-  process.cwd(),
-  "data/runtime-state.json"
+  CONFIGURED_STATE_FILE || path.join(process.cwd(), "data/runtime-state.json")
 );
+const STATE_BACKUP_FILE = STATE_FILE + ".bak";
+const STATE_PERSISTENCE_MODE = CONFIGURED_STATE_FILE
+  ? "configured-path"
+  : "local-runtime-file";
+const DURABLE_VOLUME_CONFIGURED =
+  Boolean(process.env.RAILWAY_VOLUME_MOUNT_PATH) ||
+  String(process.env.RUNTIME_STATE_DURABLE || "").toLowerCase() === "true";
+
+const ALERT_QUEUE_STALE_AFTER_MS =
+  Math.max(10, Number(process.env.ALERT_QUEUE_STALE_AFTER_SECONDS || 45)) * 1000;
+const WATCHDOG_INTERVAL_MS =
+  Math.max(15, Number(process.env.WATCHDOG_INTERVAL_SECONDS || 30)) * 1000;
+const WATCHDOG_RECOVERY_COOLDOWN_MS =
+  Math.max(15, Number(process.env.WATCHDOG_RECOVERY_COOLDOWN_SECONDS || 60)) * 1000;
+const LIVE_FEED_REPRIME_AGE_MS =
+  Math.max(5, Number(process.env.LIVE_FEED_REPRIME_AGE_SECONDS || 15)) * 1000;
+const ADMIN_API_TOKEN = String(
+  process.env.ADMIN_API_TOKEN || SECRET || ""
+).trim();
 
 function loadDiscoverySources() {
   const raw = String(process.env.DISCOVERY_SOURCES_JSON || "").trim();
@@ -516,9 +535,26 @@ function cleanupAdminCommandUsage(now = Date.now()) {
 
 function loadRuntimeState() {
   try {
-    if (!fs.existsSync(STATE_FILE)) return;
+    const stateCandidates = [STATE_FILE, STATE_BACKUP_FILE];
+    let loadedPath = null;
+    let rawState = null;
 
-    const state = JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
+    for (const candidate of stateCandidates) {
+      try {
+        if (!fs.existsSync(candidate)) continue;
+        const candidateRaw = fs.readFileSync(candidate, "utf8");
+        JSON.parse(candidateRaw);
+        loadedPath = candidate;
+        rawState = candidateRaw;
+        break;
+      } catch {
+        // Fall back to the backup if the primary state file is incomplete.
+      }
+    }
+
+    if (!loadedPath || !rawState) return;
+
+    const state = JSON.parse(rawState);
 
     if (Array.isArray(state.spawnHistory)) {
       spawnHistory.push(...state.spawnHistory.slice(0, MAX_HISTORY));
@@ -651,10 +687,11 @@ function loadRuntimeState() {
     console.log(
       "Runtime state restored:",
       "spawns=" + spawnHistory.length,
-      "events=" + gameEventHistory.length
+      "events=" + gameEventHistory.length,
+      "file=" + loadedPath
     );
   } catch (error) {
-    console.warn("Runtime state restore failed:", error?.message || error);
+    recordMonitorError("storage", error, "Runtime state restore failed");
   }
 }
 
@@ -666,7 +703,7 @@ function saveRuntimeState() {
     fs.mkdirSync(stateDir, { recursive: true });
 
     const payload = {
-      version: 1,
+      version: 2,
       savedAt: new Date().toISOString(),
       lastUpdateFingerprint,
       lastUpdateTitle,
@@ -696,9 +733,18 @@ function saveRuntimeState() {
 
     const tempFile = STATE_FILE + ".tmp";
     fs.writeFileSync(tempFile, JSON.stringify(payload), "utf8");
+
+    if (fs.existsSync(STATE_FILE)) {
+      try {
+        fs.copyFileSync(STATE_FILE, STATE_BACKUP_FILE);
+      } catch {
+        // Best-effort backup; atomic primary save still proceeds.
+      }
+    }
+
     fs.renameSync(tempFile, STATE_FILE);
   } catch (error) {
-    console.warn("Runtime state save failed:", error?.message || error);
+    recordMonitorError("storage", error, "Runtime state save failed");
   }
 }
 
@@ -1106,6 +1152,7 @@ const alertMetrics = {
   sendFailures: 0,
   queueRejected: 0,
   queueRetried: 0,
+  queueStalePromoted: 0,
   lastSuccessAt: null,
   lastFailureAt: null,
   byRarity: {
@@ -1115,6 +1162,34 @@ const alertMetrics = {
   },
   byArea: new Map()
 };
+
+const errorMetrics = {
+  source: 0,
+  discord: 0,
+  image: 0,
+  queue: 0,
+  discovery: 0,
+  storage: 0,
+  other: 0
+};
+
+let lastErrorCategory = null;
+let lastErrorAt = null;
+
+function recordMonitorError(category = "other", error = null, context = "") {
+  const key = Object.prototype.hasOwnProperty.call(errorMetrics, category)
+    ? category
+    : "other";
+
+  monitorErrors++;
+  errorMetrics[key]++;
+  lastErrorCategory = key;
+  lastErrorAt = new Date().toISOString();
+
+  if (error && context) {
+    console.error(context + ":", error?.message || error);
+  }
+}
 
 let alertChannel = null;
 let detectedCount = 0;
@@ -1141,6 +1216,7 @@ const liveFeedEndpointCooldownUntil = new Map();
 const liveFeedEndpointHealth = new Map();
 let liveFeedConsecutiveFailures = 0;
 let liveFeedRecoveryCount = 0;
+let liveFeedPrimaryUrl = null;
 const LIVE_FEED_404_COOLDOWN_MS = 5 * 60 * 1000;
 const LIVE_FEED_ERROR_COOLDOWN_MS = 15 * 1000;
 
@@ -1164,17 +1240,24 @@ function updateLiveFeedEndpointHealth(url, patch = {}) {
     checkedAt: new Date().toISOString()
   };
 
-  if (
+  const recovered =
     next.status === "ACTIVE" &&
     previous.status &&
     previous.status !== "ACTIVE" &&
-    (previous.failures || 0) > 0
-  ) {
+    (previous.failures || 0) > 0;
+
+  if (recovered) {
     liveFeedRecoveryCount++;
+    next.recoveredAt = new Date().toISOString();
     console.log("Live feed endpoint recovered:", "endpoint=" + key);
   }
 
+  if (next.status === "ACTIVE") {
+    liveFeedPrimaryUrl = url;
+  }
+
   liveFeedEndpointHealth.set(key, next);
+  return recovered;
 }
 
 function liveFeedEndpointCoolingDown(url) {
@@ -1372,8 +1455,9 @@ function alertQueueJobPriority(job) {
   const base = alertQueuePriority(job?.event);
   const ageMs = Math.max(0, Date.now() - Number(job?.enqueuedAt || Date.now()));
   const ageBonus = Math.min(30, Math.floor(ageMs / 1000) * 2);
+  const staleBonus = ageMs >= ALERT_QUEUE_STALE_AFTER_MS ? 1000 : 0;
 
-  return base + ageBonus;
+  return base + ageBonus + staleBonus;
 }
 
 function dequeueNextAlert() {
@@ -1391,7 +1475,16 @@ function dequeueNextAlert() {
     }
   }
 
-  return alertQueue.splice(bestIndex, 1)[0] || null;
+  const job = alertQueue.splice(bestIndex, 1)[0] || null;
+
+  if (
+    job &&
+    Date.now() - Number(job.enqueuedAt || Date.now()) >= ALERT_QUEUE_STALE_AFTER_MS
+  ) {
+    alertMetrics.queueStalePromoted++;
+  }
+
+  return job;
 }
 
 function pumpAlertQueue() {
@@ -1409,13 +1502,12 @@ function pumpAlertQueue() {
       .catch(error => {
         alertMetrics.sendFailures++;
         alertMetrics.lastFailureAt = new Date().toISOString();
-        monitorErrors++;
-
-        console.error(
-          "Queued alert delivery failed:",
-          job.event?.rarity,
-          job.event?.eggName,
-          error
+        recordMonitorError(
+          "queue",
+          error,
+          "Queued alert delivery failed for " +
+            (job.event?.rarity || "unknown") + " " +
+            (job.event?.eggName || "unknown")
         );
       })
       .finally(() => {
@@ -2608,7 +2700,7 @@ async function pollLiveFeed() {
               ? collectEggCandidates(payload)
               : [];
 
-            updateLiveFeedEndpointHealth(url, {
+            const recovered = updateLiveFeedEndpointHealth(url, {
               status: "ACTIVE",
               httpStatus: response.status,
               failures: 0,
@@ -2618,6 +2710,7 @@ async function pollLiveFeed() {
 
             return {
               ok: true,
+              recovered,
               index,
               url,
               status: response.status,
@@ -2778,6 +2871,27 @@ async function pollLiveFeed() {
         normalizeFeedKey(event.eggName),
         normalizeFeedKey(event.biome)
       ].join("|");
+
+      const endpointState = liveFeedEndpointHealth.get(index + 1);
+      const recoveredAt = endpointState?.recoveredAt
+        ? Date.parse(endpointState.recoveredAt)
+        : NaN;
+      const recentlyRecovered =
+        Number.isFinite(recoveredAt) &&
+        now - recoveredAt <= WATCHDOG_RECOVERY_COOLDOWN_MS;
+
+      if (
+        recentlyRecovered &&
+        ageMs >= LIVE_FEED_REPRIME_AGE_MS
+      ) {
+        liveFeedProcessedEvents.set(fingerprint, now);
+        console.log(
+          "Re-primed recovered feed event without replay:",
+          candidate.eggName,
+          "endpoint=" + (index + 1)
+        );
+        continue;
+      }
 
       // Live feed events are already deduplicated by their event fingerprint
       // above. Do not apply the older same-egg/same-area window here because
@@ -3826,6 +3940,135 @@ function updateLiveFeedHealth() {
   return current;
 }
 
+let watchdogInFlight = false;
+let watchdogLastRunAt = null;
+let watchdogLastRecoveryAt = null;
+let watchdogLastAction = null;
+let watchdogRecoveryCount = 0;
+let watchdogLastActionAt = 0;
+
+function queueOldestAgeMs() {
+  if (!alertQueue.length) return 0;
+
+  const oldest = alertQueue.reduce(
+    (value, job) => Math.min(value, Number(job?.enqueuedAt || Date.now())),
+    Date.now()
+  );
+
+  return Math.max(0, Date.now() - oldest);
+}
+
+function watchdogStatus() {
+  const activeFeedEndpoints = [...liveFeedEndpointHealth.values()]
+    .filter(item => item.status === "ACTIVE").length;
+  const discoveryActive = [...autoDiscoverySourceHealth.values()]
+    .filter(item => item.status === "ACTIVE").length;
+
+  return {
+    discord: client.isReady() ? "ACTIVE" : "DOWN",
+    liveFeed: liveFeedHealth(),
+    liveFeedEndpoints: activeFeedEndpoints + "/" + LIVE_FEED_URLS.length,
+    lastSeen: LAST_SEEN_CHANNEL_ID
+      ? (lastSeenMessagesReady ? "ACTIVE" : "WAITING")
+      : "DISABLED",
+    discovery: AUTO_DISCOVERY_ENABLED
+      ? discoveryActive + "/" + AUTO_DISCOVERY_SOURCES.length
+      : "DISABLED",
+    queue: alertQueue.length + "/" + ALERT_QUEUE_MAX,
+    queueOldestAgeMs: queueOldestAgeMs(),
+    pngCache: petPngBufferCache.size,
+    state: STATE_PERSISTENCE_MODE
+  };
+}
+
+async function runSystemWatchdog() {
+  if (watchdogInFlight) return;
+  watchdogInFlight = true;
+  watchdogLastRunAt = new Date().toISOString();
+
+  try {
+    if (!client.isReady()) return;
+
+    const now = Date.now();
+    const canAct =
+      now - watchdogLastActionAt >= WATCHDOG_RECOVERY_COOLDOWN_MS;
+
+    if (CHANNEL_ID && !alertChannel && canAct) {
+      await getAlertChannel();
+      watchdogLastAction = "refreshed_alert_channel";
+      watchdogLastRecoveryAt = new Date().toISOString();
+      watchdogLastActionAt = now;
+      watchdogRecoveryCount++;
+      return;
+    }
+
+    if (LAST_SEEN_CHANNEL_ID && !lastSeenMessagesReady && canAct) {
+      await ensureLastSeenMessages();
+      watchdogLastAction = "repaired_last_seen";
+      watchdogLastRecoveryAt = new Date().toISOString();
+      watchdogLastActionAt = now;
+      watchdogRecoveryCount++;
+      return;
+    }
+
+    const feedState = liveFeedHealth();
+    if (
+      LIVE_FEED_ENABLED &&
+      (feedState === "STALE" || (feedState === "WAITING" && process.uptime() > 60)) &&
+      canAct
+    ) {
+      const activeEndpointCount = [...liveFeedEndpointHealth.values()]
+        .filter(item => item.status === "ACTIVE").length;
+
+      if (!activeEndpointCount) {
+        for (const url of LIVE_FEED_URLS) {
+          const key = LIVE_FEED_URLS.indexOf(url) + 1;
+          const state = liveFeedEndpointHealth.get(key);
+          if (state?.status !== "HTTP_404") {
+            liveFeedEndpointCooldownUntil.delete(url);
+          }
+        }
+      }
+
+      await pollLiveFeed();
+      watchdogLastAction = activeEndpointCount
+        ? "refreshed_stale_live_feed"
+        : "forced_live_feed_failover";
+      watchdogLastRecoveryAt = new Date().toISOString();
+      watchdogLastActionAt = now;
+      watchdogRecoveryCount++;
+      return;
+    }
+
+    if (
+      AUTO_DISCOVERY_ENABLED &&
+      lastUpdateCheckAt &&
+      now - new Date(lastUpdateCheckAt).getTime() > AUTO_DISCOVERY_POLL_MS * 2 &&
+      canAct
+    ) {
+      await scanForGameUpdates();
+      watchdogLastAction = "restarted_stale_discovery";
+      watchdogLastRecoveryAt = new Date().toISOString();
+      watchdogLastActionAt = now;
+      watchdogRecoveryCount++;
+      return;
+    }
+
+    const oldestQueueAge = queueOldestAgeMs();
+    if (oldestQueueAge >= ALERT_QUEUE_STALE_AFTER_MS) {
+      pumpAlertQueue();
+      watchdogLastAction = "accelerated_stale_alert_queue";
+      watchdogLastRecoveryAt = new Date().toISOString();
+      watchdogLastActionAt = now;
+      watchdogRecoveryCount++;
+    }
+  } catch (error) {
+    recordMonitorError("other", error, "System watchdog failed");
+  } finally {
+    watchdogInFlight = false;
+  }
+}
+
 function cleanupCaches(now = Date.now()) {
   for (const [key, timestamp] of seenRiftAlerts) {
     if (now - timestamp > RIFT_DEDUP_TTL_MS) seenRiftAlerts.delete(key);
@@ -3914,10 +4157,10 @@ function verifyRequest(req) {
 
 function verifyAdminToken(req) {
   const supplied = String(req.header("x-admin-token") || "");
-  if (!SECRET || !supplied) return false;
+  if (!ADMIN_API_TOKEN || !supplied) return false;
 
   const suppliedBuffer = Buffer.from(supplied, "utf8");
-  const expectedBuffer = Buffer.from(SECRET, "utf8");
+  const expectedBuffer = Buffer.from(ADMIN_API_TOKEN, "utf8");
 
   return suppliedBuffer.length === expectedBuffer.length &&
     crypto.timingSafeEqual(suppliedBuffer, expectedBuffer);
@@ -4869,9 +5112,10 @@ async function sendRiftAlert(event, options = {}) {
 
   const channel = await getAlertChannel();
 
-  // Rift embeds are PNG-only as well. Convert any upstream image before Discord sees it.
-  if (event?.imageUrl && !event?.imageBuffer) {
-    event.imageBuffer = await preparePngImageBuffer(event.imageUrl);
+  const coldImageUrl = event?.imageUrl && !event?.imageBuffer
+    ? event.imageUrl
+    : null;
+  if (coldImageUrl) {
     event.imageUrl = null;
   }
 
@@ -4899,10 +5143,45 @@ async function sendRiftAlert(event, options = {}) {
     }];
   }
 
-  const message = await channel.send(riftPayload);
+  let message = null;
+
+  try {
+    message = await channel.send(riftPayload);
+  } catch (error) {
+    recordMonitorError("discord", error, "Rift alert send failed");
+    throw error;
+  }
 
   if (!isTest) {
     seenRiftAlerts.set(dedupKey, Date.now());
+  }
+
+  if (coldImageUrl && message) {
+    preparePngImageBuffer(coldImageUrl)
+      .then(async buffer => {
+        if (!buffer) return;
+
+        await message.edit({
+          embeds: [buildRiftAlertEmbed({
+            ...event,
+            imageBuffer: buffer,
+            imageUrl: null
+          })],
+          files: [{
+            attachment: buffer,
+            name: "rift-event.png",
+            description: "PNG Rift event artwork"
+          }]
+        });
+
+        console.log(
+          "Post-send Rift PNG attached:",
+          event.bannerName || event.bossName || "Rift"
+        );
+      })
+      .catch(error => {
+        recordMonitorError("image", error, "Post-send Rift PNG attach failed");
+      });
   }
 
   recordRiftHistory(event, isTest);
@@ -5416,15 +5695,15 @@ app.get("/health", (_req, res) => {
       alertQueueRejected: alertMetrics.queueRejected,
       alertQueueRetried: alertMetrics.queueRetried,
       alertQueueReservedLiveSlots: ALERT_QUEUE_RESERVED_LIVE_SLOTS,
-      alertQueueOldestAgeMs: alertQueue.length
-        ? Math.max(0, Date.now() - Number(alertQueue.reduce(
-            (oldest, job) => Math.min(oldest, Number(job?.enqueuedAt || Date.now())),
-            Date.now()
-          )))
-        : 0
+      alertQueueStaleAfterMs: ALERT_QUEUE_STALE_AFTER_MS,
+      queueStalePromoted: alertMetrics.queueStalePromoted,
+      alertQueueOldestAgeMs: queueOldestAgeMs()
     },
     ingestGlobalPerSecond: INGEST_GLOBAL_PER_SECOND,
     monitorErrors,
+    errorMetrics,
+    lastErrorCategory,
+    lastErrorAt,
     cacheSize: seen.size,
     recentSpawns: recentSpawns.length,
     liveFeedEnabled: LIVE_FEED_ENABLED,
@@ -5454,9 +5733,21 @@ app.get("/health", (_req, res) => {
     memorySoftLimitMb: MEMORY_SOFT_LIMIT_MB,
     memoryHardLimitMb: MEMORY_HARD_LIMIT_MB,
     statePersistence: {
-      localRuntimeFile: true,
-      durableVolume: false,
+      path: STATE_FILE,
+      mode: STATE_PERSISTENCE_MODE,
+      durableVolumeConfigured: DURABLE_VOLUME_CONFIGURED,
+      backupFileEnabled: true,
       lastSeenFeedRestore: true
+    },
+    watchdog: {
+      enabled: true,
+      intervalMs: WATCHDOG_INTERVAL_MS,
+      lastRunAt: watchdogLastRunAt,
+      lastRecoveryAt: watchdogLastRecoveryAt,
+      recoveryCount: watchdogRecoveryCount,
+      lastAction: watchdogLastAction,
+      inFlight: watchdogInFlight,
+      status: watchdogStatus()
     },
     lastSeenMessagesReady,
     customEggEmojisReady: eggCustomEmojiSetupState.ready,
