@@ -24,3 +24,6 @@ jobs:
 
       - name: Run tests and syntax check
         run: npm test
+
+      - name: Docker build smoke test
+        run: docker build --pull -t steal-an-egg-live-notifier:ci .
