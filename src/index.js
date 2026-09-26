@@ -150,9 +150,17 @@ async function sendAlert(event) {
   const rarity = String(event.rarity || "Unknown").trim();
   const area = String(event.biome || "Unknown").trim();
 
+  const rarityColors = {
+    secret: 0x8b5cf6,
+    eternal: 0xf59e0b,
+    divine: 0xef4444
+  };
+  const rarityColor = rarityColors[rarity.toLowerCase()] || 0x5865f2;
+
   const embed = new EmbedBuilder()
+    .setColor(rarityColor)
     .setTitle("🥚 " + rarity.toUpperCase() + " EGG SPAWNED!")
-    .setDescription("A rare egg has just spawned.")
+    .setDescription("A " + rarity.toLowerCase() + " egg has just spawned.")
     .addFields(
       { name: "🥚 Egg", value: eggName.slice(0, 1024), inline: true },
       { name: "✨ Rarity", value: rarity.slice(0, 1024), inline: true },
@@ -173,9 +181,24 @@ async function sendAlert(event) {
   try {
     await channel.send(payload);
   } catch (firstError) {
-    alertChannel = null;
-    const freshChannel = await getAlertChannel();
-    await freshChannel.send(payload);
+    // Retry once without the image in case the source image URL expired or is inaccessible.
+    if (event.imageUrl) {
+      const fallbackEmbed = EmbedBuilder.from(embed);
+      fallbackEmbed.setImage(null);
+      payload.embeds = [fallbackEmbed];
+      try {
+        await channel.send(payload);
+        console.warn("Alert image failed; sent alert without image.");
+      } catch (secondError) {
+        alertChannel = null;
+        const freshChannel = await getAlertChannel();
+        await freshChannel.send(payload);
+      }
+    } else {
+      alertChannel = null;
+      const freshChannel = await getAlertChannel();
+      await freshChannel.send(payload);
+    }
   }
 
   alertCount++;
@@ -288,6 +311,8 @@ client.on("interactionCreate", async (interaction) => {
         return await interaction.reply({ content: "❌ DISCORD_DEFAULT_CHANNEL_ID is not configured in Railway.", ephemeral: true });
       }
 
+      await interaction.deferReply({ ephemeral: true });
+
       const testEvent = {
         live: true,
         eggName: "Test Egg",
@@ -299,11 +324,13 @@ client.on("interactionCreate", async (interaction) => {
       };
 
       await sendAlert(testEvent);
-      return await interaction.reply({ content: "✅ Test egg alert sent successfully.", ephemeral: true });
+      return await interaction.editReply({ content: "✅ Test egg alert sent successfully." });
     }
   } catch (err) {
     console.error("Interaction failed:", err);
-    if (interaction.replied || interaction.deferred) {
+    if (interaction.deferred) {
+      await interaction.editReply({ content: "❌ Command failed: " + (err?.message || "unknown error") }).catch(() => {});
+    } else if (interaction.replied) {
       await interaction.followUp({ content: "❌ Command failed: " + (err?.message || "unknown error"), ephemeral: true }).catch(() => {});
     } else {
       await interaction.reply({ content: "❌ Command failed: " + (err?.message || "unknown error"), ephemeral: true }).catch(() => {});
