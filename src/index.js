@@ -265,10 +265,10 @@ const RIFT_SOURCE_BOT_IDS = new Set(
 );
 
 const RIFT_ALERT_MENTION_MODE = ["none", "role", "here"].includes(
-  String(process.env.RIFT_ALERT_MENTION_MODE || "none").toLowerCase()
+  String(process.env.RIFT_ALERT_MENTION_MODE || "role").toLowerCase()
 )
-  ? String(process.env.RIFT_ALERT_MENTION_MODE || "none").toLowerCase()
-  : "none";
+  ? String(process.env.RIFT_ALERT_MENTION_MODE || "role").toLowerCase()
+  : "role";
 
 const RIFT_ALERT_ROLE_ID = process.env.RIFT_ALERT_ROLE_ID || "";
 const RIFT_DEDUP_TTL_MS =
@@ -398,11 +398,10 @@ const EXPERIMENT_EMOJI_TEMPLATES = [
   }
 ];
 
-const EXPERIMENT_ROLE_NAMES = [
-  "「・EXPERIMENT EVENT」",
-  "EXPERIMENT EVENT",
-  "Experiment Event"
-];
+const EXPERIMENT_ROLE_NAME = "「・EXPERIMENT EVENT」";
+const RIFT_EVENT_ROLE_NAME = "「・RIFT EVENT」";
+const EVENT_ROLE_CACHE_TTL_MS = 5 * 60 * 1000;
+const eventRoleCache = new Map();
 
 const LAST_SEEN_RARITIES = ["secret", "eternal", "divine"];
 const NON_NEST_SPAWN_EGGS = new Set([
@@ -2738,25 +2737,73 @@ function getExperimentEmoji(key) {
     (key === "roblox" ? "🎮" : key === "loading" ? "⏳" : "🧪");
 }
 
-async function resolveExperimentRoleId(guild) {
+async function resolveEventAlertRoleId(guild, type) {
   if (!guild) return "";
+
+  const typeKey = type === "rift" ? "rift" : "experiment";
+  const roleName = typeKey === "rift"
+    ? RIFT_EVENT_ROLE_NAME
+    : EXPERIMENT_ROLE_NAME;
+
+  const cached = eventRoleCache.get(typeKey);
+  if (cached && Date.now() - cached.at < EVENT_ROLE_CACHE_TTL_MS) {
+    return cached.id;
+  }
 
   try {
     const roles = await guild.roles.fetch();
-    const targets = EXPERIMENT_ROLE_NAMES.map(normalizeFeedKey);
-    const role = roles.find(candidate =>
-      targets.includes(normalizeFeedKey(candidate?.name || ""))
+    let role = roles.find(candidate =>
+      normalizeFeedKey(candidate?.name || "") === normalizeFeedKey(roleName) &&
+      candidate.editable
     );
 
     if (role) {
-      console.log("Auto-resolved experiment alert role:", role.name, role.id);
+      if (role.permissions.bitfield !== 0n || !role.mentionable || role.hoist) {
+        await role.edit({
+          permissions: [],
+          mentionable: true,
+          hoist: false,
+          reason: "Steal An Egg event alert role • mention-only • zero permissions"
+        });
+        role = await guild.roles.fetch(role.id);
+      }
+
+      eventRoleCache.set(typeKey, { id: role.id, at: Date.now() });
+      console.log("Event alert role ready:", typeKey, role.name, role.id);
       return role.id;
     }
-  } catch (error) {
-    console.warn("Experiment role lookup failed:", error?.message || error);
-  }
 
-  return "";
+    if (!guild.members.me?.permissions?.has(PermissionFlagsBits.ManageRoles)) {
+      console.warn("Cannot create event alert role; Manage Roles permission is missing:", typeKey);
+      eventRoleCache.set(typeKey, { id: "", at: Date.now() });
+      return "";
+    }
+
+    role = await guild.roles.create({
+      name: roleName,
+      colors: { primaryColor: typeKey === "rift" ? 0x8b5cf6 : 0xec4899 },
+      permissions: [],
+      mentionable: true,
+      hoist: false,
+      reason: "Steal An Egg event alert role • mention-only • zero permissions"
+    });
+
+    eventRoleCache.set(typeKey, { id: role.id, at: Date.now() });
+    console.log("Created event alert role:", typeKey, role.name, role.id);
+    return role.id;
+  } catch (error) {
+    console.warn("Event alert role setup failed for " + typeKey + ":", error?.message || error);
+    eventRoleCache.set(typeKey, { id: "", at: Date.now() });
+    return "";
+  }
+}
+
+async function resolveExperimentRoleId(guild) {
+  return resolveEventAlertRoleId(guild, "experiment");
+}
+
+async function resolveRiftRoleId(guild) {
+  return resolveEventAlertRoleId(guild, "rift");
 }
 
 async function ensureExperimentCustomEmoji(guild, template, sourceEmoji = null) {
@@ -3721,6 +3768,14 @@ async function ensureAlertRoles() {
       console.warn("Alert role setup failed for " + rarity + ":", error?.message || error);
     }
   }
+
+  for (const type of ["rift", "experiment"]) {
+    try {
+      await resolveEventAlertRoleId(alertChannel.guild, type);
+    } catch (error) {
+      console.warn("Event role setup failed for " + type + ":", error?.message || error);
+    }
+  }
 }
 
 async function validateAlertRoles() {
@@ -3782,9 +3837,9 @@ function buildAlertEmbed(event, _latencyMs = null, includeImage = true) {
   const embed = new EmbedBuilder()
     .setColor(
       {
-        secret: 0x7c3aed,
-        eternal: 0xf59e0b,
-        divine: 0xef4444
+        secret: 0x18181b,
+        eternal: 0xec4899,
+        divine: 0xfacc15
       }[rarityKey] || 0x5865f2
     )
     .setTitle(emoji + "  " + petName.slice(0, 200))
@@ -3929,9 +3984,7 @@ async function sendRiftAlert(event, options = {}) {
     event?.type || "unknown",
     event?.bannerKey || event?.bossName || "unknown",
     event?.changedLabel || event?.nextChangeLabel || event?.createdTimestamp || "unknown"
-  ]
-    .join("|")
-    .toLowerCase();
+  ].join("|").toLowerCase();
 
   if (!isTest) {
     const previous = seenRiftAlerts.get(dedupKey) || 0;
@@ -3940,49 +3993,29 @@ async function sendRiftAlert(event, options = {}) {
   }
 
   const channel = await getAlertChannel();
+  const roleId = await resolveRiftRoleId(channel.guild);
+
   const alertLine =
     event.type === "banner"
-      ? "🟣 **The Rift shifted — " + event.bannerName + " is now active!**"
-      : "🌀 **Abyss Overlord is active!**";
-
-  let mentionContent = alertLine;
-  const roleId = RIFT_ALERT_ROLE_ID;
-
-  if (RIFT_ALERT_MENTION_MODE === "role" && roleId) {
-    mentionContent = "<@&" + roleId + "> " + alertLine;
-  } else if (RIFT_ALERT_MENTION_MODE === "here") {
-    mentionContent = "@here " + alertLine;
-  }
+      ? "The Rift shifted — " + event.bannerName + " is now active!"
+      : "Abyss Overlord is active!";
 
   const message = await channel.send({
-    content: mentionContent,
+    content: (roleId ? "<@&" + roleId + "> " : "") + alertLine,
     embeds: [buildRiftAlertEmbed(event)],
     components: [buildRiftActionRow(event)],
     allowedMentions: {
-      parse: RIFT_ALERT_MENTION_MODE === "here" ? ["everyone"] : [],
-      roles: RIFT_ALERT_MENTION_MODE === "role" && roleId ? [roleId] : []
+      roles: roleId ? [roleId] : []
     }
   });
 
   recordRiftHistory(event, isTest);
 
-  if (event.type === "banner") {
-    const data = getRiftData(event.bannerKey);
-
-    console.log(
-      "Rift banner alert sent:",
-      event.bannerName,
-      "rotationChance=" + (data?.rotationChance || "unknown"),
-      "message=" + message.id,
-      "source=" + (event.sourceName || "unknown")
-    );
-  } else {
-    console.log(
-      "Rift boss alert sent:",
-      event.bossName || "Abyss Overlord",
-      "message=" + message.id
-    );
-  }
+  console.log(
+    event.type === "banner" ? "Rift banner alert sent:" : "Rift boss alert sent:",
+    event.bannerName || event.bossName || "Abyss Overlord",
+    "message=" + message.id
+  );
 
   return true;
 }
@@ -4003,28 +4036,24 @@ async function sendExperimentAlert(event, options = {}) {
   await ensureExperimentCustomEmojis(event.customEmojis || []);
 
   const roleId = await resolveExperimentRoleId(channel.guild);
-  const scrambleEmoji = getExperimentEmoji("scramble");
-
-  const mentionContent =
-    (roleId ? "<@&" + roleId + "> " : "") +
-    scrambleEmoji +
-    " **A Forbidden Experiment Has Appeared!**";
-
-  const embed = buildExperimentAlertEmbed(event, {
-    scramble: scrambleEmoji,
-    roblox: getExperimentEmoji("roblox"),
-    loading: getExperimentEmoji("loading")
-  });
-
-  const row = buildExperimentActionRow(event);
   const payload = {
-    content: mentionContent,
-    embeds: [embed],
-    components: row ? [row] : undefined,
+    content:
+      (roleId ? "<@&" + roleId + "> " : "") +
+      "A Forbidden Experiment has appeared!",
+    embeds: [
+      buildExperimentAlertEmbed(event, {
+        scramble: getExperimentEmoji("scramble"),
+        roblox: getExperimentEmoji("roblox"),
+        loading: getExperimentEmoji("loading")
+      })
+    ],
     allowedMentions: {
       roles: roleId ? [roleId] : []
     }
   };
+
+  const row = buildExperimentActionRow(event);
+  if (row) payload.components = [row];
 
   const message = await channel.send(payload);
 
@@ -5122,6 +5151,7 @@ client.on("interactionCreate", async interaction => {
       petPngBufferCache.clear();
       imageFallbackCache.clear();
       resolvedRoleCache.clear();
+      eventRoleCache.clear();
 
       if (CHANNEL_ID) {
         await getAlertChannel();
@@ -5276,6 +5306,7 @@ client.on("shardReconnecting", shardId => {
   lastSeenMessageCache.clear();
   lastSeenMessagesInitInFlight = null;
   resolvedRoleCache.clear();
+  eventRoleCache.clear();
   console.warn("Discord shard reconnecting:", shardId);
 });
 
@@ -5291,6 +5322,7 @@ client.on("shardDisconnect", (event, shardId) => {
   lastSeenMessageCache.clear();
   lastSeenMessagesInitInFlight = null;
   resolvedRoleCache.clear();
+  eventRoleCache.clear();
   console.warn("Discord shard disconnected:", shardId, event?.code || "unknown");
 });
 
