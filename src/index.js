@@ -931,7 +931,24 @@ function ensureCatalogEgg(eggName, rarity, area = "Unknown") {
 
   eggImageCatalog.push(dynamic);
   dedupeCatalogEntries();
+
+  // If canonical cleanup found an older equivalent entry, keep that entry and
+  // do not misreport the observation as a genuinely new catalog item.
+  const canonicalIdentity = eggIdentityKey(dynamic.eggName);
+  const canonicalEntry =
+    eggImageCatalog.find(candidate => {
+      const rawName =
+        candidate?.eggName ||
+        candidate?.displayName ||
+        (candidate?.petName ? candidate.petName + " Egg" : "");
+      return eggIdentityKey(rawName) === canonicalIdentity;
+    }) || dynamic;
+
   scheduleStateSave();
+
+  if (canonicalEntry !== dynamic) {
+    return canonicalEntry;
+  }
 
   console.log(
     "Auto-discovered new egg:",
