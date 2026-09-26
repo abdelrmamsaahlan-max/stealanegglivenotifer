@@ -1677,9 +1677,13 @@ function persistSuppressedDetection(event, reason, confidence, evidence) {
       "Detection"
     ).slice(0, 200),
     description: String(reason || "reliability_guard").slice(0, 800),
-    date: eventOccurredAt(event)
-      ? new Date(eventOccurredAt(event)).toISOString()
-      : new Date().toISOString(),
+    date: (() => {
+      const value = eventOccurredAt(event);
+      const parsed = value == null ? NaN : new Date(value).getTime();
+      return Number.isFinite(parsed)
+        ? new Date(parsed).toISOString()
+        : new Date().toISOString();
+    })(),
     sourceEventId:
       event?.sourceEventId ||
       event?.sourceMessageId ||
@@ -2596,27 +2600,33 @@ async function removeSimpleBackground(input) {
 
     if (!width || !height || width * height > 600000) return null;
 
-    const samplePoints = [
-      [0, 0],
-      [Math.max(0, width - 1), 0],
-      [0, Math.max(0, height - 1)],
-      [Math.max(0, width - 1), Math.max(0, height - 1)],
-      [Math.floor(width / 2), 0],
-      [Math.floor(width / 2), Math.max(0, height - 1)],
-      [0, Math.floor(height / 2)],
-      [Math.max(0, width - 1), Math.floor(height / 2)]
+    const samplePoints = [];
+    const fractions = [0, 0.10, 0.22, 0.35, 0.50, 0.65, 0.78, 0.90, 1];
+
+    for (const fraction of fractions) {
+      const x = Math.min(width - 1, Math.max(0, Math.round((width - 1) * fraction)));
+      const y = Math.min(height - 1, Math.max(0, Math.round((height - 1) * fraction)));
+      samplePoints.push([x, 0], [x, height - 1]);
+      samplePoints.push([0, y], [width - 1, y]);
+    }
+
+    const backgroundSamples = [
+      ...new Map(
+        samplePoints.map(([x, y]) => {
+          const color = nearestCornerColor(data, info, x, y);
+          return [color.join(","), color];
+        })
+      ).values()
     ];
 
-    const background = medianColor(
-      samplePoints.map(([x, y]) => nearestCornerColor(data, info, x, y))
-    );
+    const background = medianColor(backgroundSamples);
 
     const visited = new Uint8Array(width * height);
     const queue = new Int32Array(width * height);
     let head = 0;
     let tail = 0;
 
-    const maxDistance = 76;
+    const maxDistance = 82;
     const pixelsToCheck = [];
 
     function trySeed(x, y) {
@@ -2630,7 +2640,7 @@ async function removeSimpleBackground(input) {
         return;
       }
 
-      const distance = colorDistance(
+      const distanceToMedian = colorDistance(
         data[offset],
         data[offset + 1],
         data[offset + 2],
@@ -2639,7 +2649,25 @@ async function removeSimpleBackground(input) {
         background[2]
       );
 
-      if (distance <= maxDistance) {
+      const distanceToEdgeSample = backgroundSamples.reduce(
+        (best, color) => Math.min(
+          best,
+          colorDistance(
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            color[0],
+            color[1],
+            color[2]
+          )
+        ),
+        Number.POSITIVE_INFINITY
+      );
+
+      if (
+        distanceToMedian <= maxDistance ||
+        distanceToEdgeSample <= Math.min(96, maxDistance + 20)
+      ) {
         visited[index] = 1;
         queue[tail++] = index;
       }
