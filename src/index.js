@@ -824,10 +824,23 @@ function ensureCatalogEgg(eggName, rarity, area = "Unknown") {
     return null;
   }
 
-  let existing = findCatalogEgg(eggName);
+  const petKey = normalizeFeedKey(String(eggName).replace(/\s+Egg$/i, ""));
+
+  // Canonical + pet-key lookup prevents Auto Discovery from creating
+  // duplicate runtime entries when an upstream source uses "Divine Kitsune Egg"
+  // while the verified catalog stores "Kitsune Egg" with that form as an alias.
+  let existing = eggImageCatalog.find(candidate => {
+    const candidateEggKey = normalizeFeedKey(
+      candidate?.eggName ||
+      candidate?.displayName ||
+      (candidate?.petName ? candidate.petName + " Egg" : "")
+    );
+    const candidatePetKey = normalizeFeedKey(candidate?.petName || "");
+
+    return candidateEggKey === eggKey || candidatePetKey === petKey;
+  }) || findCatalogEgg(eggName);
 
   if (!existing) {
-    const petKey = normalizeFeedKey(String(eggName).replace(/\s+Egg$/i, ""));
     existing = eggImageCatalog.find(candidate => {
       const candidatePetKey = normalizeFeedKey(candidate?.petName || "");
       const aliases = Array.isArray(candidate?.aliases)
