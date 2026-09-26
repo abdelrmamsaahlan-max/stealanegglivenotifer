@@ -143,8 +143,12 @@ export function parseRiftChange(data) {
   );
 
   const directBanner = combined.match(/\b(Riftborn|Riftbeasts|Shattered\s+Rift)\b/i);
+
+  // A plain mention of a Rift egg/shop item is not a rotation event.
+  // Direct banner fallback requires an actual rotation/status signal.
   const rotationSignal =
-    /\b(?:Rift|Changed|Change|Next\s+Change|Rotation\s+Chance|Current\s+Egg|Current\s+Rift|Active\s+Banner|Banner)\b/i.test(combined);
+    /\b(?:Changed|Change|Next\s+Change|Rotation\s+Chance|Current\s+Egg|Current\s+Rift|Active\s+Banner|Banner)\b/i.test(combined) ||
+    /\b(?:is\s+now\s+active|is\s+active|active\s+now|went\s+live|live\s+now|became\s+active|selected|shifted)\b/i.test(combined);
 
   const bannerKey = toRiftKey(
     bannerMatch?.[1] ||
