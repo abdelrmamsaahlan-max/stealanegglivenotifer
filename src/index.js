@@ -339,6 +339,16 @@ const AUTO_DISCOVERY_SOURCES = [
     parseEggs: true,
     parseEvents: true,
     followLinks: false
+  },
+  {
+    key: "status-hub",
+    name: "Steal An Egg Status Hub",
+    url: "https://stealanegg.store/game-status",
+    rank: 9,
+    parseUpdates: false,
+    parseEggs: false,
+    parseEvents: true,
+    followLinks: true
   }
 ];
 
@@ -774,8 +784,58 @@ function ensureCatalogEgg(eggName, rarity, area = "Unknown") {
     return null;
   }
 
-  const existing = findCatalogEgg(eggName);
-  if (existing) return existing;
+  let existing = findCatalogEgg(eggName);
+
+  if (!existing) {
+    const petKey = normalizeFeedKey(String(eggName).replace(/\s+Egg$/i, ""));
+    existing = eggImageCatalog.find(candidate => {
+      const candidatePetKey = normalizeFeedKey(candidate?.petName || "");
+      const aliases = Array.isArray(candidate?.aliases)
+        ? candidate.aliases.map(normalizeFeedKey)
+        : [];
+
+      return (
+        candidatePetKey === petKey ||
+        aliases.includes(petKey) ||
+        aliases.includes(normalizeFeedKey(eggName))
+      );
+    }) || null;
+
+    if (existing) {
+      const canonicalKey = normalizeFeedKey(existing.eggName);
+      const incomingKey = normalizeFeedKey(eggName);
+
+      if (canonicalKey !== incomingKey) {
+        existing.aliases = [
+          ...new Set([
+            ...(Array.isArray(existing.aliases) ? existing.aliases : []),
+            eggName,
+            String(eggName).replace(/\s+Egg$/i, "")
+          ])
+        ];
+        console.log(
+          "Auto catalog repair: merged alias",
+          eggName,
+          "into",
+          existing.eggName
+        );
+      }
+
+      if (
+        rarity &&
+        ["Secret", "Eternal", "Divine"].includes(normalizeRarityName(rarity))
+      ) {
+        existing.rarity = normalizeRarityName(rarity);
+      }
+
+      if (area && area !== "Unknown") {
+        existing.biome = String(area).trim();
+      }
+
+      scheduleStateSave();
+      return existing;
+    }
+  }
 
   if (!AUTO_DISCOVERY_ENABLED) return null;
 
@@ -2299,13 +2359,16 @@ async function runAutoDiscoverySweep() {
       metadataUpdated++;
     }
     const before = existing;
-    const entry = ensureCatalogEgg(
-      item.eggName,
-      item.rarity,
-      item.area || "Unknown"
-    );
+    const entry =
+      Number(item.confidence || 0) >= 55
+        ? ensureCatalogEgg(
+            item.eggName,
+            item.rarity,
+            item.area || "Unknown"
+          )
+        : before;
 
-    if (entry && !before) {
+    if (entry && !before && Number(item.confidence || 0) >= 55) {
       added++;
       autoDiscoveredCount++;
       newlyAdded.push(entry);
@@ -2336,6 +2399,8 @@ async function runAutoDiscoverySweep() {
       });
     }, 0);
   }
+
+  const bestUpdate = chooseBestUpdate(updateCandidates, sourceRanks);
 
   const currentCatalogSnapshot = snapshotEggs(
     [...uniqueEggs.values()].map(item => ({
@@ -2377,7 +2442,9 @@ async function runAutoDiscoverySweep() {
     removed: catalogChanges.removed.length,
     changed: changedWithConfidence.length,
     metadataUpdated,
-    bestUpdate: bestUpdate?.title || null
+    bestUpdate: bestUpdate?.title || null,
+    bestUpdateConfidence: bestUpdate?.evidenceConfidence ?? null,
+    bestUpdateSources: bestUpdate?.evidenceSourceCount ?? 0
   };
 
   discoveryLastDecision = scanRecord;
@@ -4196,6 +4263,32 @@ app.get("/api/discovery", (_req, res) => {
     catalogSnapshot: discoveryCatalogSnapshot,
     changelog: discoveryChangelog.slice(0, 20)
   });
+});
+
+app.post("/api/discovery/scan", async (_req, res) => {
+  if (!AUTO_DISCOVERY_ENABLED) {
+    return res.status(503).json({ error: "discovery_disabled" });
+  }
+
+  if (autoDiscoveryInFlight) {
+    return res.status(409).json({ error: "scan_in_progress" });
+  }
+
+  try {
+    await scanForGameUpdates();
+    return res.json({
+      ok: true,
+      scan: discoveryLastDecision,
+      summary: autoDiscoveryLastSummary
+    });
+  } catch (error) {
+    monitorErrors++;
+    console.error("Manual discovery scan failed:", error);
+    return res.status(500).json({
+      error: "discovery_scan_failed",
+      detail: String(error?.message || error).slice(0, 200)
+    });
+  }
 });
 
 app.get("/api/rift", (_req, res) => {
