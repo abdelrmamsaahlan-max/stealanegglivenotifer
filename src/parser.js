@@ -83,12 +83,23 @@ export function parseSpawn(data, allowedRarities) {
   const rarity = rarityKey[0].toUpperCase() + rarityKey.slice(1);
 
   const getField = (...names) => {
-    for (const name of names) {
-      const wanted = normalizeLabel(name);
+    const wantedNames = names.map(normalizeLabel);
+
+    // Prefer exact labels first so fields like "Egg Chance" do not win over "Egg".
+    for (const wanted of wantedNames) {
       for (const [key, value] of fieldMap) {
-        if (key === wanted || key.includes(wanted) || wanted.includes(key)) return value;
+        if (key === wanted) return value;
       }
     }
+
+    // Only use fuzzy matching for meaningful multi-word labels.
+    for (const wanted of wantedNames) {
+      if (wanted.length < 4) continue;
+      for (const [key, value] of fieldMap) {
+        if (key.startsWith(wanted + " ") || key.endsWith(" " + wanted)) return value;
+      }
+    }
+
     return "";
   };
 
@@ -114,6 +125,7 @@ export function parseSpawn(data, allowedRarities) {
   if (!eggName) {
     const eggPatterns = [
       /(?:egg|item)\s*(?:name|type)?\s*[:：\-]\s*([^\n|]+)/i,
+      /(?:secret|eternal|divine)\s+egg\s*[:：\-]\s*([^\n|]+?)(?=\s+(?:in|at|on|near)\s+|$)/i,
       /(?:secret|eternal|divine)\s+(?:egg\s+)?(?:spawned|appeared|has\s+spawned|has\s+appeared)\s*[:：\-]?\s*([^\n|]+?)(?=\s+(?:in|at|on|near)\s+|$)/i,
       /(?:spawned|appeared|has\s+spawned|has\s+appeared)\s*[:：\-]?\s*([^\n|]+?)(?=\s+(?:in|at|on|near)\s+|$)/i
     ];
@@ -154,11 +166,12 @@ export function parseSpawn(data, allowedRarities) {
   eggName = normalizeName(eggName, "Unknown Egg");
   area = normalizeName(area, "Unknown");
 
-  const spawnSignal = /\b(spawned|spawn|appeared|detected|found|just\s+spawned|new\s+egg|egg\s+alert|egg\s+has\s+appeared|has\s+spawned)\b/i.test(
-    combined.replace(/\s+/g, " ")
-  );
-
+  const compact = combined.replace(/\s+/g, " ");
+  const spawnSignal = /\b(spawned|spawn|appeared|detected|found|just\s+spawned|new\s+egg|egg\s+alert|egg\s+has\s+appeared|has\s+spawned)\b/i.test(compact);
+  const explicitRarityEggSignal = /\b(secret|eternal|divine)\s+egg\s*[:：\-]/i.test(compact);
   const structuredSignal = Boolean(getField("egg", "egg name", "egg type", "item", "item name"));
+
+  if (!spawnSignal && !explicitRarityEggSignal && !structuredSignal) return null;
   if (!spawnSignal && !structuredSignal) return null;
 
   const cleanedOptional = {};
