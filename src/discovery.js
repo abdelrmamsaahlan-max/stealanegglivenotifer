@@ -518,6 +518,42 @@ export function extractDiscoveryEvents(html, source = "Auto Discovery") {
 
   const found = [];
 
+  // Generic event discovery: catch genuinely new event names without treating
+  // normal updates, patches, bug fixes, or changelog headings as events.
+  const ignoredEventWords =
+    /\b(?:update|version|patch|hotfix|bug\s*fix|bugfix|changelog|release\s*notes?|fixes?|improvements?|performance|maintenance)\b/i;
+  const genericEventLine =
+    /\b(?:event|festival|invasion|hunt|celebration|parade|takeover|showdown|war|vs\.?|season)\b/i;
+
+  for (const line of lines) {
+    const candidate = cleanText(line);
+    if (
+      !candidate ||
+      candidate.length < 5 ||
+      candidate.length > 180 ||
+      ignoredEventWords.test(candidate) ||
+      !genericEventLine.test(candidate) ||
+      /^https?:\/\//i.test(candidate)
+    ) {
+      continue;
+    }
+
+    const title = candidate
+      .replace(/^[•\-*–—:|\s]+/, "")
+      .replace(/[|:]+$/, "")
+      .trim();
+
+    if (!title || /^event$/i.test(title) || /^events$/i.test(title)) continue;
+
+    found.push({
+      type: "generic_event",
+      title: title.slice(0, 200),
+      description: title.slice(0, 800),
+      date: parseDateText(title),
+      source: String(source || "Auto Discovery").slice(0, 120)
+    });
+  }
+
   for (const pattern of patterns) {
     const match = text.match(pattern.re);
     if (!match?.[0]) continue;
