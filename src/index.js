@@ -50,6 +50,8 @@ const COMMANDS = [
         .setRequired(false)
     ),
   new SlashCommandBuilder().setName("lastseen").setDescription("Show recently detected rare eggs."),
+  new SlashCommandBuilder().setName("history").setDescription("Show the latest rare egg spawn history."),
+  new SlashCommandBuilder().setName("events").setDescription("Show discovered game events and updates."),
   new SlashCommandBuilder()
     .setName("testrole")
     .setDescription("Test a rarity role mention.")
@@ -145,14 +147,22 @@ const AUTO_DISCOVERY_POLL_MS =
   Math.max(30_000, Number(process.env.AUTO_DISCOVERY_POLL_SECONDS || 120) * 1000);
 
 const AUTO_DISCOVERY_URLS = [
+  "https://robloxstealanegg.wiki/",
   "https://eggwatcher.com/guides/how-the-live-feed-works",
-  "https://eggipedia.com/updates"
+  "https://robloxstealanegg.wiki/updates/light-vs-darkness/"
 ];
 
 let autoDiscoveryTimer = null;
 let imageWarmupInFlight = false;
 let autoDiscoveryLastFingerprint = "";
 let autoDiscoveredCount = 0;
+let lastUpdateFingerprint = "";
+let lastUpdateCheckAt = null;
+let lastUpdateTitle = null;
+const spawnHistory = [];
+const gameEventHistory = [];
+const MAX_HISTORY = 100;
+const MAX_EVENT_HISTORY = 30;
 
 function normalizePublicBaseUrl(value) {
   const raw = String(value || "").trim();
@@ -1147,6 +1157,8 @@ async function pollEggWatch() {
       };
 
       try {
+        recordSpawnHistory(event, "EggWatch Global Feed");
+
         const existingKey = [
           event.rarity.toLowerCase(),
           normalizeFeedKey(event.eggName),
@@ -1249,46 +1261,149 @@ function extractSupportedEggsFromGuide(html) {
   return found;
 }
 
+function recordSpawnHistory(event, source = "EggWatch Global Feed") {
+  const timestamp = Date.parse(event?.spawnedAt);
+  const record = {
+    id: event?.sourceEventId || [
+      normalizeFeedKey(event?.rarity),
+      normalizeFeedKey(event?.eggName),
+      normalizeFeedKey(event?.biome),
+      event?.spawnedAt || Date.now()
+    ].join("|"),
+    eggName: event?.eggName || "Unknown Egg",
+    petName: event?.displayName || event?.eggName || "Unknown",
+    rarity: event?.rarity || "Unknown",
+    area: event?.biome || "Unknown",
+    spawnedAt: Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : new Date().toISOString(),
+    detectedAt: new Date().toISOString(),
+    source
+  };
+
+  const same = spawnHistory.find(item => item.id === record.id);
+  if (same) return same;
+
+  spawnHistory.unshift(record);
+  if (spawnHistory.length > MAX_HISTORY) spawnHistory.length = MAX_HISTORY;
+  return record;
+}
+
+function recordGameEvent(event) {
+  const key = [
+    event.type || "event",
+    normalizeFeedKey(event.title),
+    event.date || "",
+    normalizeFeedKey(event.source)
+  ].join("|");
+
+  if (gameEventHistory.some(item => item.key === key)) return null;
+
+  const record = {
+    key,
+    type: event.type || "event",
+    title: String(event.title || "Game Event").slice(0, 200),
+    description: String(event.description || "").slice(0, 800),
+    date: event.date || null,
+    source: event.source || "Game Update Discovery",
+    detectedAt: new Date().toISOString()
+  };
+
+  gameEventHistory.unshift(record);
+  if (gameEventHistory.length > MAX_EVENT_HISTORY) {
+    gameEventHistory.length = MAX_EVENT_HISTORY;
+  }
+
+  return record;
+}
+
+function extractLatestUpdateFromHomepage(html) {
+  const text = decodeHtmlText(
+    String(html || "")
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<[^>]+>/g, "\n")
+  );
+
+  const lines = text.split("\n").map(decodeHtmlText).filter(Boolean);
+  const index = lines.findIndex(line => /latest update/i.test(line));
+
+  if (index === -1) return null;
+
+  const windowLines = lines.slice(index, index + 15);
+  const title = windowLines.find(line =>
+    /update\s*#?\d+|latest update|update$/i.test(line)
+  ) || windowLines[1] || null;
+
+  if (!title) return null;
+
+  return {
+    title: title.slice(0, 200),
+    description: windowLines.slice(1, 5).join(" ").slice(0, 800),
+    source: "robloxstealanegg.wiki"
+  };
+}
+
+function extractEventMentions(html) {
+  const text = decodeHtmlText(
+    String(html || "")
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<[^>]+>/g, "\n")
+  );
+
+  const patterns = [
+    { type: "limited_event", re: /\bDr\.?\s*Scramble\b[^\n]{0,180}/i },
+    { type: "limited_event", re: /\bAdmin Abuse\b[^\n]{0,180}/i },
+    { type: "limited_event", re: /\bAngels?\s*(?:vs|and)\s*Demons?\b[^\n]{0,180}/i },
+    { type: "game_update", re: /\bUpdate\s*#?\d+\b[^\n]{0,180}/i }
+  ];
+
+  const found = [];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern.re);
+    if (match?.[0]) {
+      found.push({
+        type: pattern.type,
+        title: match[0].trim().slice(0, 200),
+        description: match[0].trim().slice(0, 800),
+        source: "robloxstealanegg.wiki"
+      });
+    }
+  }
+
+  return found;
+}
+
 async function scanForGameUpdates() {
   if (!AUTO_DISCOVERY_ENABLED) return;
 
-  const discovered = [];
+  lastUpdateCheckAt = new Date().toISOString();
+  const supportedEggs = [];
+  const detectedEvents = [];
+  let homepageUpdate = null;
 
   for (const url of AUTO_DISCOVERY_URLS) {
     try {
       const { response, body } = await fetchLiveFeed(url);
       if (!response.ok) continue;
 
-      if (url.includes("/guides/how-the-live-feed-works")) {
-        discovered.push(...extractSupportedEggsFromGuide(body));
-        continue;
+      if (url === "https://robloxstealanegg.wiki/") {
+        homepageUpdate = extractLatestUpdateFromHomepage(body);
       }
 
-      const plain = String(body)
-        .replace(/<script[\s\S]*?<\/script>/gi, " ")
-        .replace(/<style[\s\S]*?<\/style>/gi, " ")
-        .replace(/<[^>]+>/g, "\n")
-        .replace(/&(?:nbsp|amp);/gi, " ")
-        .replace(/\s+/g, " ")
-        .trim();
-
-      const rareMatches = plain.match(
-        /\b(?:secret|eternal|divine)\b.{0,80}\begg\b/gi
-      ) || [];
-
-      for (const match of rareMatches) {
-        discovered.push({ text: match });
+      if (url.includes("how-the-live-feed-works")) {
+        supportedEggs.push(...extractSupportedEggsFromGuide(body));
       }
+
+      detectedEvents.push(...extractEventMentions(body));
     } catch (error) {
-      console.warn("Update discovery fetch failed:", url, error?.message || error);
+      console.warn("Auto discovery fetch failed:", url, error?.message || error);
     }
   }
 
   let added = 0;
 
-  for (const item of discovered) {
-    if (!item?.eggName || !item?.rarity) continue;
-
+  for (const item of supportedEggs) {
     const before = findCatalogEgg(item.eggName);
     const entry = ensureCatalogEgg(item.eggName, item.rarity, item.area || "Unknown");
 
@@ -1296,7 +1411,6 @@ async function scanForGameUpdates() {
       added++;
       autoDiscoveredCount++;
 
-      // Start preparing the transparent character PNG immediately.
       getPetPngBuffer(entry.petName)
         .then(buffer => {
           if (buffer) {
@@ -1316,7 +1430,31 @@ async function scanForGameUpdates() {
     }
   }
 
-  const fingerprint = discovered
+  if (homepageUpdate?.title) {
+    const updateFingerprint = normalizeFeedKey(
+      homepageUpdate.title + "|" + homepageUpdate.description
+    );
+
+    if (updateFingerprint !== lastUpdateFingerprint) {
+      lastUpdateFingerprint = updateFingerprint;
+      lastUpdateTitle = homepageUpdate.title;
+
+      recordGameEvent({
+        type: "game_update",
+        title: homepageUpdate.title,
+        description: homepageUpdate.description,
+        source: homepageUpdate.source
+      });
+
+      console.log("Game update discovery:", homepageUpdate.title);
+    }
+  }
+
+  for (const event of detectedEvents) {
+    recordGameEvent(event);
+  }
+
+  const fingerprint = supportedEggs
     .filter(item => item?.eggName && item?.rarity)
     .map(item => item.rarity + ":" + item.eggName)
     .sort()
@@ -1326,7 +1464,7 @@ async function scanForGameUpdates() {
     autoDiscoveryLastFingerprint = fingerprint;
     console.log(
       "Auto catalogue sync:",
-      discovered.filter(item => item?.eggName && item?.rarity).length,
+      supportedEggs.filter(item => item?.eggName && item?.rarity).length,
       "supported rare eggs; new=" + added
     );
   }
@@ -1871,7 +2009,27 @@ app.get("/health", (_req, res) => {
     backgroundRemovalEnabled: BACKGROUND_REMOVAL_ENABLED,
     autoDiscoveryEnabled: AUTO_DISCOVERY_ENABLED,
     autoDiscoveredCount,
+    lastUpdateCheckAt,
+    lastUpdateTitle,
+    spawnHistoryCount: spawnHistory.length,
+    gameEventHistoryCount: gameEventHistory.length,
     cachedPetImages: [...imageFallbackCache.keys()].filter(key => key.startsWith("pet:") && imageFallbackCache.get(key)?.url).length
+  });
+});
+
+app.get("/api/history", (_req, res) => {
+  res.json({
+    count: spawnHistory.length,
+    items: spawnHistory.slice(0, 50)
+  });
+});
+
+app.get("/api/events", (_req, res) => {
+  res.json({
+    count: gameEventHistory.length,
+    lastUpdateTitle,
+    lastUpdateCheckAt,
+    items: gameEventHistory.slice(0, 20)
   });
 });
 
@@ -1892,6 +2050,7 @@ app.post("/api/notify-egg", async (req, res) => {
   }
 
   try {
+    recordSpawnHistory(req.body, "Signed API");
     await sendAlert(req.body);
     return res.json({ accepted: true });
   } catch (error) {
@@ -1991,7 +2150,9 @@ client.on("interactionCreate", async interaction => {
         "📡 Discord source: " + sourceHealth(),
         "🌐 EggWatch feed: " + liveFeedHealth(),
         "🖼️ Character PNG: " + (BACKGROUND_REMOVAL_ENABLED ? "ENABLED" : "SOURCE ONLY"),
-        "🔄 Auto catalog: " + (AUTO_DISCOVERY_ENABLED ? "ENABLED" : "DISABLED") + " (" + autoDiscoveredCount + " new)" ,
+        "🔄 Auto catalog: " + (AUTO_DISCOVERY_ENABLED ? "ENABLED" : "DISABLED") + " (" + autoDiscoveredCount + " new)",
+        "🧾 Spawn history: " + spawnHistory.length,
+        "🎮 Game events: " + gameEventHistory.length,
         "🥚 Alerts sent: " + alertCount,
         "🔎 Detected: " + detectedCount,
         "⚡ Average latency: " + (latencySamples
@@ -2027,6 +2188,47 @@ client.on("interactionCreate", async interaction => {
 
       return await interaction.reply({
         content: "🕒 **Last Seen**\n" + text,
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    if (interaction.commandName === "history") {
+      if (!spawnHistory.length) {
+        return await interaction.reply({
+          content: "📭 No spawn history recorded yet.",
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      const historyText = spawnHistory.slice(0, 15).map(item =>
+        getRarityEmoji(item.rarity) +
+        " **" + item.petName + "** • " +
+        item.rarity +
+        " • 📍 " + item.area +
+        " • <t:" + Math.floor(new Date(item.spawnedAt).getTime() / 1000) + ":R>"
+      ).join("\\n");
+
+      return await interaction.reply({
+        content: "📜 **Rare Egg Spawn History**\\n" + historyText,
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    if (interaction.commandName === "events") {
+      if (!gameEventHistory.length) {
+        return await interaction.reply({
+          content: "📭 No game events or updates discovered yet.",
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      const eventText = gameEventHistory.slice(0, 10).map(item =>
+        "🎮 **" + item.title + "**\\n" +
+        (item.description || "No description available.")
+      ).join("\\n\\n");
+
+      return await interaction.reply({
+        content: "🛰️ **Game Events & Updates**\\n" + eventText.slice(0, 3900),
         flags: MessageFlags.Ephemeral
       });
     }
