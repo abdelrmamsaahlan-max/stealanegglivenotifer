@@ -91,6 +91,29 @@ const SEEN_TTL_MS =
 const SOURCE_STALE_AFTER_MS =
   Math.max(30, Number(process.env.SOURCE_STALE_AFTER_SECONDS || 180)) * 1000;
 
+
+const LIVE_FEED_ENABLED =
+  (process.env.LIVE_FEED_ENABLED || "true").toLowerCase() === "true";
+
+const LIVE_FEED_URLS = [
+  ...(process.env.LIVE_FEED_URLS || "").split(","),
+  process.env.LIVE_FEED_URL || "",
+  "https://eggwatcher.com/api/mobile-sync",
+  "https://eggwatcher.com/mobile-sync"
+]
+  .map(value => value.trim())
+  .filter(Boolean)
+  .filter((value, index, array) => array.indexOf(value) === index);
+
+const LIVE_FEED_POLL_MS =
+  Math.max(1000, Number(process.env.LIVE_FEED_POLL_MS || 2000));
+
+const LIVE_FEED_TIMEOUT_MS =
+  Math.max(1000, Number(process.env.LIVE_FEED_TIMEOUT_MS || 5000));
+
+const LIVE_FEED_MAX_AGE_MS =
+  Math.max(60, Number(process.env.LIVE_FEED_MAX_AGE_SECONDS || 600)) * 1000;
+
 const API_RATE_LIMIT_PER_MINUTE =
   Math.max(1, Number(process.env.INGEST_RATE_LIMIT_PER_MINUTE || 120));
 
@@ -137,6 +160,368 @@ let latencySamples = 0;
 let monitorErrors = 0;
 let lastSourceMessageAt = null;
 let lastSourceMessageId = null;
+
+let liveFeedLastFingerprint = null;
+let liveFeedLastEventAt = null;
+let liveFeedLastUrl = null;
+let liveFeedLastPollAt = null;
+let liveFeedEventsReceived = 0;
+let liveFeedEventsAccepted = 0;
+let liveFeedErrors = 0;
+let liveFeedPrimed = false;
+
+function parseTimestamp(value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const ms = value < 1e12 ? value * 1000 : value;
+    const date = new Date(ms);
+    return Number.isFinite(date.getTime()) ? date : null;
+  }
+
+  if (typeof value === "string" && value.trim()) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric) && /^\d{10,13}$/.test(value.trim())) {
+      const ms = numeric < 1e12 ? numeric * 1000 : numeric;
+      const date = new Date(ms);
+      return Number.isFinite(date.getTime()) ? date : null;
+    }
+
+    const parsed = new Date(value);
+    return Number.isFinite(parsed.getTime()) ? parsed : null;
+  }
+
+  return null;
+}
+
+function normalizeFeedKey(value) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function collectEggCandidates(value, path = [], out = []) {
+  if (!value || typeof value !== "object") return out;
+
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      collectEggCandidates(value[i], [...path, String(i)], out);
+    }
+    return out;
+  }
+
+  const keys = Object.keys(value);
+  const lower = new Map(keys.map(key => [key.toLowerCase(), key]));
+
+  const get = (...names) => {
+    for (const name of names) {
+      const real = lower.get(name.toLowerCase());
+      if (real != null && value[real] != null) return value[real];
+    }
+    return null;
+  };
+
+  const eggName = get(
+    "displayName", "eggName", "egg", "itemName", "item", "name", "title"
+  );
+
+  const rarity = get("rarity", "tier", "rarityName");
+  const area = get("spawnArea", "area", "location", "biome", "zone", "world", "place");
+  const spawnedAt = get(
+    "spawnedAt", "spawned_at", "detectedAt", "detected_at",
+    "timestamp", "time", "createdAt", "created_at", "date"
+  );
+
+  if (typeof eggName === "string" && typeof rarity === "string") {
+    const rarityKey = rarity.trim().toLowerCase();
+    if (["secret", "eternal", "divine"].includes(rarityKey)) {
+      const parsedTime = parseTimestamp(spawnedAt);
+      const pathText = path.join(".").toLowerCase();
+      let score = 0;
+
+      for (const marker of [
+        "latest", "current", "confirmed", "latestconfirmed",
+        "latestegg", "currentegg", "lastspawn", "recent", "feed"
+      ]) {
+        if (pathText.includes(marker)) score += 5;
+      }
+
+      if (parsedTime) score += 10;
+      if (typeof area === "string" && area.trim()) score += 2;
+
+      out.push({
+        eggName: eggName.trim(),
+        rarity: rarityKey[0].toUpperCase() + rarityKey.slice(1),
+        biome: typeof area === "string" && area.trim() ? area.trim() : "Unknown",
+        spawnedAt: parsedTime ? parsedTime.toISOString() : null,
+        score,
+        path: path.join(".")
+      });
+    }
+  }
+
+  for (const key of keys) {
+    collectEggCandidates(value[key], [...path, key], out);
+  }
+
+  return out;
+}
+
+function pickLatestEggFromFeed(payload) {
+  const candidates = collectEggCandidates(payload);
+  if (!candidates.length) return null;
+
+  candidates.sort((a, b) => {
+    const aTime = a.spawnedAt ? Date.parse(a.spawnedAt) : 0;
+    const bTime = b.spawnedAt ? Date.parse(b.spawnedAt) : 0;
+    if (b.score !== a.score) return b.score - a.score;
+    return bTime - aTime;
+  });
+
+  return candidates[0];
+}
+
+function feedStateLooksOffline(payload) {
+  try {
+    const json = JSON.stringify(payload).toLowerCase();
+
+    const explicitOffline =
+      /"watcher(?:status|_status|state)"\s*:\s*"(?:offline|disconnected|stopped)"/i.test(json) ||
+      /"watcheronline"\s*:\s*false/i.test(json) ||
+      /"connected"\s*:\s*false/i.test(json);
+
+    return explicitOffline;
+  } catch {
+    return false;
+  }
+}
+
+function parseEggWatchHtml(html) {
+  const text = String(html || "")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const rarityMatch = text.match(/\b(Secret|Eternal|Divine)\b/i);
+  if (!rarityMatch) return null;
+
+  const rarity = rarityMatch[1];
+  const eggMatch =
+    text.match(new RegExp("\\b" + rarity + "\\s+(?:Egg\\s+)?([^•|]+?)(?=Spawn area|Spawned|Detected|AUTO-CONFIRMED|$)", "i")) ||
+    text.match(/LATEST CONFIRMED EGG\s+([^•|]+?)(?=Spawn area|Spawned|Detected|AUTO-CONFIRMED|$)/i);
+
+  const areaMatch = text.match(/Spawn area\s*[:]?\s*([^•|]+?)(?=Spawned|Detected|AUTO-CONFIRMED|$)/i);
+  const timeMatch = text.match(/(?:Detected|Spawned)\s+([0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?\s*[AP]M)/i);
+
+  if (!eggMatch?.[1]) return null;
+
+  const now = new Date();
+  let spawnedAt = null;
+  if (timeMatch?.[1]) {
+    const parsed = new Date(now.toDateString() + " " + timeMatch[1]);
+    if (Number.isFinite(parsed.getTime())) spawnedAt = parsed.toISOString();
+  }
+
+  return {
+    eggName: eggMatch[1].replace(/\s+/g, " ").trim(),
+    rarity: rarity[0].toUpperCase() + rarity.slice(1).toLowerCase(),
+    biome: areaMatch?.[1]?.replace(/\s+/g, " ").trim() || "Unknown",
+    spawnedAt,
+    score: 1,
+    path: "html"
+  };
+}
+
+async function fetchLiveFeed(url) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), LIVE_FEED_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        "accept": "application/json,text/plain,text/html;q=0.9,*/*;q=0.8",
+        "user-agent": "FSMM-SAB-Live-Notifier/2.1"
+      },
+      signal: controller.signal
+    });
+
+    const body = await response.text();
+    return { response, body };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function pollEggWatch() {
+  if (!LIVE_FEED_ENABLED || !LIVE_FEED_URLS.length) return;
+
+  liveFeedLastPollAt = new Date().toISOString();
+
+  for (const url of LIVE_FEED_URLS) {
+    try {
+      const { response, body } = await fetchLiveFeed(url);
+
+      if (!response.ok) {
+        continue;
+      }
+
+      let payload = body;
+      const contentType = response.headers.get("content-type") || "";
+
+      if (contentType.includes("application/json")) {
+        try {
+          payload = JSON.parse(body);
+        } catch {
+          payload = body;
+        }
+      } else {
+        try {
+          payload = JSON.parse(body);
+        } catch {
+          // Keep HTML/text for the fallback parser below.
+        }
+      }
+
+      const candidate =
+        typeof payload === "string"
+          ? parseEggWatchHtml(payload)
+          : pickLatestEggFromFeed(payload);
+
+      if (!candidate || !candidate.eggName || !candidate.spawnedAt) {
+        liveFeedLastUrl = url;
+        continue;
+      }
+
+      liveFeedEventsReceived++;
+      liveFeedLastUrl = url;
+      liveFeedLastEventAt = candidate.spawnedAt;
+
+      const eventTime = Date.parse(candidate.spawnedAt);
+      if (!Number.isFinite(eventTime)) continue;
+
+      const fingerprint = [
+        normalizeFeedKey(candidate.eggName),
+        normalizeFeedKey(candidate.rarity),
+        normalizeFeedKey(candidate.biome),
+        candidate.spawnedAt
+      ].join("|");
+
+      if (!liveFeedPrimed) {
+        liveFeedPrimed = true;
+        liveFeedLastFingerprint = fingerprint;
+        console.log(
+          "EggWatch feed primed:",
+          candidate.rarity,
+          candidate.eggName,
+          "area=" + candidate.biome,
+          "spawnedAt=" + candidate.spawnedAt,
+          "url=" + url
+        );
+        return;
+      }
+
+      if (fingerprint === liveFeedLastFingerprint) return;
+
+      liveFeedLastFingerprint = fingerprint;
+
+      const ageMs = Date.now() - eventTime;
+      if (ageMs < -60_000 || ageMs > LIVE_FEED_MAX_AGE_MS) {
+        console.log(
+          "EggWatch feed changed but event is stale:",
+          candidate.rarity,
+          candidate.eggName,
+          "ageMs=" + ageMs
+        );
+        return;
+      }
+
+      if (feedStateLooksOffline(payload)) {
+        console.log("EggWatch feed changed while watcher is explicitly offline; skipping alert.");
+        return;
+      }
+
+      const event = {
+        live: true,
+        eggName: candidate.eggName,
+        displayName: candidate.eggName,
+        rarity: candidate.rarity,
+        biome: candidate.biome || "Unknown",
+        spawnedAt: candidate.spawnedAt,
+        source: "EggWatch Global Feed"
+      };
+
+      try {
+        const existingKey = [
+          event.rarity.toLowerCase(),
+          normalizeFeedKey(event.eggName),
+          normalizeFeedKey(event.biome)
+        ].join("|");
+
+        const previousSeen = seen.get(existingKey) || 0;
+        const now = Date.now();
+
+        if (now - previousSeen < SEMANTIC_DEDUP_WINDOW_MS) {
+          return;
+        }
+
+        seen.set(existingKey, now);
+        inFlightKeys.add(existingKey);
+
+        await sendAlert(event, ageMs >= 0 ? ageMs : null);
+        liveFeedEventsAccepted++;
+
+        console.log(
+          "Forwarded EggWatch feed event:",
+          existingKey,
+          "latencyMs=" + (ageMs >= 0 ? ageMs : "unknown")
+        );
+      } catch (error) {
+        liveFeedErrors++;
+        console.error("EggWatch alert forwarding failed:", error);
+      } finally {
+        inFlightKeys.delete([
+          event.rarity.toLowerCase(),
+          normalizeFeedKey(event.eggName),
+          normalizeFeedKey(event.biome)
+        ].join("|"));
+      }
+
+      return;
+    } catch (error) {
+      liveFeedErrors++;
+      console.error("EggWatch feed poll failed:", url, error?.message || error);
+    }
+  }
+}
+
+function startEggWatchPoller() {
+  if (!LIVE_FEED_ENABLED) {
+    console.log("EggWatch direct feed: disabled.");
+    return;
+  }
+
+  console.log(
+    "EggWatch direct feed enabled. Candidate URLs:",
+    LIVE_FEED_URLS.join(", ")
+  );
+
+  pollEggWatch().catch(error => {
+    liveFeedErrors++;
+    console.error("Initial EggWatch poll failed:", error);
+  });
+
+  setInterval(() => {
+    pollEggWatch().catch(error => {
+      liveFeedErrors++;
+      console.error("EggWatch poll cycle failed:", error);
+    });
+  }, LIVE_FEED_POLL_MS);
+}
 
 function getRarityEmoji(rarity) {
   return ALERT_EMOJIS[String(rarity || "").toLowerCase()] || "🥚";
@@ -536,7 +921,14 @@ app.get("/health", (_req, res) => {
       : null,
     monitorErrors,
     cacheSize: seen.size,
-    recentSpawns: recentSpawns.length
+    recentSpawns: recentSpawns.length,
+    liveFeedEnabled: LIVE_FEED_ENABLED,
+    liveFeedLastUrl,
+    liveFeedLastPollAt,
+    liveFeedLastEventAt,
+    liveFeedEventsReceived,
+    liveFeedEventsAccepted,
+    liveFeedErrors
   });
 });
 
@@ -610,6 +1002,8 @@ client.once("clientReady", async () => {
 setInterval(() => {
   cleanupCaches();
 }, 60_000);
+
+startEggWatchPoller();
 
 setInterval(() => {
   console.log(
