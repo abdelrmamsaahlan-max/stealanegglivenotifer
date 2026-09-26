@@ -2694,7 +2694,7 @@ function isTrustedPetImageUrl(value) {
       host === "steal-an-egg-roblox.wiki" ||
       host === "stealanegg-wiki.com";
 
-    const imageExtension = /\.png$/.test(pathName);
+    const imageExtension = /\.(?:png|webp|jpe?g)$/.test(pathName);
     const imagePath =
       pathName.startsWith("/images/") ||
       pathName.includes("/images/pets/");
@@ -2738,10 +2738,12 @@ async function resolvePetImageSource(petName) {
 
         if (
           response.ok &&
-          (contentType.startsWith("image/png") || /\.png(?:\?|$)/i.test(new URL(url).pathname))
+          contentType.startsWith("image/") &&
+          !contentType.includes("svg") &&
+          !contentType.includes("gif")
         ) {
           imageFallbackCache.set("pet:" + key, { url, at: Date.now() });
-          console.log("Pet PNG source found:", entry.petName);
+          console.log("Pet image source found:", entry.petName);
           return url;
         }
       } catch {}
@@ -2825,32 +2827,58 @@ async function getPetPngBuffer(petName) {
     });
 
     const contentType = String(response.headers.get("content-type") || "").toLowerCase();
-    if (!response.ok || !contentType.startsWith("image/png")) return null;
+    if (
+      !response.ok ||
+      !contentType.startsWith("image/") ||
+      contentType.includes("svg") ||
+      contentType.includes("gif")
+    ) {
+      return null;
+    }
 
     const contentLength = Number(response.headers.get("content-length") || 0);
     if (contentLength && contentLength > MAX_REMOTE_IMAGE_BYTES) return null;
 
     const input = Buffer.from(await response.arrayBuffer());
-    if (input.length > MAX_REMOTE_IMAGE_BYTES || !isPngBuffer(input)) {
-      console.warn("Rejected non-PNG pet image:", entry.petName);
+    if (input.length > MAX_REMOTE_IMAGE_BYTES || input.length < 64) {
       return null;
     }
 
-    if (input.length < 64) return null;
+    let pngBuffer;
+    try {
+      pngBuffer = await sharp(input, { failOn: "none" })
+        .png({
+          compressionLevel: 9,
+          adaptiveFiltering: true
+        })
+        .toBuffer();
+    } catch {
+      console.warn("Rejected unsupported pet image source:", entry.petName);
+      return null;
+    }
+
+    if (!isPngBuffer(pngBuffer)) {
+      console.warn("Pet image conversion did not produce PNG:", entry.petName);
+      return null;
+    }
 
     fs.mkdirSync(PET_IMAGE_DIR, { recursive: true });
     const tempPath = localPath + ".tmp";
-    fs.writeFileSync(tempPath, input);
+    fs.writeFileSync(tempPath, pngBuffer);
     fs.renameSync(tempPath, localPath);
 
     petPngBufferCache.set(key, {
-      buffer: input,
+      buffer: pngBuffer,
       at: Date.now(),
       transparent: false
     });
     trimImageCaches();
-    console.log("Pet PNG cached:", entry.petName);
-    return input;
+    console.log(
+      "Pet PNG cached:",
+      entry.petName,
+      "source=" + (contentType || "image/*")
+    );
+    return pngBuffer;
   } catch (error) {
     console.warn(
       "Pet PNG fetch failed for " + entry.petName + ":",
