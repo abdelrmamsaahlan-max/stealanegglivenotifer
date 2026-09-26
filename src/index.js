@@ -2476,6 +2476,49 @@ function getLastSeenEntries(rarity) {
       record: map.get(normalizeFeedKey(entry.eggName)) || null
     }));
 }
+function getEggVisuals(entry) {
+  const petKey = normalizeFeedKey(entry?.petName || entry?.eggName);
+
+  const icons = {
+    "king snake": "🐍",
+    "yeti": "❄️",
+    "cerberus": "🐺",
+    "kraken": "🦑",
+    "t rex": "🦖",
+    "tralaledon": "🦕",
+    "cosmic skeleton boss": "☠️",
+    "cosmic dragon": "🐉",
+    "stag": "🦌",
+    "mutant shark": "🦈",
+    "gargoyle": "🗿",
+    "razorfang": "🦷",
+    "pure jellyfish": "🪼",
+    "centaur": "🐎",
+    "ice dragon": "❄️",
+    "phoenix": "🔥",
+    "lava dragon": "🌋",
+    "el maja": "🦬",
+    "mosasaurus": "🦖",
+    "eternal lunar dragon": "🌙",
+    "oni tiger": "🐯",
+    "gorilla king": "🦍",
+    "skeleton horse": "🐴",
+    "pegasus": "🪽",
+    "kitsune": "🦊",
+    "unicorn": "🦄",
+    "nightflame": "🌑",
+    "world burner": "🌍",
+    "archangel": "👼",
+    "bomboclat crocolat": "🐊",
+    "strawberry elephant": "🍓"
+  };
+
+  return {
+    egg: "🥚",
+    pet: icons[petKey] || "✨"
+  };
+}
+
 
 function buildLastSeenEmbed(rarity) {
   const entries = getLastSeenEntries(rarity);
@@ -2513,10 +2556,13 @@ function buildLastSeenEmbed(rarity) {
         ? record.area
         : entry.biome || "Unknown";
 
+    const visuals = getEggVisuals(entry);
+    const eggName = entry.eggName || (entry.petName + " Egg");
+
     lines.push(
-      "🟢 **" + (entry.petName || record.petName || entry.eggName) +
-      "**\n> 📍 " + String(displayArea).slice(0, 70) +
-      "  •  <t:" + unix + ":R>"
+      visuals.egg + " **" + eggName + "** " + visuals.pet +
+      "\n> 📍 **" + String(displayArea).slice(0, 70) +
+      "**  •  <t:" + unix + ":R>"
     );
   }
 
@@ -2524,8 +2570,10 @@ function buildLastSeenEmbed(rarity) {
     lines.push("", "────── **NOT SEEN YET** ──────");
 
     for (const { entry } of sortedNever) {
+      const visuals = getEggVisuals(entry);
       lines.push(
-        "⚪ **" + (entry.petName || entry.eggName) + "**  •  Never seen"
+        visuals.egg + " **" + (entry.eggName || (entry.petName + " Egg")) +
+        "** " + visuals.pet + "  •  Never seen"
       );
     }
   }
@@ -2543,10 +2591,12 @@ function buildLastSeenEmbed(rarity) {
       ? Math.floor(latestTime / 1000)
       : Math.floor(Date.now() / 1000);
     const latestArea = latestRecord.area || "Unknown";
+    const latestEntry = sortedSeen[0]?.entry || null;
+    const latestVisuals = getEggVisuals(latestEntry || {});
 
     latestText =
-      "**" + (latestRecord.petName || latestRecord.eggName) + "** • 📍 " +
-      String(latestArea).slice(0, 45) +
+      latestVisuals.egg + " **" + (latestRecord.eggName || latestRecord.petName || "Unknown Egg") +
+      "** " + latestVisuals.pet + " • 📍 " + String(latestArea).slice(0, 45) +
       " • <t:" + latestUnix + ":R>";
   }
 
@@ -2563,8 +2613,8 @@ function buildLastSeenEmbed(rarity) {
     })
     .setTitle("🕒 " + lastSeenLabel(rarity) + " Last Seen")
     .setDescription(
-      "**Automatic spawn tracking**\n" +
-      "Updates this message whenever a confirmed spawn is detected.\n\n" +
+      "**🥚 Live Egg Tracker**\n" +
+      "Every entry shows its egg icon, monster icon, location, and latest spawn time.\n\n" +
       description
     )
     .addFields(
@@ -2587,7 +2637,7 @@ function buildLastSeenEmbed(rarity) {
       }
     )
     .setFooter({
-      text: "Steal An Egg • Last Seen • Auto-updated"
+      text: "🥚 Steal An Egg • Last Seen • Auto-updated"
     })
     .setTimestamp();
 }
