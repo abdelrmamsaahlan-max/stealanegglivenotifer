@@ -1380,6 +1380,7 @@ let liveFeedLastSuccessAt = null;
 let liveFeedHealthState = "WAITING";
 const liveFeedEndpointCooldownUntil = new Map();
 const liveFeedEndpointHealth = new Map();
+const liveFeedHealthPersistedAt = new Map();
 let liveFeedConsecutiveFailures = 0;
 let liveFeedRecoveryCount = 0;
 let liveFeedPrimaryUrl = null;
@@ -1423,6 +1424,31 @@ function updateLiveFeedEndpointHealth(url, patch = {}) {
   }
 
   liveFeedEndpointHealth.set(key, next);
+
+  const persistedAt = liveFeedHealthPersistedAt.get(key) || 0;
+  const shouldPersist =
+    previous.status !== next.status ||
+    previous.httpStatus !== next.httpStatus ||
+    Date.now() - persistedAt >= 60_000;
+
+  if (shouldPersist) {
+    liveFeedHealthPersistedAt.set(key, Date.now());
+    persistSourceHealth({
+      key: "live-feed-" + key,
+      url,
+      status: next.status,
+      lastSuccessAt: next.lastSuccessAt,
+      lastErrorAt: next.lastErrorAt,
+      consecutiveFailures: Number(next.failures || 0),
+      latencyMs: Number.isFinite(Number(next.latencyMs))
+        ? Number(next.latencyMs)
+        : null,
+      value: next
+    }).catch(error => {
+      recordMonitorError("storage", error, "Supabase live feed health persistence failed");
+    });
+  }
+
   return recovered;
 }
 
