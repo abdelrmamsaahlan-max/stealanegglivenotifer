@@ -42,6 +42,17 @@ test("ignores a rarity-only announcement", () => {
   assert.equal(result, null);
 });
 
+test("parses an explicit rarity egg label", () => {
+  const result = parseSpawn({
+    text: "Eternal Egg: Dragon Egg in Castle",
+    fields: []
+  }, allRarities);
+
+  assert.equal(result?.rarity, "Eternal");
+  assert.equal(result?.eggName, "Dragon Egg");
+  assert.equal(result?.biome, "Castle");
+});
+
 test("respects the configured rarity allow-list", () => {
   const result = parseSpawn({
     text: "Divine Egg Spawned: Omega Egg in Castle",
