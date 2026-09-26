@@ -146,10 +146,12 @@ const AUTO_DISCOVERY_ENABLED =
 const AUTO_DISCOVERY_POLL_MS =
   Math.max(30_000, Number(process.env.AUTO_DISCOVERY_POLL_SECONDS || 120) * 1000);
 
+const EVENT_ALERTS_ENABLED =
+  (process.env.EVENT_ALERTS_ENABLED || "true").toLowerCase() === "true";
+
 const AUTO_DISCOVERY_URLS = [
   "https://robloxstealanegg.wiki/",
-  "https://eggwatcher.com/guides/how-the-live-feed-works",
-  "https://robloxstealanegg.wiki/updates/light-vs-darkness/"
+  "https://eggwatcher.com/guides/how-the-live-feed-works"
 ];
 
 let autoDiscoveryTimer = null;
@@ -1225,37 +1227,45 @@ function extractSupportedEggsFromGuide(html) {
       .replace(/<[^>]+>/g, "\n")
   );
 
-  const sections = [
-    ["Secret", text.match(/###\s*Secret([\s\S]*?)(?=###\s*Eternal|$)/i)?.[1] || ""],
-    ["Eternal", text.match(/###\s*Eternal([\s\S]*?)(?=###\s*Divine|$)/i)?.[1] || ""],
-    ["Divine", text.match(/###\s*Divine([\s\S]*?)(?=###|$)/i)?.[1] || ""]
-  ];
+  const lines = text
+    .split(/\n+/)
+    .map(line => line.replace(/^[*\-•]\s*/, "").trim())
+    .filter(Boolean);
 
   const found = [];
+  let rarity = "";
 
-  for (const [rarity, section] of sections) {
-    const lines = section
-      .split(/\n+/)
-      .map(line => decodeHtmlText(line))
-      .map(line => line.replace(/^[*\-•]\s*/, "").trim())
-      .filter(Boolean);
+  for (const rawLine of lines) {
+    const line = decodeHtmlText(rawLine);
 
-    for (const line of lines) {
-      const match = line.match(
-        /^(.+?)\s+(Jungle|Snow|Volcano|Abyss Ocean|Prehistoric|Cosmic|Cherry Blossom|Titan Temple|Angels and Demons|Area not listed)$/i
-      );
-
-      if (!match) continue;
-
-      const name = match[1].replace(/\s+Egg$/i, "").trim();
-      if (!name) continue;
-
-      found.push({
-        eggName: name + " Egg",
-        rarity,
-        area: match[2]
-      });
+    if (/^Secret$/i.test(line)) {
+      rarity = "Secret";
+      continue;
     }
+    if (/^Eternal$/i.test(line)) {
+      rarity = "Eternal";
+      continue;
+    }
+    if (/^Divine$/i.test(line)) {
+      rarity = "Divine";
+      continue;
+    }
+    if (!rarity) continue;
+
+    const match = line.match(
+      /^(.+?)\s+(Jungle|Snow|Volcano|Abyss Ocean|Prehistoric|Cosmic|Cherry Blossom|Titan Temple|Angels and Demons|Area not listed)$/i
+    );
+
+    if (!match) continue;
+
+    const name = match[1].replace(/\s+Egg$/i, "").trim();
+    if (!name) continue;
+
+    found.push({
+      eggName: name + " Egg",
+      rarity,
+      area: match[2]
+    });
   }
 
   return found;
@@ -1374,6 +1384,48 @@ function extractEventMentions(html) {
   return found;
 }
 
+async function sendGameUpdateAlert(update, newEggs = []) {
+  if (!EVENT_ALERTS_ENABLED || !CHANNEL_ID || !update?.title) return;
+
+  try {
+    const channel = await getAlertChannel();
+
+    const eggText = newEggs.length
+      ? "\n\n🥚 New rare eggs: **" +
+        newEggs.slice(0, 12).map(item =>
+          item.petName || item.eggName.replace(/\s+Egg$/i, "")
+        ).join(", ") +
+        (newEggs.length > 12 ? " +" + (newEggs.length - 12) + " more" : "") +
+        "**"
+      : "";
+
+    const embed = new EmbedBuilder()
+      .setColor(0x3b82f6)
+      .setTitle("🆕 Game Update Detected")
+      .setDescription(
+        "**" + String(update.title).slice(0, 180) + "**\n" +
+        String(update.description || "A new Steal An Egg update was detected.").slice(0, 700) +
+        eggText
+      )
+      .addFields(
+        { name: "🎮 Game", value: "Steal An Egg", inline: true },
+        { name: "📡 Source", value: String(update.source || "Auto Discovery"), inline: true },
+        { name: "🕒 Detected", value: "<t:" + Math.floor(Date.now() / 1000) + ":R>", inline: true }
+      )
+      .setFooter({ text: "Steal An Egg • Update Monitor" })
+      .setTimestamp();
+
+    await channel.send({
+      content: "🆕 **Steal An Egg update detected!**",
+      embeds: [embed],
+      allowedMentions: { parse: [] }
+    });
+  } catch (error) {
+    monitorErrors++;
+    console.warn("Game update alert failed:", error?.message || error);
+  }
+}
+
 async function scanForGameUpdates() {
   if (!AUTO_DISCOVERY_ENABLED) return;
 
@@ -1435,7 +1487,7 @@ async function scanForGameUpdates() {
       homepageUpdate.title + "|" + homepageUpdate.description
     );
 
-    if (updateFingerprint !== lastUpdateFingerprint) {
+    if (!lastUpdateFingerprint) {
       lastUpdateFingerprint = updateFingerprint;
       lastUpdateTitle = homepageUpdate.title;
 
@@ -1446,8 +1498,34 @@ async function scanForGameUpdates() {
         source: homepageUpdate.source
       });
 
-      console.log("Game update discovery:", homepageUpdate.title);
+      console.log("Game update discovery primed:", homepageUpdate.title);
+    } else if (updateFingerprint !== lastUpdateFingerprint) {
+      lastUpdateFingerprint = updateFingerprint;
+      lastUpdateTitle = homepageUpdate.title;
+
+      const eventRecord = recordGameEvent({
+        type: "game_update",
+        title: homepageUpdate.title,
+        description: homepageUpdate.description,
+        source: homepageUpdate.source
+      });
+
+      if (eventRecord) {
+        await sendGameUpdateAlert(homepageUpdate, newlyAdded);
+        console.log("New game update detected:", homepageUpdate.title);
+      }
     }
+  }
+
+  if (newlyAdded.length && lastUpdateFingerprint) {
+    await sendGameUpdateAlert(
+      {
+        title: "New rare eggs added to the game catalog",
+        description: "The Steal An Egg rare-egg catalog changed.",
+        source: "Auto Catalog Sync"
+      },
+      newlyAdded
+    );
   }
 
   for (const event of detectedEvents) {
@@ -1773,9 +1851,17 @@ async function enrichAlertEvent(event) {
 
   if (cachedPng && Date.now() - cachedPng.at < PET_PNG_CACHE_TTL_MS) {
     event.imageBuffer = cachedPng.buffer;
-  } else {
-    // Do not block a live alert on neural-network/background processing.
-    // The catalog/update sync and startup warmer prepare images ahead of time.
+  }
+
+  const cachedSource = imageFallbackCache.get(normalizeFeedKey(entry.eggName));
+  if (!event.imageUrl) {
+    event.imageUrl =
+      cachedSource?.url ||
+      (PUBLIC_BASE_URL ? publicPetImageUrl(entry.petName) : null);
+  }
+
+  // Cache misses are processed completely in the background.
+  if (!cachedPng) {
     getPetPngBuffer(entry.petName)
       .then(buffer => {
         if (buffer) {
@@ -1783,10 +1869,6 @@ async function enrichAlertEvent(event) {
         }
       })
       .catch(() => {});
-  }
-
-  if (!event.imageUrl && PUBLIC_BASE_URL) {
-    event.imageUrl = publicPetImageUrl(entry.petName);
   }
 
   return event;
@@ -1839,8 +1921,10 @@ async function sendAlert(event, latencyMs = null) {
   const row = buildActionRow(event);
   if (row) payload.components = [row];
 
+  let sentMessage = null;
+
   try {
-    await channel.send(payload);
+    sentMessage = await channel.send(payload);
   } catch (firstError) {
     console.error("Primary alert send failed:", firstError);
     alertChannel = null;
@@ -1851,7 +1935,38 @@ async function sendAlert(event, latencyMs = null) {
       payload.embeds = [buildAlertEmbed(event, latencyMs, true)];
     }
 
-    await freshChannel.send(payload);
+    sentMessage = await freshChannel.send(payload);
+  }
+
+  if (!event.imageBuffer && sentMessage) {
+    const entry = findCatalogEgg(event.eggName || event.displayName);
+
+    if (entry?.petName) {
+      getPetPngBuffer(entry.petName)
+        .then(async buffer => {
+          if (!buffer) return;
+
+          await sentMessage.edit({
+            embeds: [
+              buildAlertEmbed(
+                { ...event, imageBuffer: buffer },
+                latencyMs,
+                true
+              )
+            ],
+            files: [{
+              attachment: buffer,
+              name: "egg-character.png",
+              description: "Transparent Steal An Egg character image"
+            }]
+          });
+
+          console.log("Post-send PNG attached:", entry.petName);
+        })
+        .catch(error => {
+          console.warn("Post-send PNG attach failed:", error?.message || error);
+        });
+    }
   }
 
   alertCount++;
@@ -1875,6 +1990,7 @@ async function sendAlert(event, latencyMs = null) {
 
   if (recentSpawns.length > 25) recentSpawns.length = 25;
 }
+
 
 async function processSpawnMessage(message) {
   if (!MONITOR_ENABLED || !message) return;
@@ -2251,7 +2367,9 @@ client.on("interactionCreate", async interaction => {
           "🌐 EggWatch: " + liveFeedHealth(),
           "🔄 Auto catalog: " + (AUTO_DISCOVERY_ENABLED ? "ON" : "OFF"),
           "⏱️ Uptime: " + hours + "h " + minutes + "m",
-          "💾 Cache: " + seen.size
+          "💾 Cache: " + seen.size,
+          "🧾 Spawn history: " + spawnHistory.length,
+          "🎮 Game events: " + gameEventHistory.length
         ].join("\n"),
         flags: MessageFlags.Ephemeral
       });
