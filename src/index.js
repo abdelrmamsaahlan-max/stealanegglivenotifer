@@ -358,6 +358,9 @@ const ADMIN_API_TOKEN = String(
   process.env.ADMIN_API_TOKEN || SECRET || ""
 ).trim();
 
+const ALERT_PIPELINE_SELF_TEST_ONCE =
+  String(process.env.ALERT_PIPELINE_SELF_TEST_ONCE || "false").toLowerCase() === "true";
+
 function loadDiscoverySources() {
   const raw = String(process.env.DISCOVERY_SOURCES_JSON || "").trim();
   if (!raw) return [];
@@ -682,6 +685,14 @@ function loadRuntimeState() {
         : null;
     }
 
+    if (typeof state.alertPipelineSelfTestAt === "string") {
+      alertPipelineSelfTestAt = state.alertPipelineSelfTestAt;
+    }
+
+    if (state.alertPipelineSelfTestResult && typeof state.alertPipelineSelfTestResult === "object") {
+      alertPipelineSelfTestResult = state.alertPipelineSelfTestResult;
+    }
+
     if (state.lastSeenMessageIds && typeof state.lastSeenMessageIds === "object") {
       for (const rarity of LAST_SEEN_RARITIES) {
         if (typeof state.lastSeenMessageIds[rarity] === "string") {
@@ -910,6 +921,8 @@ function saveRuntimeState() {
         [...seenExperimentAlerts.entries()]
           .slice(-300)
       ),
+      alertPipelineSelfTestAt,
+      alertPipelineSelfTestResult,
       liveFeed: {
         primed: liveFeedPrimed,
         lastFingerprint: liveFeedLastFingerprint,
@@ -1520,6 +1533,9 @@ let lastSourceMessageId = null;
 
 let liveFeedLastFingerprint = null;
 let liveFeedLastEventAt = null;
+let alertPipelineSelfTestAt = null;
+let alertPipelineSelfTestResult = null;
+let alertPipelineSelfTestInFlight = false;
 let liveFeedLastUrl = null;
 let liveFeedLastPollAt = null;
 let liveFeedEventsReceived = 0;
@@ -6125,6 +6141,75 @@ async function enrichAlertEvent(event, entryOverride = null) {
   return event;
 }
 
+async function runAlertPipelineSelfTest() {
+  if (!ALERT_PIPELINE_SELF_TEST_ONCE || alertPipelineSelfTestAt || alertPipelineSelfTestInFlight) {
+    return alertPipelineSelfTestResult;
+  }
+
+  if (!client.isReady() || !CHANNEL_ID) return null;
+
+  alertPipelineSelfTestInFlight = true;
+
+  try {
+    const entry =
+      findCatalogEgg("King Snake") ||
+      eggImageCatalog.find(item => isPetImageEligibleEntry(item));
+
+    if (!entry) {
+      throw new Error("self_test_catalog_entry_missing");
+    }
+
+    const testEvent = {
+      live: true,
+      eggName: entry.eggName,
+      displayName: entry.petName,
+      rarity: entry.rarity,
+      biome: entry.biome || "Jungle",
+      spawnedAt: new Date().toISOString(),
+      source: "Test",
+      selfTest: true
+    };
+
+    const sent = await sendAlert(testEvent);
+
+    alertPipelineSelfTestAt = new Date().toISOString();
+    alertPipelineSelfTestResult = {
+      ok: Boolean(sent),
+      sent: Boolean(sent),
+      eggName: entry.eggName,
+      petName: entry.petName,
+      channelConfigured: Boolean(CHANNEL_ID),
+      roleResolved: Boolean(await resolveAlertRoleId(entry.rarity)),
+      at: alertPipelineSelfTestAt
+    };
+
+    scheduleStateSave();
+
+    console.log(
+      "Alert pipeline self-test:",
+      sent ? "PASSED" : "FAILED",
+      entry.rarity,
+      entry.petName
+    );
+
+    return alertPipelineSelfTestResult;
+  } catch (error) {
+    alertPipelineSelfTestAt = new Date().toISOString();
+    alertPipelineSelfTestResult = {
+      ok: false,
+      sent: false,
+      at: alertPipelineSelfTestAt,
+      error: String(error?.message || error).slice(0, 500)
+    };
+
+    scheduleStateSave();
+    console.error("Alert pipeline self-test failed:", error);
+    return alertPipelineSelfTestResult;
+  } finally {
+    alertPipelineSelfTestInFlight = false;
+  }
+}
+
 function recordRiftHistory(event, test = false) {
   const record = {
     type: event.type,
@@ -7135,6 +7220,11 @@ app.get("/health", (_req, res) => {
     publicPngProxy: Boolean(PUBLIC_BASE_URL),
     sourceImageAlphaOnly: SOURCE_IMAGE_ALPHA_ONLY,
     persistence: persistenceStats(),
+    alertPipelineSelfTest: {
+      enabled: ALERT_PIPELINE_SELF_TEST_ONCE,
+      at: alertPipelineSelfTestAt,
+      result: alertPipelineSelfTestResult
+    },
     reliability: reliabilitySummary(),
     recoverySelfTests: recoverySelfTestResult,
     scramble: {
@@ -8237,6 +8327,14 @@ client.on("shardReconnecting", shardId => {
 
 client.on("shardReady", shardId => {
   console.log("Discord shard ready:", shardId);
+
+  if (ALERT_PIPELINE_SELF_TEST_ONCE && !alertPipelineSelfTestAt) {
+    setTimeout(() => {
+      runAlertPipelineSelfTest().catch(error => {
+        console.error("Alert pipeline self-test scheduling failed:", error);
+      });
+    }, 2500);
+  }
 });
 
 client.on("shardDisconnect", (event, shardId) => {
