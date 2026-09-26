@@ -1149,6 +1149,14 @@ function firstImageUrl(value) {
   return null;
 }
 
+function isPngBuffer(buffer) {
+  return Buffer.isBuffer(buffer) &&
+    buffer.length >= 8 &&
+    buffer.subarray(0, 8).equals(
+      Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+    );
+}
+
 function slugify(value) {
   return String(value || "")
     .toLowerCase()
@@ -1661,6 +1669,10 @@ async function getPetPngBuffer(petName) {
         .toBuffer();
     }
 
+    if (!isPngBuffer(pngBuffer)) {
+      throw new Error("pet_output_is_not_png");
+    }
+
     petPngBufferCache.set(key, { buffer: pngBuffer, at: Date.now() });
     trimImageCaches();
     return pngBuffer;
@@ -1719,13 +1731,6 @@ async function warmPetImageCache(options = {}) {
       }
 
       try {
-        const source = await resolvePetImageSource(entry.petName);
-        if (!source) {
-          failed.push(entry.petName);
-          console.warn("No usable pet image source found:", entry.petName);
-          continue;
-        }
-
         const buffer = await getPetPngBuffer(entry.petName);
         if (buffer) {
           warmed++;
@@ -1748,7 +1753,7 @@ async function warmPetImageCache(options = {}) {
         const key = normalizeFeedKey(entry.petName);
         failed.push(entry.petName);
         if (!imageFallbackCache.get("pet:" + key)?.url) {
-          console.warn("No usable pet image source found:", entry.petName);
+          console.warn("No usable PNG pet image available:", entry.petName);
         }
       }
     }
