@@ -3297,41 +3297,30 @@ function shouldAnnounceDiscoveredEvent(event, existedBefore) {
   if (!key || announcedDiscoveryEventKeys.has(key)) return false;
 
   const type = String(event?.type || "").toLowerCase();
-  const highSignal =
-    type === "official_event" ||
-    type === "limited_event" ||
-    type === "experiment_event" ||
-    type === "rift_event";
 
-  // Generic semantic matches are discovery hints only. They must never become
-  // public Discord alerts because discovery pages contain historical content.
-  if (!highSignal) return false;
-
-  if (!existedBefore) {
-    const combined = [
-      event?.title,
-      event?.description
-    ].join(" ");
-
-    return (
-      /dr\.?s*scramble['’]ss+revenge/i.test(combined) ||
-      /sammys+iss+coming/i.test(combined) ||
-      /forbiddens+experiment/i.test(combined) ||
-      /experiments+shop/i.test(combined)
-    );
-  }
+  // Discovery pages contain many historical events. Public alerts are limited
+  // to the explicit current Dr. Scramble finale so old page content cannot spam.
+  if (type !== "official_event") return false;
 
   const combined = [
     event?.title,
     event?.description
   ].join(" ");
 
-  return (
-    isTodayUtc(event?.date) &&
-    /dr\.?\s*scramble['’]s\s+revenge/i.test(combined)
-  );
-}
+  const isRevenge =
+    /dr\.?\s*scramble['’]s\s+revenge/i.test(combined) ||
+    (
+      /dr\.?\s*scramble/i.test(combined) &&
+      /(?:final\s+showdown|much\s+bigger|targets?\s+Ben)/i.test(combined)
+    );
 
+  if (!isRevenge) return false;
+
+  if (!existedBefore) return true;
+
+  return isTodayUtc(event?.date) ||
+    /dr\.?\s*scramble['’]s\s+revenge/i.test(combined);
+}
 async function scanForGameUpdates() {
   if (!AUTO_DISCOVERY_ENABLED || autoDiscoveryInFlight) return null;
   autoDiscoveryInFlight = true;
