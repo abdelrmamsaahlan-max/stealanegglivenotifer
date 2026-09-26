@@ -3301,11 +3301,25 @@ function shouldAnnounceDiscoveredEvent(event, existedBefore) {
     type === "official_event" ||
     type === "limited_event" ||
     type === "experiment_event" ||
-    type === "rift_event" ||
-    type === "generic_event";
+    type === "rift_event";
 
+  // Generic semantic matches are discovery hints only. They must never become
+  // public Discord alerts because discovery pages contain historical content.
   if (!highSignal) return false;
-  if (!existedBefore) return true;
+
+  if (!existedBefore) {
+    const combined = [
+      event?.title,
+      event?.description
+    ].join(" ");
+
+    return (
+      /dr\.?s*scramble['’]ss+revenge/i.test(combined) ||
+      /sammys+iss+coming/i.test(combined) ||
+      /forbiddens+experiment/i.test(combined) ||
+      /experiments+shop/i.test(combined)
+    );
+  }
 
   const combined = [
     event?.title,
@@ -3696,7 +3710,10 @@ async function runAutoDiscoverySweep() {
 
     recordGameEvent(event);
 
-    if (shouldAnnounceDiscoveredEvent(event, existedBefore)) {
+    if (
+      event.type !== "generic_event_hint" &&
+      shouldAnnounceDiscoveredEvent(event, existedBefore)
+    ) {
       const sent = await sendDiscoveredEventAlert(event);
 
       if (sent) {
