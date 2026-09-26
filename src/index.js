@@ -45,9 +45,6 @@ const client = new Client({
 const DEV_GUILD_ID = process.env.DISCORD_DEV_GUILD_ID || "";
 const COMMANDS = [
   new SlashCommandBuilder()
-    .setName("bot-ping")
-    .setDescription("Check that the bot is online and view its Discord WebSocket latency."),
-  new SlashCommandBuilder()
     .setName("bot-status")
     .setDescription("View live feed, alerts, Rift, images, roles, memory, uptime, and source status."),
   new SlashCommandBuilder()
@@ -86,7 +83,7 @@ const COMMANDS = [
     .setDescription("Run a full health check for Discord, EggWatch, Rift, alerts, images, memory, and storage."),
   new SlashCommandBuilder()
     .setName("role-test")
-    .setDescription("Send a test mention for a Secret, Eternal, or Divine alert role.")
+    .setDescription("Admin: send a test mention for a Secret, Eternal, or Divine alert role.")
     .addStringOption(option =>
       option
         .setName("rarity")
@@ -99,9 +96,6 @@ const COMMANDS = [
         )
     ),
   new SlashCommandBuilder()
-    .setName("bot-stats")
-    .setDescription("View detections, alerts, latency, cache size, uptime, and error statistics."),
-  new SlashCommandBuilder()
     .setName("image-check")
     .setDescription("Verify the transparent character image and game data for a specific egg.")
     .addStringOption(option =>
@@ -112,7 +106,7 @@ const COMMANDS = [
     ),
   new SlashCommandBuilder()
     .setName("bot-reload")
-    .setDescription("Clear runtime caches, refresh image data, reload roles, and sync Discord commands.")
+    .setDescription("Admin: clear runtime caches, refresh image data, reload roles, and sync Discord commands.")
 ].map(command => command.toJSON());
 
 async function registerDiscordCommands(rest, applicationId) {
@@ -3092,46 +3086,46 @@ client.on("interactionCreate", async interaction => {
       });
     }
 
-    if (interaction.commandName === "bot-ping") {
+    if (interaction.commandName === "bot-status") {
+      const uptimeSeconds = Math.floor(process.uptime());
+      const days = Math.floor(uptimeSeconds / 86400);
+      const hours = Math.floor((uptimeSeconds % 86400) / 3600);
+      const minutes = Math.floor((uptimeSeconds % 3600) / 60);
       const ping = Math.max(0, Math.round(client.ws.ping));
 
-      return await interaction.reply({
-        content: "🏓 Pong — notifier is online.\n⚡ WebSocket: " + ping + "ms"
-      });
-    }
-
-    if (interaction.commandName === "bot-status") {
       const status = [
-        "🤖 Bot: " + (client.isReady() ? "ONLINE" : "NOT READY"),
-        "📡 Live monitor: " + (MONITOR_ENABLED ? "ENABLED" : "DISABLED"),
-        "🎯 Rarities: " + [...RARITIES].join(", "),
-        "📥 Source channel: " + (SOURCE_CHANNEL_IDS.size ? [...SOURCE_CHANNEL_IDS].join(", ") : "ALL"),
-        "📤 Alert channel: " + (CHANNEL_ID ? "CONFIGURED" : "NOT CONFIGURED"),
-        "🔔 Role ping: " + ALERT_MENTION_MODE.toUpperCase(),
-        "📡 Discord source: " + sourceHealth(),
-        "🌐 EggWatch feed: " + liveFeedHealth(),
-        "🖼️ Character PNG: " +
-          (SOURCE_IMAGE_ALPHA_ONLY ? "TRANSPARENT SOURCE ONLY" : "SOURCE NORMALIZE"),
-        "🔄 Auto catalog: " + (AUTO_DISCOVERY_ENABLED ? "ENABLED" : "DISABLED") + " (" + autoDiscoveredCount + " new)",
-        "🎮 Event alerts: " + (EVENT_ALERTS_ENABLED ? "ON" : "OFF"),
-        "🟣 Rift tracker: " + (RIFT_ALERTS_ENABLED ? "ON" : "OFF"),
-        "🌀 Rift banner: " + (riftState.currentBannerName || "WAITING"),
-        "⏭️ Rift next change: " + (riftState.nextChangeLabel || "Unknown"),
-        "🧩 Rift source filters: " +
-          (RIFT_SOURCE_BOT_IDS.size ? "BOT FILTER" : "ALL BOTS"),
-        "🩺 Health check: /health-check",
-        "🆕 Last update: " + (lastUpdateTitle || "Unknown"),
-        "🧾 Spawn history: " + spawnHistory.length,
-        "🎮 Game events: " + gameEventHistory.length,
-        "🥚 Alerts sent: " + alertCount,
-        "🔎 Detected: " + detectedCount,
-        "⚡ Average latency: " + (latencySamples
+        "🤖 **Bot:** " + (client.isReady() ? "ONLINE" : "NOT READY"),
+        "⚡ **Discord latency:** " + ping + "ms",
+        "⏱️ **Uptime:** " + days + "d " + hours + "h " + minutes + "m",
+        "📡 **Live monitor:** " + (MONITOR_ENABLED ? "ENABLED" : "DISABLED"),
+        "🎯 **Rarities:** " + [...RARITIES].join(", "),
+        "📥 **Source channels:** " + (SOURCE_CHANNEL_IDS.size ? [...SOURCE_CHANNEL_IDS].join(", ") : "ALL"),
+        "📤 **Alert channel:** " + (CHANNEL_ID ? "CONFIGURED" : "NOT CONFIGURED"),
+        "🔔 **Role ping:** " + ALERT_MENTION_MODE.toUpperCase(),
+        "📡 **Discord source:** " + sourceHealth(),
+        "🌐 **EggWatch feed:** " + liveFeedHealth(),
+        "🖼️ **Character PNG:** " + (SOURCE_IMAGE_ALPHA_ONLY ? "ENABLED" : "NORMALIZE"),
+        "🔄 **Auto catalog:** " + (AUTO_DISCOVERY_ENABLED ? "ENABLED" : "DISABLED") + " (" + autoDiscoveredCount + " new)",
+        "🎮 **Event alerts:** " + (EVENT_ALERTS_ENABLED ? "ON" : "OFF"),
+        "🟣 **Rift tracker:** " + (RIFT_ALERTS_ENABLED ? "ON" : "OFF"),
+        "🌀 **Current Rift:** " + (riftState.currentBannerName || "WAITING"),
+        "⏭️ **Rift next change:** " + (riftState.nextChangeLabel || "Unknown"),
+        "🧩 **Rift source filter:** " + (RIFT_SOURCE_BOT_IDS.size ? "BOT FILTER" : "ALL BOTS"),
+        "🆕 **Last update:** " + (lastUpdateTitle || "Unknown"),
+        "🥚 **Alerts sent:** " + alertCount,
+        "🔎 **Eggs detected:** " + detectedCount,
+        "⚡ **Average alert latency:** " + (latencySamples
           ? Math.round(totalLatencyMs / latencySamples) + "ms"
           : "N/A"),
-        "🛠️ Errors: " + monitorErrors,
-        "🟣 Secret role: " + (ALERT_ROLE_IDS.secret ? "SET" : "NOT SET"),
-        "🟠 Eternal role: " + (ALERT_ROLE_IDS.eternal ? "SET" : "NOT SET"),
-        "🔴 Divine role: " + (ALERT_ROLE_IDS.divine ? "SET" : "NOT SET")
+        "🛠️ **Errors:** " + monitorErrors,
+        "💾 **Cache entries:** " + seen.size,
+        "🧾 **Spawn history:** " + spawnHistory.length,
+        "🎮 **Game events:** " + gameEventHistory.length,
+        "🥚 **Catalog entries:** " + eggImageCatalog.length,
+        "🟣 **Secret role:** " + (ALERT_ROLE_IDS.secret ? "SET" : "NOT SET"),
+        "🟠 **Eternal role:** " + (ALERT_ROLE_IDS.eternal ? "SET" : "NOT SET"),
+        "🔴 **Divine role:** " + (ALERT_ROLE_IDS.divine ? "SET" : "NOT SET"),
+        "🩺 **Detailed diagnostics:** /health-check"
       ].join("\n");
 
       return await interaction.reply({
@@ -3139,7 +3133,6 @@ client.on("interactionCreate", async interaction => {
         flags: MessageFlags.Ephemeral
       });
     }
-
     if (interaction.commandName === "eggs-lastseen") {
       if (!recentSpawns.length) {
         return await interaction.reply({
@@ -3279,34 +3272,6 @@ client.on("interactionCreate", async interaction => {
 
       return await interaction.editReply({
         content: "✅ Rift test alert sent for **" + data.name + "**."
-      });
-    }
-
-    if (interaction.commandName === "bot-stats") {
-      const uptimeSeconds = Math.floor(process.uptime());
-      const hours = Math.floor(uptimeSeconds / 3600);
-      const minutes = Math.floor((uptimeSeconds % 3600) / 60);
-      const days = Math.floor(uptimeSeconds / 86400);
-
-      return await interaction.reply({
-        content: [
-          "📊 **Notifier Stats**",
-          "🥚 Alerts sent: " + alertCount,
-          "🔎 Spawns detected: " + detectedCount,
-          "⚡ Avg latency: " + (latencySamples
-            ? Math.round(totalLatencyMs / latencySamples) + "ms"
-            : "N/A"),
-          "🛠️ Errors: " + monitorErrors,
-          "📡 Source: " + sourceHealth(),
-          "🌐 EggWatch: " + liveFeedHealth(),
-          "🖼️ Images: " + (SOURCE_IMAGE_ALPHA_ONLY ? "TRANSPARENT SOURCE ONLY" : "NORMALIZE"),
-          "🔄 Auto catalog: " + (AUTO_DISCOVERY_ENABLED ? "ON" : "OFF"),
-          "⏱️ Uptime: " + days + "d " + hours + "h " + minutes + "m",
-          "💾 Cache: " + seen.size,
-          "🧾 Spawn history: " + spawnHistory.length,
-          "🎮 Game events: " + gameEventHistory.length
-        ].join("\n"),
-        flags: MessageFlags.Ephemeral
       });
     }
 
