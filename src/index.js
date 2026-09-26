@@ -4262,6 +4262,7 @@ function cleanupCaches(now = Date.now()) {
       else store.delete(key);
     }
   }
+}
 
 function rateLimitKey(req) {
   const forwarded = req.headers["x-forwarded-for"];
