@@ -3980,8 +3980,11 @@ async function sendAlert(event, latencyMs = null) {
   const alertText =
     alertEggEmoji +
     " **" +
+    petName.slice(0, 120) +
+    "** • **" +
     rarity +
-    " Egg Spawned**";
+    "**" +
+    (area !== "Unknown" ? " • 📍 " + area.slice(0, 80) : "");
 
   const mentionContent =
     ALERT_MENTION_MODE === "role" && roleId
