@@ -2694,7 +2694,6 @@ function isTrustedPetImageUrl(value) {
       host === "steal-an-egg-roblox.wiki" ||
       host === "stealanegg-wiki.com";
 
-    const imageExtension = /\.(?:png|webp|jpe?g)$/.test(pathName);
     const imagePath =
       pathName.startsWith("/images/") ||
       pathName.includes("/images/pets/");
@@ -2702,7 +2701,7 @@ function isTrustedPetImageUrl(value) {
     const blockedPath =
       /(?:\/eggs?(?:\/|$)|\/og\/|\/hero\/|\/banner\/|\/logo\/|\/favicon|sprite|egg)/i.test(pathName);
 
-    return trustedHost && imagePath && imageExtension && !blockedPath;
+    return trustedHost && imagePath && !blockedPath;
   } catch {
     return false;
   }
@@ -2818,21 +2817,18 @@ async function getPetPngBuffer(petName) {
   const timeout = setTimeout(() => controller.abort(), LIVE_FEED_TIMEOUT_MS);
 
   try {
+    const databaseRecord = petImageDatabase.get(key);
     const response = await fetch(sourceUrl, {
       headers: {
-        "accept": "image/png",
+        "accept": "image/avif,image/webp,image/png,image/jpeg,image/jpg,*/*;q=0.8",
+        "referer": databaseRecord?.sourcePage || "",
         "user-agent": "FSMM-SAB-Live-Notifier/6.0"
       },
       signal: controller.signal
     });
 
     const contentType = String(response.headers.get("content-type") || "").toLowerCase();
-    if (
-      !response.ok ||
-      !contentType.startsWith("image/") ||
-      contentType.includes("svg") ||
-      contentType.includes("gif")
-    ) {
+    if (!response.ok || contentType.includes("text/html") || contentType.includes("application/json")) {
       console.warn(
         "Pet image download rejected:",
         entry.petName,
@@ -2854,6 +2850,10 @@ async function getPetPngBuffer(petName) {
     let pngBuffer;
     try {
       const metadata = await sharp(input, { failOn: "none" }).metadata();
+      if (!metadata?.format || ["svg", "gif"].includes(String(metadata.format).toLowerCase())) {
+        throw new Error("unsupported_pet_image_format");
+      }
+
       pngBuffer = await sharp(input, { failOn: "none" })
         .png({
           compressionLevel: 9,
