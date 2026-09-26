@@ -70,9 +70,10 @@ export function parseExperimentAlert(data) {
   const lower = text.toLowerCase();
 
   const appeared =
-    /\b(?:a\s+)?forbidden\s+experiment\s+has\s+appeared\b/i.test(text) ||
-    /\bdr\.?\s*scramble\s+experiment\s+has\s+appeared\b/i.test(text) ||
-    (/\bforbidden\s+experiment\b/i.test(text) && /\bappeared\b/i.test(text));
+    /\b(?:a\s+)?forbidden\s+experiment\b[\s\S]{0,80}\b(?:has\s+)?(?:just\s+)?(?:appeared|spawned|started|opened|is\s+active|active)\b/i.test(text) ||
+    /\bdr\.?\s*scramble(?:\s+experiment)?\b[\s\S]{0,100}\b(?:appeared|spawned|started|opened|active|live)\b/i.test(text) ||
+    /\bexperiment\s+(?:has\s+)?(?:appeared|spawned|started|opened)\b/i.test(text) ||
+    (/\bforbidden\s+experiment\b/i.test(text) && /\b(?:appeared|spawned|started|opened|active|live)\b/i.test(text));
 
   if (!appeared) return null;
 
