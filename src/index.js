@@ -131,6 +131,53 @@ client.once("clientReady", async () => {
   }
 });
 
+client.on("interactionCreate", async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+
+  try {
+    if (interaction.commandName === "ping") {
+      return await interaction.reply({ content: "🏓 Pong — notifier is online." });
+    }
+
+    if (interaction.commandName === "status") {
+      const status = [
+        "🤖 Bot: " + (client.isReady() ? "ONLINE" : "NOT READY"),
+        "📡 Live monitor: " + (MONITOR_ENABLED ? "ENABLED" : "DISABLED"),
+        "🎯 Rarities: " + [...RARITIES].join(", "),
+        "📥 Source channel: " + (SOURCE_CHANNEL_IDS.size ? [...SOURCE_CHANNEL_IDS].join(", ") : "ALL CHANNELS"),
+        "📤 Alert channel: " + (CHANNEL_ID ? "CONFIGURED" : "NOT CONFIGURED")
+      ].join("\n");
+      return await interaction.reply({ content: status, ephemeral: true });
+    }
+
+    if (interaction.commandName === "testegg") {
+      if (!CHANNEL_ID) {
+        return await interaction.reply({ content: "❌ DISCORD_DEFAULT_CHANNEL_ID is not configured in Railway.", ephemeral: true });
+      }
+
+      const testEvent = {
+        live: true,
+        eggName: "Test Egg",
+        displayName: "Test Egg",
+        rarity: "Secret",
+        biome: "Test Area",
+        spawnedAt: new Date().toISOString(),
+        source: "Manual /testegg test"
+      };
+
+      await sendAlert(testEvent);
+      return await interaction.reply({ content: "✅ Test egg alert sent successfully.", ephemeral: true });
+    }
+  } catch (err) {
+    console.error("Interaction failed:", err);
+    if (interaction.replied || interaction.deferred) {
+      await interaction.followUp({ content: "❌ Command failed: " + (err?.message || "unknown error"), ephemeral: true }).catch(() => {});
+    } else {
+      await interaction.reply({ content: "❌ Command failed: " + (err?.message || "unknown error"), ephemeral: true }).catch(() => {});
+    }
+  }
+});
+
 client.on("error", err => console.error("Discord client error:", err));
 client.on("shardError", err => console.error("Discord shard error:", err));
 
