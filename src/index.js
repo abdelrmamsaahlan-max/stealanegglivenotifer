@@ -757,7 +757,7 @@ function dedupeCatalogEntries() {
   if (removed) {
     eggImageCatalog = [...unique.values()];
     scheduleStateSave();
-    console.warn("Catalog duplicate cleanup removed:", removed, "duplicate entries");
+    console.log("Catalog duplicate cleanup removed:", removed, "duplicate entries");
   }
 }
 
@@ -771,14 +771,28 @@ function findCatalogEgg(input) {
   const wanted = normalizeFeedKey(input);
   if (!wanted) return null;
 
+  const identity = wanted
+    .replace(/^(?:secret|eternal|divine)\s+/, "")
+    .replace(/\s+egg$/i, "")
+    .trim();
+
   return eggImageCatalog.find(entry => {
     const names = [
       entry?.eggName,
       entry?.displayName,
-      ...(Array.isArray(entry?.aliases) ? entry.aliases : [])
+      ...(Array.isArray(entry?.aliases) ? entry.aliases : []),
+      entry?.petName ? entry.petName + " Egg" : ""
     ].filter(Boolean);
 
-    return names.some(name => normalizeFeedKey(name) === wanted);
+    return names.some(name => {
+      const normalized = normalizeFeedKey(name);
+      const normalizedIdentity = normalized
+        .replace(/^(?:secret|eternal|divine)\s+/, "")
+        .replace(/\s+egg$/i, "")
+        .trim();
+
+      return normalized === wanted || normalizedIdentity === identity;
+    });
   }) || null;
 }
 
