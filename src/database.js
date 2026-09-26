@@ -206,6 +206,29 @@ function mergeStructuredRowsIntoState(state, result) {
   }
   next.dynamicEggs = existingCatalog.slice(0, 50);
 
+  // Rehydrate recent delivery claims from Supabase as a second line of
+  // defense against duplicate Discord alerts after process restarts.
+  const delivered = next.deliveredAlertKeys && typeof next.deliveredAlertKeys === "object"
+    ? next.deliveredAlertKeys
+    : {};
+  const dedupMs = Math.max(
+    120_000,
+    Number(process.env.ALERT_DELIVERY_DEDUP_SECONDS || 900) * 1000
+  );
+  const nowMs = Date.now();
+  for (const row of Array.isArray(result?.deliveries) ? result.deliveries : []) {
+    if (String(row?.status || "").toLowerCase() !== "sent") continue;
+    const key = String(row?.delivery_key || "").trim();
+    if (!key) continue;
+    const sentAt = Date.parse(row?.sent_at || row?.created_at || "");
+    if (!Number.isFinite(sentAt)) continue;
+    const expiresAt = sentAt + dedupMs;
+    if (expiresAt > nowMs) {
+      delivered[key] = Math.max(Number(delivered[key] || 0), expiresAt);
+    }
+  }
+  next.deliveredAlertKeys = delivered;
+
   return next;
 }
 
