@@ -1304,6 +1304,7 @@ function ensureCatalogEgg(eggName, rarity, area = "Unknown") {
   if (!dynamic) return null;
 
   eggImageCatalog.push(dynamic);
+  registerPetImageDatabaseEntry(dynamic);
   dedupeCatalogEntries();
 
   // If canonical cleanup found an older equivalent entry, keep that entry and
@@ -2452,6 +2453,9 @@ function slugify(value) {
     .slice(0, 80);
 }
 
+const PET_IMAGE_DB_FILE = path.resolve(process.cwd(), "data/pet-images.json");
+const PET_IMAGE_DIR = path.resolve(process.cwd(), "data/pets");
+
 const imageFallbackCache = new Map();
 const petPageCache = new Map();
 const petPngBufferCache = new Map();
@@ -2461,6 +2465,113 @@ const PET_PAGE_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const PET_PNG_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const MAX_REMOTE_IMAGE_BYTES = 6 * 1024 * 1024;
 const MAX_REMOTE_TEXT_BYTES = 2 * 1024 * 1024;
+
+let petImageDatabase = new Map();
+
+function loadPetImageDatabase() {
+  try {
+    const raw = fs.readFileSync(PET_IMAGE_DB_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    const records = Array.isArray(parsed?.pets) ? parsed.pets : [];
+
+    petImageDatabase = new Map(
+      records
+        .filter(item =>
+          item &&
+          typeof item.petName === "string" &&
+          typeof item.sourcePage === "string" &&
+          /^https?:\/\//i.test(item.sourcePage)
+        )
+        .map(item => [
+          normalizeFeedKey(item.petName),
+          {
+            petName: item.petName.trim(),
+            sourcePage: item.sourcePage.trim(),
+            format: "png",
+            imageKind: "original-pet-icon"
+          }
+        ])
+    );
+
+    console.log("Pet image database loaded:", petImageDatabase.size + " PNG records");
+  } catch (error) {
+    petImageDatabase = new Map();
+    console.warn("Pet image database could not be loaded:", error?.message || error);
+  }
+}
+
+function cleanupNonPngPetImages() {
+  try {
+    fs.mkdirSync(PET_IMAGE_DIR, { recursive: true });
+
+    let removed = 0;
+    for (const name of fs.readdirSync(PET_IMAGE_DIR)) {
+      const fullPath = path.join(PET_IMAGE_DIR, name);
+      if (!fs.statSync(fullPath).isFile()) continue;
+      if (!/\.png$/i.test(name)) {
+        try {
+          fs.unlinkSync(fullPath);
+          removed++;
+        } catch {}
+      }
+    }
+
+    if (removed) {
+      console.log("Removed non-PNG pet images:", removed);
+    }
+  } catch (error) {
+    console.warn("Pet image directory cleanup failed:", error?.message || error);
+  }
+}
+
+function savePetImageDatabase() {
+  try {
+    fs.mkdirSync(path.dirname(PET_IMAGE_DB_FILE), { recursive: true });
+    const payload = {
+      schemaVersion: 1,
+      format: "png",
+      purpose: "Curated pet-only image source catalog. Egg, area, banner, and other artwork is excluded.",
+      pets: [...petImageDatabase.values()]
+        .sort((a, b) => a.petName.localeCompare(b.petName))
+        .map(item => ({
+          petName: item.petName,
+          sourcePage: item.sourcePage,
+          format: "png",
+          imageKind: "original-pet-icon"
+        }))
+    };
+
+    const tempFile = PET_IMAGE_DB_FILE + ".tmp";
+    fs.writeFileSync(tempFile, JSON.stringify(payload, null, 2) + "\n", "utf8");
+    fs.renameSync(tempFile, PET_IMAGE_DB_FILE);
+  } catch (error) {
+    console.warn("Pet image database save failed:", error?.message || error);
+  }
+}
+
+function registerPetImageDatabaseEntry(entry) {
+  const petName = String(entry?.petName || "").trim();
+  if (!petName) return;
+
+  const key = normalizeFeedKey(petName);
+  const existing = petImageDatabase.get(key);
+  if (existing?.sourcePage) return;
+
+  const sourcePage = "https://stealanegg-wiki.com/wiki/" +
+    slugify(petName).replace(/-egg$/i, "") +
+    "/";
+
+  petImageDatabase.set(key, {
+    petName,
+    sourcePage,
+    format: "png",
+    imageKind: "original-pet-icon"
+  });
+  savePetImageDatabase();
+}
+
+loadPetImageDatabase();
+cleanupNonPngPetImages();
 
 function findCatalogPet(input) {
   const wanted = normalizeFeedKey(input);
@@ -2486,36 +2597,31 @@ async function fetchPetPage(petName) {
     return cached;
   }
 
-  const slug = petSlugForEntry(entry);
-  const pages = [];
-
-  if (slug) {
-    pages.push(
-      "https://robloxstealanegg.wiki/pets/" + slug + "/",
-      "https://robloxstealanegg.wiki/eggs/" + slug + "-egg/",
-      "https://steal-an-egg-roblox.wiki/eggs/" + slug + "-egg/",
-      "https://steal-an-egg-roblox.wiki/pets/" + slug + "/"
-    );
+  const databaseRecord = petImageDatabase.get(key);
+  if (!databaseRecord?.sourcePage) {
+    petPageCache.set(key, { pageUrl: null, body: null, at: Date.now() });
+    return null;
   }
 
-  for (const page of [...new Set(pages)]) {
-    try {
-      const { response, body } = await fetchLiveFeed(page);
-      if (!response.ok) continue;
+  try {
+    const { response, body } = await fetchLiveFeed(databaseRecord.sourcePage);
+    if (!response.ok) throw new Error("pet_page_http_" + response.status);
 
-      const result = { pageUrl: page, body, at: Date.now() };
-      petPageCache.set(key, result);
-      return result;
-    } catch {
-      // Try the next source.
-    }
+    const result = {
+      pageUrl: databaseRecord.sourcePage,
+      body,
+      at: Date.now()
+    };
+    petPageCache.set(key, result);
+    return result;
+  } catch {
+    petPageCache.set(key, { pageUrl: null, body: null, at: Date.now() });
+    return null;
   }
-
-  petPageCache.set(key, { pageUrl: null, body: null, at: Date.now() });
-  return null;
 }
 
 function parseImgCandidates(html, pageUrl, targetPetName) {
+  const targetKey = normalizeFeedKey(targetPetName);
   const tags = String(html || "").match(/<img\b[^>]*>/gi) || [];
 
   return tags.map(tag => {
@@ -2537,32 +2643,6 @@ function parseImgCandidates(html, pageUrl, targetPetName) {
     const className = attrs.class || "";
     const metadata = (alt + " " + title + " " + className + " " + src).toLowerCase();
 
-    let score = 0;
-    if (eggNameMatchesTarget(alt, targetPetName)) score += 150;
-    if (normalizeFeedKey(alt).includes(normalizeFeedKey(targetPetName) + " in steal an egg")) score += 80;
-    if (eggNameMatchesTarget(title, targetPetName)) score += 120;
-    if (normalizeFeedKey(alt) === normalizeFeedKey(targetPetName)) score += 35;
-    if (metadata.includes(normalizeFeedKey(targetPetName))) score += 35;
-    if (/\b(avatar|pet)\b/i.test(alt + " " + title)) score += 20;
-    if (/\/images\/pets\//i.test(src)) score += 50;
-    if (
-      /\/images\/pets\//i.test(src) &&
-      normalizeFeedKey(src).includes(
-        normalizeFeedKey(slugify(targetPetName)).replace(/-/g, " ")
-      )
-    ) {
-      score += 260;
-    }
-    if (/\/images\/pets\/[^/]*-art\//i.test(src)) score += 220;
-    if (/\/images\/pets\/[^/]+\/[^/]*-art\//i.test(src)) score += 200;
-    if (/\.(?:webp|png)(?:\?|$)/i.test(src)) score += 10;
-
-    // Prefer clean pet artwork over the larger update card images that contain
-    // text, rarity labels, and income values.
-    if (/\/images\/pets\/update-\d+(?:\.|\/)/i.test(src)) score -= 180;
-    if (/\b(og|hero|banner|logo|site-header|favicon|sprite)\b/i.test(metadata)) score -= 250;
-    if (/\b(article|author|profile|icon|thumbnail)\b/i.test(metadata)) score -= 100;
-
     const srcParts = [];
     if (src) srcParts.push(src);
     if (srcSet) {
@@ -2572,12 +2652,30 @@ function parseImgCandidates(html, pageUrl, targetPetName) {
       }
     }
 
-    return {
-      urls: srcParts
-        .map(value => absolutizeUrl(value, pageUrl))
-        .filter(Boolean),
-      score
-    };
+    const urls = srcParts
+      .map(value => absolutizeUrl(value, pageUrl))
+      .filter(Boolean)
+      .filter(isTrustedPetImageUrl);
+
+    if (!urls.length) {
+      return { urls: [], score: -Infinity };
+    }
+
+    let score = 0;
+    const altKey = normalizeFeedKey(alt);
+    const titleKey = normalizeFeedKey(title);
+
+    if (altKey === targetKey) score += 250;
+    if (titleKey === targetKey) score += 220;
+    if (altKey.includes(targetKey)) score += 120;
+    if (titleKey.includes(targetKey)) score += 100;
+    if (/original\s+pet\s+icon/i.test(alt + " " + title + " " + className)) score += 500;
+    if (/\bpet\b/i.test(alt + " " + title)) score += 60;
+    if (/images\/pets|images\/optimized/i.test(metadata)) score += 60;
+    if (/\b(egg|eggs|area|biome|banner|hero|og|logo|favicon|screenshot|update-\d+)\b/i.test(metadata)) score -= 500;
+    if (/\b(article|author|profile|thumbnail|avatar)\b/i.test(metadata)) score -= 150;
+
+    return { urls, score };
   })
     .filter(item => item.urls.length && item.score >= 100)
     .sort((a, b) => b.score - a.score);
@@ -2596,14 +2694,15 @@ function isTrustedPetImageUrl(value) {
       host === "steal-an-egg-roblox.wiki" ||
       host === "stealanegg-wiki.com";
 
-    const petPath =
-      /\/images\/pets\//.test(pathName) ||
-      (host === "stealanegg-wiki.com" &&
-        pathName.startsWith("/images/optimized/"));
-    const imageExtension = /\.(?:png|webp|jpe?g)(?:$)/.test(pathName);
-    const blockedPath = /(?:\/og\/|\/hero\/|\/banner\/|\/logo\/|\/favicon|sprite)/i.test(pathName);
+    const imageExtension = /\.png$/.test(pathName);
+    const imagePath =
+      pathName.startsWith("/images/") ||
+      pathName.includes("/images/pets/");
 
-    return trustedHost && petPath && imageExtension && !blockedPath;
+    const blockedPath =
+      /(?:\/eggs?(?:\/|$)|\/og\/|\/hero\/|\/banner\/|\/logo\/|\/favicon|sprite|egg)/i.test(pathName);
+
+    return trustedHost && imagePath && imageExtension && !blockedPath;
   } catch {
     return false;
   }
@@ -2614,49 +2713,13 @@ async function resolvePetImageSource(petName) {
   if (!entry) return null;
 
   const key = normalizeFeedKey(entry.petName);
+  registerPetImageDatabaseEntry(entry);
+
   const cached = imageFallbackCache.get("pet:" + key);
   if (cached) {
     const ttl = cached.url ? IMAGE_CACHE_TTL_MS : IMAGE_NEGATIVE_CACHE_TTL_MS;
     if (Date.now() - cached.at < ttl) return cached.url;
     imageFallbackCache.delete("pet:" + key);
-  }
-
-  // Try the clean artwork paths first. These are model-only images, unlike
-  // update cards that contain text overlays.
-  const directArtBases = [
-    "https://robloxstealanegg.wiki/images/pets/update-4-art/",
-    "https://robloxstealanegg.wiki/images/pets/update-5-art/",
-    "https://robloxstealanegg.wiki/images/pets/art/"
-  ];
-
-  const directArtUrls = [];
-  const slug = petSlugForEntry(entry);
-
-  if (key === "nightflame") {
-    directArtUrls.push(
-      "https://stealanegg-wiki.com/images/optimized/e99d6b41b772cf59-500.webp"
-    );
-  }
-
-  for (const base of directArtBases) {
-    for (const extension of [".png", ".webp", ".jpg", ".jpeg"]) {
-      directArtUrls.push(
-        base + encodeURIComponent(slug) + extension
-      );
-    }
-  }
-
-  for (const url of directArtUrls) {
-    if (!isTrustedPetImageUrl(url)) continue;
-
-    try {
-      const { response } = await fetchLiveFeed(url);
-      if (response.ok) {
-        imageFallbackCache.set("pet:" + key, { url, at: Date.now() });
-        console.log("Pet artwork source found:", entry.petName);
-        return url;
-      }
-    } catch {}
   }
 
   const page = await fetchPetPage(entry.petName);
@@ -2669,10 +2732,19 @@ async function resolvePetImageSource(petName) {
 
   for (const candidate of candidates) {
     for (const url of candidate.urls) {
-      if (!isTrustedPetImageUrl(url)) continue;
+      try {
+        const { response } = await fetchLiveFeed(url);
+        const contentType = String(response.headers.get("content-type") || "").toLowerCase();
 
-      imageFallbackCache.set("pet:" + key, { url, at: Date.now() });
-      return url;
+        if (
+          response.ok &&
+          (contentType.startsWith("image/png") || /\.png(?:\?|$)/i.test(new URL(url).pathname))
+        ) {
+          imageFallbackCache.set("pet:" + key, { url, at: Date.now() });
+          console.log("Pet PNG source found:", entry.petName);
+          return url;
+        }
+      } catch {}
     }
   }
 
@@ -2711,187 +2783,6 @@ async function trimImageCaches() {
   }
 }
 
-async function imageHasTransparentPixels(input) {
-  try {
-    const { data, info } = await sharp(input)
-      .ensureAlpha()
-      .raw()
-      .toBuffer({ resolveWithObject: true });
-
-    for (let offset = 3; offset < data.length; offset += info.channels) {
-      if (data[offset] < 250) return true;
-    }
-  } catch {
-    return false;
-  }
-
-  return false;
-}
-
-function colorDistance(r1, g1, b1, r2, g2, b2) {
-  const dr = r1 - r2;
-  const dg = g1 - g2;
-  const db = b1 - b2;
-  return Math.sqrt(dr * dr + dg * dg + db * db);
-}
-
-function nearestCornerColor(data, info, x, y) {
-  const { width, channels } = info;
-  const offset = (y * width + x) * channels;
-  return [data[offset], data[offset + 1], data[offset + 2]];
-}
-
-function medianColor(colors) {
-  const channels = [0, 1, 2].map(index =>
-    colors.map(color => color[index]).sort((a, b) => a - b)
-  );
-  const mid = Math.floor(channels[0].length / 2);
-
-  return [
-    channels[0][mid],
-    channels[1][mid],
-    channels[2][mid]
-  ];
-}
-
-async function removeSimpleBackground(input) {
-  try {
-    const prepared = await sharp(input, { failOn: "none" })
-      .resize({
-        width: 768,
-        height: 768,
-        fit: "inside",
-        withoutEnlargement: true
-      })
-      .ensureAlpha()
-      .raw()
-      .toBuffer({ resolveWithObject: true });
-
-    const { data, info } = prepared;
-    const { width, height, channels } = info;
-
-    if (!width || !height || width * height > 600000) return null;
-
-    const samplePoints = [];
-    const fractions = [0, 0.10, 0.22, 0.35, 0.50, 0.65, 0.78, 0.90, 1];
-
-    for (const fraction of fractions) {
-      const x = Math.min(width - 1, Math.max(0, Math.round((width - 1) * fraction)));
-      const y = Math.min(height - 1, Math.max(0, Math.round((height - 1) * fraction)));
-      samplePoints.push([x, 0], [x, height - 1]);
-      samplePoints.push([0, y], [width - 1, y]);
-    }
-
-    const backgroundSamples = [
-      ...new Map(
-        samplePoints.map(([x, y]) => {
-          const color = nearestCornerColor(data, info, x, y);
-          return [color.join(","), color];
-        })
-      ).values()
-    ];
-
-    const background = medianColor(backgroundSamples);
-
-    const visited = new Uint8Array(width * height);
-    const queue = new Int32Array(width * height);
-    let head = 0;
-    let tail = 0;
-
-    const maxDistance = 118;
-    const pixelsToCheck = [];
-
-    function trySeed(x, y) {
-      if (x < 0 || x >= width || y < 0 || y >= height) return;
-      const index = y * width + x;
-      if (visited[index]) return;
-
-      const offset = index * channels;
-      if (data[offset + 3] === 0) {
-        visited[index] = 1;
-        return;
-      }
-
-      const distanceToMedian = colorDistance(
-        data[offset],
-        data[offset + 1],
-        data[offset + 2],
-        background[0],
-        background[1],
-        background[2]
-      );
-
-      const distanceToEdgeSample = backgroundSamples.reduce(
-        (best, color) => Math.min(
-          best,
-          colorDistance(
-            data[offset],
-            data[offset + 1],
-            data[offset + 2],
-            color[0],
-            color[1],
-            color[2]
-          )
-        ),
-        Number.POSITIVE_INFINITY
-      );
-
-      if (
-        distanceToMedian <= maxDistance ||
-        distanceToEdgeSample <= Math.min(132, maxDistance + 24)
-      ) {
-        visited[index] = 1;
-        queue[tail++] = index;
-      }
-    }
-
-    for (let x = 0; x < width; x++) {
-      trySeed(x, 0);
-      trySeed(x, height - 1);
-    }
-    for (let y = 1; y < height - 1; y++) {
-      trySeed(0, y);
-      trySeed(width - 1, y);
-    }
-
-    while (head < tail) {
-      const index = queue[head++];
-      pixelsToCheck.push(index);
-
-      const x = index % width;
-      const y = Math.floor(index / width);
-      trySeed(x - 1, y);
-      trySeed(x + 1, y);
-      trySeed(x, y - 1);
-      trySeed(x, y + 1);
-    }
-
-    if (pixelsToCheck.length < Math.max(64, Math.floor(width * height * 0.0025))) {
-      return null;
-    }
-
-    for (const index of pixelsToCheck) {
-      data[index * channels + 3] = 0;
-    }
-
-    const output = await sharp(data, {
-      raw: {
-        width,
-        height,
-        channels
-      }
-    })
-      .trim()
-      .png({ compressionLevel: 9 })
-      .toBuffer();
-
-    return await imageHasTransparentPixels(output) ? output : null;
-  } catch (error) {
-    console.warn("Simple background removal failed:", error?.message || error);
-    return null;
-  }
-}
-
 async function getPetPngBuffer(petName) {
   const entry = findCatalogPet(petName);
   if (!entry) return null;
@@ -2902,13 +2793,24 @@ async function getPetPngBuffer(petName) {
     return cached.buffer;
   }
 
-  const sourceUrl =
-    await resolvePetImageSource(entry.petName) ||
-    ({
-      nightflame: "https://stealanegg-wiki.com/images/optimized/e99d6b41b772cf59-500.webp"
-    }[key] || null);
+  const localPath = path.join(PET_IMAGE_DIR, petSlugForEntry(entry) + ".png");
+  try {
+    if (fs.existsSync(localPath)) {
+      const localBuffer = fs.readFileSync(localPath);
+      if (isPngBuffer(localBuffer)) {
+        petPngBufferCache.set(key, {
+          buffer: localBuffer,
+          at: Date.now(),
+          transparent: Boolean(localBuffer.length)
+        });
+        return localBuffer;
+      }
+      fs.unlinkSync(localPath);
+    }
+  } catch {}
 
-  if (!sourceUrl) return null;
+  const sourceUrl = await resolvePetImageSource(entry.petName);
+  if (!sourceUrl || !isTrustedPetImageUrl(sourceUrl)) return null;
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), LIVE_FEED_TIMEOUT_MS);
@@ -2916,88 +2818,42 @@ async function getPetPngBuffer(petName) {
   try {
     const response = await fetch(sourceUrl, {
       headers: {
-        "accept": "image/avif,image/webp,image/png,image/*;q=0.9,*/*;q=0.8",
-        "user-agent": "FSMM-SAB-Live-Notifier/5.0"
+        "accept": "image/png",
+        "user-agent": "FSMM-SAB-Live-Notifier/6.0"
       },
       signal: controller.signal
     });
 
-    if (!response.ok) return null;
+    const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+    if (!response.ok || !contentType.startsWith("image/png")) return null;
 
     const contentLength = Number(response.headers.get("content-length") || 0);
     if (contentLength && contentLength > MAX_REMOTE_IMAGE_BYTES) return null;
 
     const input = Buffer.from(await response.arrayBuffer());
-    if (input.length > MAX_REMOTE_IMAGE_BYTES) return null;
-
-    let pngBuffer = null;
-    let transparent = false;
-    const alreadyTransparent = await imageHasTransparentPixels(input);
-
-    if (alreadyTransparent) {
-      pngBuffer = input;
-      transparent = true;
-      console.log("Transparent source PNG accepted:", entry.petName);
-    } else {
-      pngBuffer = await removeSimpleBackground(input);
-
-      if (pngBuffer) {
-        transparent = true;
-        console.log("Character cutout created:", entry.petName);
-      } else {
-        // Always keep a valid PNG so an alert never becomes image-less.
-        pngBuffer = await sharp(input, { failOn: "none" })
-          .ensureAlpha()
-          .resize({
-            width: 1024,
-            height: 1024,
-            fit: "inside",
-            withoutEnlargement: true
-          })
-          .png({
-            compressionLevel: 9,
-            adaptiveFiltering: true
-          })
-          .toBuffer();
-        transparent = await imageHasTransparentPixels(pngBuffer);
-        console.warn(
-          transparent
-            ? "Transparent PNG fallback produced:"
-            : "Using normalized PNG fallback (opaque source):",
-          entry.petName
-        );
-      }
+    if (input.length > MAX_REMOTE_IMAGE_BYTES || !isPngBuffer(input)) {
+      console.warn("Rejected non-PNG pet image:", entry.petName);
+      return null;
     }
 
-    pngBuffer = await sharp(pngBuffer, { failOn: "none" })
-      .ensureAlpha()
-      .resize({
-        width: 1024,
-        height: 1024,
-        fit: "inside",
-        withoutEnlargement: true
-      })
-      .png({
-        compressionLevel: 9,
-        adaptiveFiltering: true
-      })
-      .toBuffer();
+    if (input.length < 64) return null;
 
-    if (!isPngBuffer(pngBuffer)) {
-      throw new Error("pet_output_is_not_png");
-    }
+    fs.mkdirSync(PET_IMAGE_DIR, { recursive: true });
+    const tempPath = localPath + ".tmp";
+    fs.writeFileSync(tempPath, input);
+    fs.renameSync(tempPath, localPath);
 
-    transparent = await imageHasTransparentPixels(pngBuffer);
-    if (!transparent) {
-      console.warn("Pet PNG is valid but opaque:", entry.petName);
-    }
-
-    petPngBufferCache.set(key, { buffer: pngBuffer, at: Date.now(), transparent });
+    petPngBufferCache.set(key, {
+      buffer: input,
+      at: Date.now(),
+      transparent: false
+    });
     trimImageCaches();
-    return pngBuffer;
+    console.log("Pet PNG cached:", entry.petName);
+    return input;
   } catch (error) {
     console.warn(
-      "Pet PNG processing failed for " + entry.petName + ":",
+      "Pet PNG fetch failed for " + entry.petName + ":",
       error?.message || error
     );
     return null;
