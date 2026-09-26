@@ -705,13 +705,24 @@ function dedupeCatalogEntries() {
   for (const entry of eggImageCatalog) {
     if (!entry || typeof entry !== "object") continue;
 
-    const key = normalizeFeedKey(
+    const rawName = String(
       entry.eggName ||
       entry.displayName ||
       (entry.petName ? entry.petName + " Egg" : "")
-    );
+    ).trim();
+
+    const key = normalizeFeedKey(rawName);
 
     if (!key) continue;
+
+    // Auto Discovery must never turn update/version headings into pets.
+    if (
+      entry.source === "Auto Discovery" &&
+      /^(?:update|version)\s*\d+/i.test(rawName)
+    ) {
+      removed++;
+      continue;
+    }
 
     const existing = unique.get(key);
     if (!existing) {
