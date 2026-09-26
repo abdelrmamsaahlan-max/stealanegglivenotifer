@@ -18,6 +18,7 @@ import {
   PermissionFlagsBits
 } from "discord.js";
 import { extractMessageData, parseSpawn } from "./parser.js";
+import { hydrateRuntimeStateFile, persistRuntimeState } from "./database.js";
 import {
   buildRiftActionRow,
   buildRiftAlertEmbed,
@@ -756,6 +757,9 @@ function saveRuntimeState() {
     }
 
     fs.renameSync(tempFile, STATE_FILE);
+    persistRuntimeState(payload).catch(error => {
+      recordMonitorError("storage", error, "Supabase runtime state save failed");
+    });
   } catch (error) {
     recordMonitorError("storage", error, "Runtime state save failed");
   }
@@ -919,8 +923,7 @@ function findCatalogEgg(input) {
   return direct || verifiedCatalogByIdentity.get(identity) || null;
 }
 
-// Restore runtime state only after catalog identity helpers/indexes are initialized.
-loadRuntimeState();
+// Runtime state is restored at startup after the remote Supabase snapshot is hydrated.
 dedupeCatalogEntries();
 rebuildLastSeenFromHistory().catch(error => {
   console.warn("Last Seen history rebuild failed:", error?.message || error);
@@ -7150,6 +7153,9 @@ async function shutdown(signal) {
 
 process.once("SIGTERM", () => shutdown("SIGTERM"));
 process.once("SIGINT", () => shutdown("SIGINT"));
+
+await hydrateRuntimeStateFile();
+loadRuntimeState();
 
 if (!process.env.DISCORD_BOT_TOKEN) {
   console.error("DISCORD_BOT_TOKEN is missing.");
