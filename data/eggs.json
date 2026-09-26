@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "rarities": [
     "Common",
     "Uncommon",
@@ -12,5 +12,76 @@
     "Eternal",
     "Divine"
   ],
-  "eggs": []
+  "eggs": [
+    {
+      "eggName": "Gargoyle Egg",
+      "displayName": "Gargoyle Egg",
+      "rarity": "Secret",
+      "biome": "Demons",
+      "aliases": [
+        "Secret Gargoyle Egg",
+        "Gargoyle"
+      ],
+      "active": true,
+      "image": "https://steal-an-egg-roblox.wiki/images/egg/Gargoyle%20Egg.png",
+      "lastVerified": "2026-09-26",
+      "source": "Steal An Egg Wiki"
+    },
+    {
+      "eggName": "Phoenix Egg",
+      "displayName": "Phoenix Egg",
+      "rarity": "Eternal",
+      "biome": "Volcano",
+      "aliases": [
+        "Eternal Phoenix Egg",
+        "Phoenix"
+      ],
+      "active": true,
+      "image": "https://stealanegg.app/images/official-media/media-5.png",
+      "lastVerified": "2026-09-26",
+      "source": "StealAnEgg.app"
+    },
+    {
+      "eggName": "Kitsune Egg",
+      "displayName": "Kitsune Egg",
+      "rarity": "Divine",
+      "biome": "Cherry Blossom",
+      "aliases": [
+        "Divine Kitsune Egg",
+        "Kitsune"
+      ],
+      "active": true,
+      "image": "https://stealanegg-hub.wiki/images/eggs/egg-136779412524244-768w.webp",
+      "lastVerified": "2026-09-26",
+      "source": "Steal An Egg Hub"
+    },
+    {
+      "eggName": "Nightflame Egg",
+      "displayName": "Nightflame Egg",
+      "rarity": "Divine",
+      "biome": "Titan Temple",
+      "aliases": [
+        "Divine Nightflame Egg",
+        "Nightflame"
+      ],
+      "active": true,
+      "image": "https://stealanegg-hub.wiki/images/eggs/egg-134762388111337-512w.webp",
+      "lastVerified": "2026-09-26",
+      "source": "Steal An Egg Hub"
+    },
+    {
+      "eggName": "Unicorn Egg",
+      "displayName": "Unicorn Egg",
+      "rarity": "Divine",
+      "biome": "Cosmic",
+      "aliases": [
+        "Divine Unicorn Egg",
+        "Unicorn"
+      ],
+      "active": true,
+      "image": "https://stealanegg-hub.wiki/images/eggs/egg-126240842939586-542w.webp",
+      "lastVerified": "2026-09-26",
+      "source": "Steal An Egg Hub"
+    }
+  ]
 }
