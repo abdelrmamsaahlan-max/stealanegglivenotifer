@@ -55,14 +55,27 @@ function parseSpawn(text) {
   return { live: true, eggName, displayName: eggName, rarity, biome: area, spawnedAt: new Date().toISOString(), source: "Discord live source" };
 }
 
-function extractMessageText(message) {
+function extractMessageData(message) {
   const parts = [message.content || ""];
+  let imageUrl = null;
+
   for (const embed of message.embeds) {
     if (embed.title) parts.push(embed.title);
     if (embed.description) parts.push(embed.description);
     for (const field of embed.fields || []) parts.push(field.name || "", field.value || "");
+    if (!imageUrl && embed.image?.url) imageUrl = embed.image.url;
+    if (!imageUrl && embed.thumbnail?.url) imageUrl = embed.thumbnail.url;
   }
-  return parts.filter(Boolean).join("\n");
+
+  if (!imageUrl && message.attachments?.size) {
+    const attachment = message.attachments.find(a => a.contentType?.startsWith("image/"));
+    if (attachment) imageUrl = attachment.url;
+  }
+
+  return {
+    text: parts.filter(Boolean).join("\n"),
+    imageUrl
+  };
 }
 
 async function sendAlert(event) {
@@ -87,6 +100,8 @@ async function sendAlert(event) {
     .setFooter({ text: "Steal an Egg • Live Spawn Alert" })
     .setTimestamp(new Date(event.spawnedAt));
 
+  if (event.imageUrl) embed.setImage(event.imageUrl);
+
   await channel.send({ content: "🚨 **" + rarity.toUpperCase() + " EGG!**", embeds: [embed] });
 }
 
@@ -108,7 +123,9 @@ client.on("messageCreate", async (message) => {
   if (SOURCE_CHANNEL_IDS.size && !SOURCE_CHANNEL_IDS.has(message.channelId)) return;
   if (SOURCE_BOT_IDS.size && !SOURCE_BOT_IDS.has(message.author?.id)) return;
 
-  const event = parseSpawn(extractMessageText(message));
+  const messageData = extractMessageData(message);
+  const event = parseSpawn(messageData.text);
+  if (event && messageData.imageUrl) event.imageUrl = messageData.imageUrl;
   if (!event) return;
 
   const key = [message.channelId, event.rarity.toLowerCase(), event.eggName.toLowerCase(), event.biome.toLowerCase()].join("|");
