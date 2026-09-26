@@ -2870,7 +2870,7 @@ client.on("interactionCreate", async interaction => {
       });
     }
 
-    if (interaction.commandName === "ping") {
+    if (interaction.commandName === "bot-ping") {
       const ping = Math.max(0, Math.round(client.ws.ping));
 
       return await interaction.reply({
@@ -2878,7 +2878,7 @@ client.on("interactionCreate", async interaction => {
       });
     }
 
-    if (interaction.commandName === "status") {
+    if (interaction.commandName === "bot-status") {
       const status = [
         "🤖 Bot: " + (client.isReady() ? "ONLINE" : "NOT READY"),
         "📡 Live monitor: " + (MONITOR_ENABLED ? "ENABLED" : "DISABLED"),
@@ -2918,7 +2918,7 @@ client.on("interactionCreate", async interaction => {
       });
     }
 
-    if (interaction.commandName === "lastseen") {
+    if (interaction.commandName === "eggs-lastseen") {
       if (!recentSpawns.length) {
         return await interaction.reply({
           content: "📭 No rare egg has been detected yet.",
@@ -2940,7 +2940,7 @@ client.on("interactionCreate", async interaction => {
       });
     }
 
-    if (interaction.commandName === "history") {
+    if (interaction.commandName === "egg-history") {
       if (!spawnHistory.length) {
         return await interaction.reply({
           content: "📭 No spawn history recorded yet.",
@@ -2962,7 +2962,7 @@ client.on("interactionCreate", async interaction => {
       });
     }
 
-    if (interaction.commandName === "events") {
+    if (interaction.commandName === "game-events") {
       if (!gameEventHistory.length) {
         return await interaction.reply({
           content: "📭 No game events or updates discovered yet.",
@@ -3019,7 +3019,7 @@ client.on("interactionCreate", async interaction => {
       });
     }
 
-    if (interaction.commandName === "testrift") {
+    if (interaction.commandName === "rift-test") {
       if (!RIFT_ALERTS_ENABLED) {
         return await interaction.reply({
           content: "🟣 Rift tracker is disabled.",
@@ -3060,7 +3060,7 @@ client.on("interactionCreate", async interaction => {
       });
     }
 
-    if (interaction.commandName === "stats") {
+    if (interaction.commandName === "bot-stats") {
       const uptimeSeconds = Math.floor(process.uptime());
       const hours = Math.floor(uptimeSeconds / 3600);
       const minutes = Math.floor((uptimeSeconds % 3600) / 60);
@@ -3088,7 +3088,7 @@ client.on("interactionCreate", async interaction => {
       });
     }
 
-    if (interaction.commandName === "imagecheck") {
+    if (interaction.commandName === "image-check") {
       const requested = interaction.options.getString("egg", true);
       const entry = findCatalogEgg(requested) || findCatalogPet(requested);
 
@@ -3134,7 +3134,7 @@ client.on("interactionCreate", async interaction => {
       });
     }
 
-    if (interaction.commandName === "reload") {
+    if (interaction.commandName === "bot-reload") {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       seen.clear();
@@ -3167,7 +3167,7 @@ client.on("interactionCreate", async interaction => {
       });
     }
 
-    if (interaction.commandName === "testrole") {
+    if (interaction.commandName === "role-test") {
       const rarity = interaction.options.getString("rarity", true);
       const roleId = await resolveAlertRoleId(rarity);
 
@@ -3201,7 +3201,7 @@ client.on("interactionCreate", async interaction => {
       });
     }
 
-    if (interaction.commandName === "testegg") {
+    if (interaction.commandName === "egg-test") {
       if (!CHANNEL_ID) {
         return await interaction.reply({
           content: "❌ DISCORD_DEFAULT_CHANNEL_ID is not configured.",
