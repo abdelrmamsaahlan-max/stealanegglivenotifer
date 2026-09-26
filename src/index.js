@@ -440,11 +440,20 @@ function collectEggCandidates(value, path = [], out = []) {
     "spawnedAt", "spawned_at", "detectedAt", "detected_at",
     "timestamp", "time", "createdAt", "created_at", "date"
   );
+  const sourceEventId = get(
+    "eventId", "eventID", "event_id", "spawnId", "spawnID",
+    "spawn_id", "id", "uuid"
+  );
   const imageUrl = firstImageUrl(value);
 
   if (typeof eggName === "string" && typeof rarity === "string") {
     const rarityKey = rarity.trim().toLowerCase();
     if (["secret", "eternal", "divine"].includes(rarityKey)) {
+      const catalogEgg = findCatalogEgg(eggName.trim());
+      if (!catalogEgg) {
+        return out;
+      }
+
       const parsedTime = parseTimestamp(spawnedAt);
       const pathText = path.join(".").toLowerCase();
       let score = 0;
@@ -464,6 +473,7 @@ function collectEggCandidates(value, path = [], out = []) {
         rarity: rarityKey[0].toUpperCase() + rarityKey.slice(1),
         biome: typeof area === "string" && area.trim() ? area.trim() : "Unknown",
         spawnedAt: parsedTime ? parsedTime.toISOString() : null,
+        sourceEventId: sourceEventId ? String(sourceEventId) : null,
         imageUrl: normalizeImageUrl(imageUrl),
         score,
         path: path.join(".")
@@ -482,14 +492,24 @@ function pickLatestEggFromFeed(payload) {
   const candidates = collectEggCandidates(payload);
   if (!candidates.length) return null;
 
-  candidates.sort((a, b) => {
+  const now = Date.now();
+  const fresh = candidates.filter(candidate => {
+    const ts = candidate.spawnedAt ? Date.parse(candidate.spawnedAt) : NaN;
+    if (!Number.isFinite(ts)) return false;
+    const age = now - ts;
+    return age >= -60_000 && age <= LIVE_FEED_MAX_AGE_MS;
+  });
+
+  const pool = fresh.length ? fresh : candidates;
+
+  pool.sort((a, b) => {
     const aTime = a.spawnedAt ? Date.parse(a.spawnedAt) : 0;
     const bTime = b.spawnedAt ? Date.parse(b.spawnedAt) : 0;
     if (b.score !== a.score) return b.score - a.score;
     return bTime - aTime;
   });
 
-  return candidates[0];
+  return pool[0];
 }
 
 function feedStateLooksOffline(payload) {
@@ -599,10 +619,12 @@ async function pollEggWatch() {
         }
       }
 
+      // The live API is the authoritative receiver. Do not scrape page HTML here:
+      // the page contains banners/marketing artwork that can never be a spawn image.
       const candidate =
-        typeof payload === "string"
-          ? parseEggWatchHtml(payload)
-          : pickLatestEggFromFeed(payload);
+        typeof payload === "object" && payload !== null
+          ? pickLatestEggFromFeed(payload)
+          : null;
 
       if (!candidate || !candidate.eggName || !candidate.spawnedAt) {
         liveFeedLastUrl = url;
@@ -617,6 +639,7 @@ async function pollEggWatch() {
       if (!Number.isFinite(eventTime)) continue;
 
       const fingerprint = [
+        candidate.sourceEventId ? String(candidate.sourceEventId) : "",
         normalizeFeedKey(candidate.eggName),
         normalizeFeedKey(candidate.rarity),
         normalizeFeedKey(candidate.biome),
@@ -671,7 +694,8 @@ async function pollEggWatch() {
         biome: candidate.biome || "Unknown",
         spawnedAt: candidate.spawnedAt,
         imageUrl,
-        source: "EggWatch Global Feed"
+        source: "EggWatch Global Feed",
+        sourceEventId: candidate.sourceEventId || null
       };
 
       try {
