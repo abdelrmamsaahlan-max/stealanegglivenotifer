@@ -2640,7 +2640,9 @@ async function fetchPetPage(petName) {
 
 function parseImgCandidates(html, pageUrl, targetPetName) {
   const targetKeys = petImageNameKeys(targetPetName);
-  const tags = String(html || "").match(/<img\b[^>]*>/gi) || [];
+  const markup = String(html || "");
+  const tags =
+    markup.match(/<(?:img|source)\b[^>]*>/gi) || [];
 
   const matchesPetName = value => {
     const normalized = normalizeFeedKey(value);
@@ -2652,13 +2654,17 @@ function parseImgCandidates(html, pageUrl, targetPetName) {
     );
   };
 
-  return tags.map(tag => {
+  const results = [];
+
+  for (const tag of tags) {
     const attrs = extractTagAttributes(tag);
     const src =
       attrs.src ||
       attrs["data-src"] ||
       attrs["data-lazy-src"] ||
       attrs["data-original"] ||
+      attrs["data-bg"] ||
+      attrs["data-background-image"] ||
       "";
 
     const srcSet =
@@ -2685,9 +2691,7 @@ function parseImgCandidates(html, pageUrl, targetPetName) {
       .filter(Boolean)
       .filter(isTrustedPetImageUrl);
 
-    if (!urls.length) {
-      return { urls: [], score: -Infinity };
-    }
+    if (!urls.length) continue;
 
     let score = 0;
     const altKey = normalizeFeedKey(alt);
@@ -2697,16 +2701,32 @@ function parseImgCandidates(html, pageUrl, targetPetName) {
     if (matchesPetName(title)) score += titleKey === targetKeys[0] ? 220 : 160;
     if (/original\s+pet\s+icon/i.test(alt + " " + title + " " + className)) score += 500;
     if (/\bpet\b/i.test(alt + " " + title)) score += 60;
-    if (/images\/pets|images\/optimized/i.test(metadata)) score += 60;
+    if (/images\/pets|images\/optimized|assets\/images/i.test(metadata)) score += 60;
     if (/\b(egg|eggs|area|biome|banner|hero|og|logo|favicon|screenshot|update-\d+)\b/i.test(metadata)) score -= 500;
     if (/\b(article|author|profile|thumbnail|avatar)\b/i.test(metadata)) score -= 150;
+    if (matchesPetName(src)) score += 150;
 
-    return { urls, score };
-  })
+    results.push({ urls, score });
+  }
+
+  // Some pet pages render the artwork as CSS background images or lazy data
+  // attributes instead of a normal <img>. Keep this parser pet-only by scoring
+  // the URL itself against the known pet names and rejecting common UI artwork.
+  for (const match of markup.matchAll(/(?:background-image\s*:\s*url\(|data-(?:bg|background-image)=["'])([^)"']+)/gi)) {
+    const rawUrl = match[1];
+    const url = absolutizeUrl(rawUrl, pageUrl);
+    if (!url || !isTrustedPetImageUrl(url)) continue;
+
+    const normalizedUrl = normalizeFeedKey(url);
+    let score = matchesPetName(url) ? 220 : 30;
+    if (/\b(egg|eggs|area|biome|banner|hero|og|logo|favicon|screenshot|update-\d+)\b/i.test(normalizedUrl)) score -= 500;
+    results.push({ urls: [url], score });
+  }
+
+  return results
     .filter(item => item.urls.length && item.score >= 100)
     .sort((a, b) => b.score - a.score);
 }
-
 function isTrustedPetImageUrl(value) {
   if (!isValidHttpUrl(value)) return false;
 
@@ -2743,6 +2763,60 @@ async function resolvePetImageSource(petName) {
     imageFallbackCache.delete("pet:" + key);
   }
 
+  const databaseRecord = petImageDatabase.get(key);
+  const directSlugs = petImageNameKeys(entry.petName)
+    .map(slugify)
+    .filter(Boolean);
+
+  const directCandidates = [];
+  try {
+    const sourceHost = new URL(databaseRecord?.sourcePage || "").hostname.toLowerCase();
+    const bases = [
+      `https://${sourceHost}/images/pets/`,
+      `https://${sourceHost}/images/`,
+      `https://${sourceHost}/assets/images/pets/`,
+      `https://${sourceHost}/wp-content/uploads/`
+    ];
+
+    for (const base of bases) {
+      for (const slug of directSlugs) {
+        for (const extension of [".webp", ".png", ".jpg", ".jpeg"]) {
+          directCandidates.push(base + encodeURIComponent(slug) + extension);
+        }
+      }
+    }
+  } catch {}
+
+  const seenUrls = new Set();
+  const tryCandidates = async candidates => {
+    for (const candidate of candidates) {
+      for (const url of candidate.urls || [candidate]) {
+        if (!url || seenUrls.has(url) || !isTrustedPetImageUrl(url)) continue;
+        seenUrls.add(url);
+
+        try {
+          const { response } = await fetchLiveFeed(url);
+          const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+
+          if (
+            response.ok &&
+            contentType.startsWith("image/") &&
+            !contentType.includes("svg") &&
+            !contentType.includes("gif")
+          ) {
+            imageFallbackCache.set("pet:" + key, { url, at: Date.now() });
+            console.log("Pet image source found:", entry.petName);
+            return url;
+          }
+        } catch {}
+      }
+    }
+    return null;
+  };
+
+  const directFound = await tryCandidates(directCandidates);
+  if (directFound) return directFound;
+
   const page = await fetchPetPage(entry.petName);
   if (!page?.body || !page?.pageUrl) {
     imageFallbackCache.set("pet:" + key, { url: null, at: Date.now() });
@@ -2750,26 +2824,8 @@ async function resolvePetImageSource(petName) {
   }
 
   const candidates = parseImgCandidates(page.body, page.pageUrl, entry.petName);
-
-  for (const candidate of candidates) {
-    for (const url of candidate.urls) {
-      try {
-        const { response } = await fetchLiveFeed(url);
-        const contentType = String(response.headers.get("content-type") || "").toLowerCase();
-
-        if (
-          response.ok &&
-          contentType.startsWith("image/") &&
-          !contentType.includes("svg") &&
-          !contentType.includes("gif")
-        ) {
-          imageFallbackCache.set("pet:" + key, { url, at: Date.now() });
-          console.log("Pet image source found:", entry.petName);
-          return url;
-        }
-      } catch {}
-    }
-  }
+  const pageFound = await tryCandidates(candidates);
+  if (pageFound) return pageFound;
 
   imageFallbackCache.set("pet:" + key, { url: null, at: Date.now() });
   return null;
