@@ -1037,7 +1037,7 @@ app.get("/cdn/pets/:pet.png", async (req, res) => {
   res.setHeader("Content-Type", "image/png");
   res.setHeader("Cache-Control", "public, max-age=21600, stale-while-revalidate=86400");
   return res.status(200).send(pngBuffer);
-}
+});
 
 function collectEggCandidates(value, path = [], out = []) {
   if (!value || typeof value !== "object") return out;
