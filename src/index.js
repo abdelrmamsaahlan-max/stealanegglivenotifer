@@ -1314,7 +1314,7 @@ function isTrustedPetImageUrl(value) {
       /\/images\/pets\//.test(pathName) ||
       (host === "stealanegg-wiki.com" &&
         pathName.startsWith("/images/optimized/"));
-    const imageExtension = /\.png(?:$)/.test(pathName);
+    const imageExtension = /\.(?:png|webp|jpe?g)(?:$)/.test(pathName);
     const blockedPath = /(?:\/og\/|\/hero\/|\/banner\/|\/logo\/|\/favicon|sprite)/i.test(pathName);
 
     return trustedHost && petPath && imageExtension && !blockedPath;
@@ -1353,9 +1353,11 @@ async function resolvePetImageSource(petName) {
   }
 
   for (const base of directArtBases) {
-    directArtUrls.push(
-      base + encodeURIComponent(slug) + ".png"
-    );
+    for (const extension of [".png", ".webp", ".jpg", ".jpeg"]) {
+      directArtUrls.push(
+        base + encodeURIComponent(slug) + extension
+      );
+    }
   }
 
   for (const url of directArtUrls) {
