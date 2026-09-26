@@ -427,11 +427,6 @@ function scheduleStateSave() {
   }, 1500);
 }
 
-loadRuntimeState();
-rebuildLastSeenFromHistory().catch(error => {
-  console.warn("Last Seen history rebuild failed:", error?.message || error);
-});
-
 function normalizePublicBaseUrl(value) {
   const raw = String(value || "").trim();
   if (!raw) return "";
@@ -467,6 +462,10 @@ try {
   console.warn("Egg image catalog could not be loaded:", error?.message || error);
 }
 
+loadRuntimeState();
+rebuildLastSeenFromHistory().catch(error => {
+  console.warn("Last Seen history rebuild failed:", error?.message || error);
+});
 
 function findCatalogEgg(input) {
   const wanted = normalizeFeedKey(input);
