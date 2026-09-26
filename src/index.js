@@ -2578,9 +2578,27 @@ function findCatalogPet(input) {
   if (!wanted) return null;
 
   return eggImageCatalog.find(entry => {
-    const petName = entry?.petName;
-    return petName && normalizeFeedKey(petName) === wanted;
+    const names = [
+      entry?.petName,
+      ...(Array.isArray(entry?.aliases) ? entry.aliases : [])
+    ].filter(Boolean);
+
+    return names.some(name => normalizeFeedKey(name) === wanted);
   }) || null;
+}
+
+function petImageNameKeys(petName) {
+  const entry = findCatalogPet(petName);
+  const keys = [
+    petName,
+    entry?.petName,
+    ...(Array.isArray(entry?.aliases) ? entry.aliases : [])
+  ]
+    .filter(Boolean)
+    .map(normalizeFeedKey)
+    .filter(Boolean);
+
+  return [...new Set(keys)];
 }
 
 function petSlugForEntry(entry) {
@@ -2621,8 +2639,18 @@ async function fetchPetPage(petName) {
 }
 
 function parseImgCandidates(html, pageUrl, targetPetName) {
-  const targetKey = normalizeFeedKey(targetPetName);
+  const targetKeys = petImageNameKeys(targetPetName);
   const tags = String(html || "").match(/<img\b[^>]*>/gi) || [];
+
+  const matchesPetName = value => {
+    const normalized = normalizeFeedKey(value);
+    if (!normalized) return false;
+    return targetKeys.some(key =>
+      normalized === key ||
+      normalized.includes(key) ||
+      key.includes(normalized)
+    );
+  };
 
   return tags.map(tag => {
     const attrs = extractTagAttributes(tag);
@@ -2665,10 +2693,8 @@ function parseImgCandidates(html, pageUrl, targetPetName) {
     const altKey = normalizeFeedKey(alt);
     const titleKey = normalizeFeedKey(title);
 
-    if (altKey === targetKey) score += 250;
-    if (titleKey === targetKey) score += 220;
-    if (altKey.includes(targetKey)) score += 120;
-    if (titleKey.includes(targetKey)) score += 100;
+    if (matchesPetName(alt)) score += altKey === targetKeys[0] ? 250 : 180;
+    if (matchesPetName(title)) score += titleKey === targetKeys[0] ? 220 : 160;
     if (/original\s+pet\s+icon/i.test(alt + " " + title + " " + className)) score += 500;
     if (/\bpet\b/i.test(alt + " " + title)) score += 60;
     if (/images\/pets|images\/optimized/i.test(metadata)) score += 60;
@@ -2694,14 +2720,10 @@ function isTrustedPetImageUrl(value) {
       host === "steal-an-egg-roblox.wiki" ||
       host === "stealanegg-wiki.com";
 
-    const imagePath =
-      pathName.startsWith("/images/") ||
-      pathName.includes("/images/pets/");
-
     const blockedPath =
-      /(?:\/eggs?(?:\/|$)|\/og\/|\/hero\/|\/banner\/|\/logo\/|\/favicon|sprite|egg)/i.test(pathName);
+      /(?:\/eggs?(?:\/|$)|\/og\/|\/hero\/|\/banner\/|\/logo\/|\/favicon|sprite)/i.test(pathName);
 
-    return trustedHost && imagePath && !blockedPath;
+    return trustedHost && !blockedPath;
   } catch {
     return false;
   }
