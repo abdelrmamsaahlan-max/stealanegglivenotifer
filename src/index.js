@@ -4108,6 +4108,12 @@ async function processSpawnMessage(message) {
           message.author?.username ||
           "Discord Source";
 
+        console.log(
+          "Rift event detected:",
+          riftEvent.type,
+          riftEvent.bannerName || riftEvent.bossName || "unknown"
+        );
+
         try {
           await sendRiftAlert(riftEvent);
         } catch (error) {
@@ -4126,6 +4132,11 @@ async function processSpawnMessage(message) {
       message.author?.tag ||
       message.author?.username ||
       "Discord Source";
+
+    console.log(
+      "Experiment event detected:",
+      experimentEvent.experimentName
+    );
 
     const key = experimentEventKey(experimentEvent);
     const seenAt = seenExperimentAlerts.get(key) || 0;
@@ -4221,8 +4232,6 @@ client.on("messageCreate", message => {
 });
 
 client.on("messageUpdate", async (_oldMessage, newMessage) => {
-  if (alertedMessageIds.has(newMessage.id)) return;
-
   try {
     if (!newMessage.author || !newMessage.embeds?.length) {
       await newMessage.fetch().catch(() => newMessage);
