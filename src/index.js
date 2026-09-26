@@ -2142,7 +2142,10 @@ async function scanForGameUpdates() {
         ? extractDiscoveryEvents(body, source.name)
         : [];
 
-      if (sourceUpdate) updateCandidates.push(sourceUpdate);
+      if (sourceUpdate) {
+        sourceUpdate.url = source.url;
+        updateCandidates.push(sourceUpdate);
+      }
       supportedEggs.push(...sourceEggs);
       detectedEvents.push(...sourceEvents);
 
@@ -2212,10 +2215,21 @@ async function scanForGameUpdates() {
   }
 
   let added = 0;
+  let metadataUpdated = 0;
   const newlyAdded = [];
 
   for (const item of uniqueEggs.values()) {
-    const before = findCatalogEgg(item.eggName);
+    const existing = findCatalogEgg(item.eggName);
+    if (
+      existing &&
+      item.area &&
+      item.area !== "Unknown" &&
+      normalizeFeedKey(existing.biome) !== normalizeFeedKey(item.area)
+    ) {
+      existing.biome = item.area;
+      metadataUpdated++;
+    }
+    const before = existing;
     const entry = ensureCatalogEgg(
       item.eggName,
       item.rarity,
@@ -2362,7 +2376,8 @@ async function scanForGameUpdates() {
     updateCandidates: updateCandidates.length,
     uniqueEggs: uniqueEggs.size,
     events: detectedEvents.length,
-    newlyAdded: newlyAdded.length
+    newlyAdded: newlyAdded.length,
+    metadataUpdated
   };
 
   scheduleStateSave();
@@ -2374,6 +2389,7 @@ async function scanForGameUpdates() {
     "updates=" + updateCandidates.length,
     "eggs=" + uniqueEggs.size,
     "new=" + added,
+    "metadataUpdated=" + metadataUpdated,
     "events=" + detectedEvents.length
   );
 }
