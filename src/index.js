@@ -429,7 +429,7 @@ async function fetchPetPage(petName) {
 }
 
 function parseImgCandidates(html, pageUrl, targetPetName) {
-  const tags = String(html || "").match(/<img\\b[^>]*>/gi) || [];
+  const tags = String(html || "").match(/<img\b[^>]*>/gi) || [];
 
   return tags.map(tag => {
     const attrs = extractTagAttributes(tag);
@@ -455,18 +455,18 @@ function parseImgCandidates(html, pageUrl, targetPetName) {
     if (eggNameMatchesTarget(title, targetPetName)) score += 120;
     if (normalizeFeedKey(alt) === normalizeFeedKey(targetPetName)) score += 35;
     if (metadata.includes(normalizeFeedKey(targetPetName))) score += 35;
-    if (/\\b(avatar|pet)\\b/i.test(alt + " " + title)) score += 20;
-    if (/\\/images\\/pets\\//i.test(src)) score += 50;
-    if (/\\.(?:webp|png)(?:\\?|$)/i.test(src)) score += 10;
+    if (/\b(avatar|pet)\b/i.test(alt + " " + title)) score += 20;
+    if (/\/images\/pets\//i.test(src)) score += 50;
+    if (/\.(?:webp|png)(?:\?|$)/i.test(src)) score += 10;
 
-    if (/\\b(og|hero|banner|logo|site-header|favicon|sprite)\\b/i.test(metadata)) score -= 250;
-    if (/\\b(article|author|profile|icon|thumbnail)\\b/i.test(metadata)) score -= 100;
+    if (/\b(og|hero|banner|logo|site-header|favicon|sprite)\b/i.test(metadata)) score -= 250;
+    if (/\b(article|author|profile|icon|thumbnail)\b/i.test(metadata)) score -= 100;
 
     const srcParts = [];
     if (src) srcParts.push(src);
     if (srcSet) {
       for (const part of srcSet.split(",")) {
-        const candidate = part.trim().split(/\\s+/)[0];
+        const candidate = part.trim().split(/\s+/)[0];
         if (candidate) srcParts.push(candidate);
       }
     }
@@ -492,8 +492,8 @@ function isTrustedPetImageUrl(value) {
 
     return (
       host === "robloxstealanegg.wiki" &&
-      /\\/images\\/pets\\//.test(pathName) &&
-      /\\.(?:png|webp)(?:$)/.test(pathName)
+      /\/images\/pets\//.test(pathName) &&
+      /\.(?:png|webp)(?:$)/.test(pathName)
     );
   } catch {
     return false;
@@ -534,20 +534,20 @@ async function resolvePetImageSource(petName) {
 function parseGameStatsFromPetPage(body) {
   const html = String(body || "");
   const text = html
-    .replace(/<script[\\s\\S]*?<\\/script>/gi, " ")
-    .replace(/<style[\\s\\S]*?<\\/style>/gi, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
     .replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;/gi, " ")
     .replace(/&amp;/gi, "&")
-    .replace(/\\s+/g, " ")
+    .replace(/\s+/g, " ")
     .trim();
 
-  const incomeMatch = text.match(/Base income\\s*\\$?([0-9.,]+\\s*[KMBT])\\/s/i);
-  const speedMatch = text.match(/(?:you need|requires?|minimum(?: gate)?[:\\s]+)([0-9.,]+\\s*[KMBT])\\s*Speed/i);
+  const incomeMatch = text.match(/Base income\s*\$?([0-9.,]+\s*[KMBT])\/s/i);
+  const speedMatch = text.match(/(?:you need|requires?|minimum(?: gate)?[:\s]+)([0-9.,]+\s*[KMBT])\s*Speed/i);
 
   return {
-    income: incomeMatch ? "$" + incomeMatch[1].replace(/\\s+/g, "") + "/s" : null,
-    speed: speedMatch ? speedMatch[1].replace(/\\s+/g, "") : null
+    income: incomeMatch ? "$" + incomeMatch[1].replace(/\s+/g, "") + "/s" : null,
+    speed: speedMatch ? speedMatch[1].replace(/\s+/g, "") : null
   };
 }
 
@@ -677,7 +677,7 @@ async function warmPetImageCache() {
 
 app.get("/cdn/pets/:pet.png", async (req, res) => {
   const rawPet = String(req.params.pet || "")
-    .replace(/\\.png$/i, "")
+    .replace(/\.png$/i, "")
     .replace(/-/g, " ")
     .trim();
 
