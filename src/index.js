@@ -2958,7 +2958,9 @@ async function resolveAlertRoleId(rarity) {
 
     role = await alertChannel.guild.roles.create({
       name: roleNames[rarityKey],
-      color: roleColors[rarityKey],
+      colors: {
+        primaryColor: roleColors[rarityKey]
+      },
       permissions: [],
       mentionable: true,
       hoist: false,
