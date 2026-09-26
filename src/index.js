@@ -4150,7 +4150,6 @@ setInterval(() => {
 
     // Drop transient caches first; the catalog/history remain intact.
     petPageCache.clear();
-    petStatsCache.clear();
     imageFallbackCache.clear();
   }
 
