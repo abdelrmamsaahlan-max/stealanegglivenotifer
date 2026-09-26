@@ -27,7 +27,7 @@ let circuitOpenUntil = 0;
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
-\nfunction mergeStructuredRowsIntoState(state, result) {
+function mergeStructuredRowsIntoState(state, result) {
   const next = state && typeof state === "object" ? state : {};
 
   const existingSpawnKeys = new Set(
