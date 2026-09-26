@@ -48,3 +48,21 @@ test("parseSpawn respects the configured rarity allowlist", () => {
 
   assert.equal(event, null);
 });
+
+
+test("parses a Secret egg when the same message also announces a Forbidden Experiment", () => {
+  const event = parseSpawn({
+    text:
+      "<:Scramble_Experiment:1550937506013253724> A Forbidden Experiment Has Appeared!",
+    fields: [
+      { name: "Rarity", value: "Secret" },
+      { name: "Egg", value: "Nightflame Egg" },
+      { name: "Location", value: "Titan Temple" }
+    ]
+  }, rarities);
+
+  assert.ok(event);
+  assert.equal(event.eggName, "Nightflame Egg");
+  assert.equal(event.rarity, "Secret");
+  assert.equal(event.biome, "Titan Temple");
+});
