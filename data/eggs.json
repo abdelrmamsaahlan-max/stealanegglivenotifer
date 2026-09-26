@@ -1,6 +1,6 @@
 {
-  "schemaVersion": 4,
-  "purpose": "Exact egg-image source map. EggWatch supplies the live spawned name/rarity/area; the notifier canonicalizes the egg name, opens the mapped pet page, and extracts only an image explicitly labeled for the matched Egg. Site banners/OG/hero images are rejected.",
+  "schemaVersion": 5,
+  "purpose": "Exact egg-image source map. EggWatch supplies the live spawned name/rarity/area; the notifier canonicalizes the egg name, opens the mapped pet page, and extracts only an image explicitly labeled for the matched Egg. Site banners/OG/hero images are rejected. Base income is stored per tracked pet so alerts do not depend on fragile page-text parsing.",
   "rarities": [
     "Secret",
     "Eternal",
@@ -20,7 +20,10 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/king-snake-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": "$3.5m/s",
+      "baseIncomeSource": "https://steal-an-egg-roblox.wiki/pets/king-snake/",
+      "baseIncomeVerifiedAt": "2026-09-26"
     },
     {
       "eggName": "Yeti Egg",
@@ -35,7 +38,10 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/yeti-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": "$5m/s",
+      "baseIncomeSource": "https://steal-an-egg-roblox.wiki/pets/yeti/",
+      "baseIncomeVerifiedAt": "2026-09-26"
     },
     {
       "eggName": "Cerberus Egg",
@@ -50,7 +56,10 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/cerberus-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": "$8m/s",
+      "baseIncomeSource": "https://steal-an-egg-roblox.wiki/pets/cerberus/",
+      "baseIncomeVerifiedAt": "2026-09-26"
     },
     {
       "eggName": "Kraken Egg",
@@ -65,7 +74,10 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/kraken-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": "$15m/s",
+      "baseIncomeSource": "https://steal-an-egg-roblox.wiki/pets/kraken/",
+      "baseIncomeVerifiedAt": "2026-09-26"
     },
     {
       "eggName": "T-Rex Egg",
@@ -81,7 +93,10 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/t-rex-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": "$25m/s",
+      "baseIncomeSource": "https://steal-an-egg-roblox.wiki/pets/t-rex/",
+      "baseIncomeVerifiedAt": "2026-09-26"
     },
     {
       "eggName": "Tralaledon Egg",
@@ -96,7 +111,10 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/tralaledon-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": "$32m/s",
+      "baseIncomeSource": "https://steal-an-egg-roblox.wiki/pets/tralaledon/",
+      "baseIncomeVerifiedAt": "2026-09-26"
     },
     {
       "eggName": "Cosmic Skeleton Boss Egg",
@@ -111,7 +129,10 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/cosmic-skeleton-boss-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": "$45m/s",
+      "baseIncomeSource": "https://steal-an-egg-roblox.wiki/pets/cosmic-skeleton-boss/",
+      "baseIncomeVerifiedAt": "2026-09-26"
     },
     {
       "eggName": "Cosmic Dragon Egg",
@@ -126,7 +147,10 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/cosmic-dragon-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": "$60m/s",
+      "baseIncomeSource": "https://steal-an-egg-roblox.wiki/pets/cosmic-dragon/",
+      "baseIncomeVerifiedAt": "2026-09-26"
     },
     {
       "eggName": "Stag Egg",
@@ -141,7 +165,10 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/stag-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": "$145m/s",
+      "baseIncomeSource": "https://steal-an-egg-roblox.wiki/pets/stag/",
+      "baseIncomeVerifiedAt": "2026-09-26"
     },
     {
       "eggName": "Bomboclat Crocolat Egg",
@@ -156,7 +183,10 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/bomboclat-crocolat-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": null,
+      "baseIncomeSource": null,
+      "baseIncomeVerifiedAt": "2026-09-26"
     },
     {
       "eggName": "Mutant Shark Egg",
@@ -171,7 +201,10 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/mutant-shark-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": "$215m/s",
+      "baseIncomeSource": "https://steal-an-egg-roblox.wiki/pets/mutant-shark/",
+      "baseIncomeVerifiedAt": "2026-09-26"
     },
     {
       "eggName": "Gargoyle Egg",
@@ -186,7 +219,10 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/gargoyle-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": "$225m/s",
+      "baseIncomeSource": "https://steal-an-egg-roblox.wiki/pets/gargoyle/",
+      "baseIncomeVerifiedAt": "2026-09-26"
     },
     {
       "eggName": "RazorFang Egg",
@@ -202,7 +238,10 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/razorfang-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": "$350m/s",
+      "baseIncomeSource": "https://steal-an-egg-roblox.wiki/pets/razorfang/",
+      "baseIncomeVerifiedAt": "2026-09-26"
     },
     {
       "eggName": "Pure Jellyfish Egg",
@@ -217,7 +256,10 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/pure-jellyfish-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": "$225m/s",
+      "baseIncomeSource": "https://steal-an-egg-roblox.wiki/pets/pure-jellyfish/",
+      "baseIncomeVerifiedAt": "2026-09-26"
     },
     {
       "eggName": "Centaur Egg",
@@ -232,7 +274,10 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/centaur-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": "$350m/s",
+      "baseIncomeSource": "https://steal-an-egg-roblox.wiki/pets/centaur/",
+      "baseIncomeVerifiedAt": "2026-09-26"
     },
     {
       "eggName": "Ice Dragon Egg",
@@ -247,7 +292,10 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/ice-dragon-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": "$65m/s",
+      "baseIncomeSource": "https://steal-an-egg-roblox.wiki/pets/ice-dragon/",
+      "baseIncomeVerifiedAt": "2026-09-26"
     },
     {
       "eggName": "Phoenix Egg",
@@ -262,7 +310,10 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/phoenix-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": "$85m/s",
+      "baseIncomeSource": "https://steal-an-egg-roblox.wiki/pets/phoenix/",
+      "baseIncomeVerifiedAt": "2026-09-26"
     },
     {
       "eggName": "Lava Dragon Egg",
@@ -277,7 +328,10 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/lava-dragon-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": "$100m/s",
+      "baseIncomeSource": "https://steal-an-egg-roblox.wiki/pets/lava-dragon/",
+      "baseIncomeVerifiedAt": "2026-09-26"
     },
     {
       "eggName": "El Maja Egg",
@@ -292,7 +346,10 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/el-maja-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": "$130m/s",
+      "baseIncomeSource": "https://steal-an-egg-roblox.wiki/pets/el-maja/",
+      "baseIncomeVerifiedAt": "2026-09-26"
     },
     {
       "eggName": "Mosasaurus Egg",
@@ -307,7 +364,10 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/mosasaurus-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": "$180m/s",
+      "baseIncomeSource": "https://steal-an-egg-roblox.wiki/pets/mosasaurus/",
+      "baseIncomeVerifiedAt": "2026-09-26"
     },
     {
       "eggName": "Eternal Lunar Dragon Egg",
@@ -323,7 +383,10 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/eternal-lunar-dragon-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": "$250m/s",
+      "baseIncomeSource": "https://steal-an-egg-roblox.wiki/pets/eternal-lunar-dragon/",
+      "baseIncomeVerifiedAt": "2026-09-26"
     },
     {
       "eggName": "Oni Tiger Egg",
@@ -338,7 +401,10 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/oni-tiger-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": "$600m/s",
+      "baseIncomeSource": "https://steal-an-egg-roblox.wiki/pets/oni-tiger/",
+      "baseIncomeVerifiedAt": "2026-09-26"
     },
     {
       "eggName": "Strawberry Elephant Egg",
@@ -353,7 +419,10 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/strawberry-elephant-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": null,
+      "baseIncomeSource": null,
+      "baseIncomeVerifiedAt": "2026-09-26"
     },
     {
       "eggName": "Gorilla King Egg",
@@ -368,7 +437,10 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/gorilla-king-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": "$880m/s",
+      "baseIncomeSource": "https://steal-an-egg-roblox.wiki/pets/gorilla-king/",
+      "baseIncomeVerifiedAt": "2026-09-26"
     },
     {
       "eggName": "Skeleton Horse Egg",
@@ -383,7 +455,10 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/skeleton-horse-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": "$1.3b/s",
+      "baseIncomeSource": "https://steal-an-egg-roblox.wiki/pets/skeleton-horse/",
+      "baseIncomeVerifiedAt": "2026-09-26"
     },
     {
       "eggName": "Pegasus Egg",
@@ -398,7 +473,10 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/pegasus-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": "$1.3b/s",
+      "baseIncomeSource": "https://steal-an-egg-roblox.wiki/pets/pegasus/",
+      "baseIncomeVerifiedAt": "2026-09-26"
     },
     {
       "eggName": "Kitsune Egg",
@@ -413,7 +491,10 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/kitsune-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": "$1.8b/s",
+      "baseIncomeSource": "https://steal-an-egg-roblox.wiki/pets/kitsune/",
+      "baseIncomeVerifiedAt": "2026-09-26"
     },
     {
       "eggName": "Unicorn Egg",
@@ -428,7 +509,10 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/unicorn-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": "$1b/s",
+      "baseIncomeSource": "https://steal-an-egg-roblox.wiki/pets/unicorn/",
+      "baseIncomeVerifiedAt": "2026-09-26"
     },
     {
       "eggName": "Nightflame Egg",
@@ -443,7 +527,10 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/nightflame-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": "$3b/s",
+      "baseIncomeSource": "https://steal-an-egg-roblox.wiki/pets/nightflame/",
+      "baseIncomeVerifiedAt": "2026-09-26"
     },
     {
       "eggName": "World Burner Egg",
@@ -458,7 +545,10 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/world-burner-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": "$5b/s",
+      "baseIncomeSource": "https://steal-an-egg-roblox.wiki/pets/world-burner/",
+      "baseIncomeVerifiedAt": "2026-09-26"
     },
     {
       "eggName": "ArchAngel Egg",
@@ -474,12 +564,16 @@
       "sourcePage": "https://robloxstealanegg.wiki/eggs/archangel-egg/",
       "active": true,
       "lastVerified": "2026-09-26",
-      "source": "EggWatch-supported catalogue + egg-specific reference page"
+      "source": "EggWatch-supported catalogue + egg-specific reference page",
+      "baseIncome": "$5b/s",
+      "baseIncomeSource": "https://steal-an-egg-roblox.wiki/pets/archangel/",
+      "baseIncomeVerifiedAt": "2026-09-26"
     }
   ],
   "notes": [
     "Only the 31 Secret/Eternal/Divine spawn entries currently listed by EggWatch's supported catalogue are included.",
     "Experiment #001 Egg is intentionally excluded because it is an Experiment Shop item, not a live spawn event.",
-    "Rift-only entries are excluded from EggWatch spawn detection until EggWatch adds them to its supported catalogue."
+    "Rift-only entries are excluded from EggWatch spawn detection until EggWatch adds them to its supported catalogue.",
+    "Base income fields were refreshed on September 26, 2026 from the current Steal An Egg pet index; unknown values remain null rather than guessed."
   ]
 }
