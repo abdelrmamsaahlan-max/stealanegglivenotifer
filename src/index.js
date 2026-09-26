@@ -2955,8 +2955,10 @@ async function resolveAlertRoleId(rarity) {
     const created = await alertChannel.guild.roles.create({
       name: roleNames[rarityKey],
       color: roleColors[rarityKey],
+      permissions: [],
       mentionable: true,
-      reason: "Steal An Egg rarity alert role"
+      hoist: false,
+      reason: "Steal An Egg rarity alert role • mention-only • zero permissions"
     });
 
     resolvedRoleCache.set(rarityKey, { id: created.id, at: Date.now() });
@@ -3701,6 +3703,18 @@ async function getAlertChannel() {
 
   alertChannel = channel;
   return channel;
+}
+
+async function ensureAlertRoles() {
+  if (!alertChannel?.guild) return;
+
+  for (const rarity of ["secret", "eternal", "divine"]) {
+    try {
+      await resolveAlertRoleId(rarity);
+    } catch (error) {
+      console.warn("Alert role setup failed for " + rarity + ":", error?.message || error);
+    }
+  }
 }
 
 async function validateAlertRoles() {
@@ -4537,6 +4551,7 @@ client.once("clientReady", async () => {
     try {
       alertChannel = await client.channels.fetch(CHANNEL_ID);
       console.log("Alert channel cached.");
+      await ensureAlertRoles();
       await validateAlertRoles();
     } catch (error) {
       console.error("Alert channel preload failed:", error);
@@ -5104,6 +5119,7 @@ client.on("interactionCreate", async interaction => {
 
       if (CHANNEL_ID) {
         await getAlertChannel();
+        await ensureAlertRoles();
         await validateAlertRoles();
       }
 
