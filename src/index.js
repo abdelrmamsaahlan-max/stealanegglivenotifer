@@ -691,7 +691,7 @@ function loadRuntimeState() {
       "file=" + loadedPath
     );
   } catch (error) {
-    recordMonitorError("storage", error, "Runtime state restore failed");
+    console.warn("Runtime state restore failed:", error?.message || error);
   }
 }
 
