@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   EXPERIMENT_ACTIVE_MINUTES,
   EXPERIMENT_CYCLE_MINUTES,
+  buildExperimentAlertEmbed,
   experimentEventKey,
   parseExperimentAlert
 } from "../src/experiment-tracker.js";
@@ -87,4 +88,17 @@ test("detects a short forbidden experiment spawn message", () => {
   });
 
   assert.ok(event);
+});
+
+test("builds the Dr. Scramble embed in green", () => {
+  const event = parseExperimentAlert({
+    text: "A Forbidden Experiment Has Appeared!",
+    createdTimestamp: Date.UTC(2026, 8, 26, 7, 30, 0)
+  });
+  const embed = buildExperimentAlertEmbed(event, {
+    scramble: "🧪",
+    roblox: "🎮",
+    loading: "⏳"
+  });
+  assert.equal(embed.data.color, 0x22c55e);
 });
