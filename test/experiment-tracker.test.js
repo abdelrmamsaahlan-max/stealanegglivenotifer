@@ -101,4 +101,8 @@ test("builds the Dr. Scramble embed in green", () => {
     loading: "⏳"
   });
   assert.equal(embed.data.color, 0x22c55e);
+  assert.equal(embed.data.footer?.text, "Powered by FSMM • Steal An Egg");
+  assert.match(embed.data.description, /🧪/);
+  assert.match(embed.data.description, /🎮/);
+  assert.match(embed.data.description, /⏳/);
 });
