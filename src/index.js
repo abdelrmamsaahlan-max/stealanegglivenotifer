@@ -25,6 +25,15 @@ import {
   parseRiftChange,
   riftBannerChoices
 } from "./rift-tracker.js";
+import {
+  EXPERIMENT_ACTIVE_AREAS,
+  EXPERIMENT_ACTIVE_MINUTES,
+  EXPERIMENT_CYCLE_MINUTES,
+  buildExperimentActionRow,
+  buildExperimentAlertEmbed,
+  experimentEventKey,
+  parseExperimentAlert
+} from "./experiment-tracker.js";
 
 const app = express();
 
@@ -67,6 +76,10 @@ const COMMANDS = [
   new SlashCommandBuilder()
     .setName("rift")
     .setDescription("Show the current Rift banner, change times, rotation chance, and possible pets."),
+  new SlashCommandBuilder()
+    .setName("experiment-test")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .setDescription("Admin: send a sample Dr. Scramble experiment alert with the live-style countdown."),
   new SlashCommandBuilder()
     .setName("rift-test")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
@@ -114,6 +127,7 @@ const COMMANDS = [
 const ADMIN_COMMANDS = new Set([
   "egg-test",
   "rift-test",
+  "experiment-test",
   "role-test",
   "bot-reload"
 ]);
@@ -290,6 +304,52 @@ let riftState = {
 
 const seenRiftAlerts = new Map();
 
+const experimentState = {
+  lastAppearedAt: null,
+  nextExperimentAt: null,
+  lastSourceMessageId: null,
+  lastSourceName: null,
+  lastAlertMessageId: null
+};
+
+const seenExperimentAlerts = new Map();
+const experimentCustomEmojiCache = new Map();
+const experimentCustomEmojiSetupState = {
+  ready: false,
+  running: false,
+  lastError: null
+};
+
+const EXPERIMENT_EMOJI_TEMPLATES = [
+  {
+    key: "scramble",
+    sourceName: "Scramble_Experiment",
+    sourceId: "1550937506013253724",
+    animated: false,
+    localName: "experiment_scramble"
+  },
+  {
+    key: "roblox",
+    sourceName: "Roblox",
+    sourceId: "1545747766649684068",
+    animated: false,
+    localName: "experiment_roblox"
+  },
+  {
+    key: "loading",
+    sourceName: "loading",
+    sourceId: "1484180832498487407",
+    animated: true,
+    localName: "experiment_loading"
+  }
+];
+
+const EXPERIMENT_ROLE_NAMES = [
+  "「・EXPERIMENT EVENT」",
+  "EXPERIMENT EVENT",
+  "Experiment Event"
+];
+
 const LAST_SEEN_RARITIES = ["secret", "eternal", "divine"];
 const NON_NEST_SPAWN_EGGS = new Set([
   "bomboclat crocolat egg",
@@ -368,6 +428,24 @@ function loadRuntimeState() {
 
     if (state.riftState && typeof state.riftState === "object") {
       riftState = { ...riftState, ...state.riftState };
+    }
+
+    if (state.experimentState && typeof state.experimentState === "object") {
+      experimentState.lastAppearedAt = Number.isFinite(Number(state.experimentState.lastAppearedAt))
+        ? Number(state.experimentState.lastAppearedAt)
+        : null;
+      experimentState.nextExperimentAt = Number.isFinite(Number(state.experimentState.nextExperimentAt))
+        ? Number(state.experimentState.nextExperimentAt)
+        : null;
+      experimentState.lastSourceMessageId = typeof state.experimentState.lastSourceMessageId === "string"
+        ? state.experimentState.lastSourceMessageId
+        : null;
+      experimentState.lastSourceName = typeof state.experimentState.lastSourceName === "string"
+        ? state.experimentState.lastSourceName
+        : null;
+      experimentState.lastAlertMessageId = typeof state.experimentState.lastAlertMessageId === "string"
+        ? state.experimentState.lastAlertMessageId
+        : null;
     }
 
     if (state.lastSeenMessageIds && typeof state.lastSeenMessageIds === "object") {
@@ -451,6 +529,7 @@ function saveRuntimeState() {
       spawnHistory: spawnHistory.slice(0, MAX_HISTORY),
       gameEventHistory: gameEventHistory.slice(0, MAX_EVENT_HISTORY),
       riftState,
+      experimentState,
       riftHistory: riftHistory.slice(0, MAX_RIFT_HISTORY),
       lastSeenMessageIds,
       lastSeenByRarity: Object.fromEntries(
@@ -2332,6 +2411,142 @@ function getRarityEmoji(rarity) {
   return ALERT_EMOJIS[String(rarity || "").toLowerCase()] || "🥚";
 }
 
+function getExperimentEmoji(key) {
+  return experimentCustomEmojiCache.get(key)?.toString() ||
+    (key === "roblox" ? "🎮" : key === "loading" ? "⏳" : "🧪");
+}
+
+async function resolveExperimentRoleId(guild) {
+  if (!guild) return "";
+
+  try {
+    const roles = await guild.roles.fetch();
+    const targets = EXPERIMENT_ROLE_NAMES.map(normalizeFeedKey);
+    const role = roles.find(candidate =>
+      targets.includes(normalizeFeedKey(candidate?.name || ""))
+    );
+
+    if (role) {
+      console.log("Auto-resolved experiment alert role:", role.name, role.id);
+      return role.id;
+    }
+  } catch (error) {
+    console.warn("Experiment role lookup failed:", error?.message || error);
+  }
+
+  return "";
+}
+
+async function ensureExperimentCustomEmoji(guild, template, sourceEmoji = null) {
+  if (!guild || !template) return null;
+
+  const cached = experimentCustomEmojiCache.get(template.key);
+  if (cached) return cached;
+
+  try {
+    const existingById = sourceEmoji?.id
+      ? guild.emojis.cache.get(sourceEmoji.id)
+      : guild.emojis.cache.get(template.sourceId);
+
+    if (existingById) {
+      experimentCustomEmojiCache.set(template.key, existingById);
+      return existingById;
+    }
+
+    const existingByName = guild.emojis.cache.find(
+      emoji => emoji.name === template.localName
+    );
+    if (existingByName) {
+      experimentCustomEmojiCache.set(template.key, existingByName);
+      return existingByName;
+    }
+
+    const extension = template.animated ? "gif" : "png";
+    const sourceUrl =
+      "https://cdn.discordapp.com/emojis/" +
+      (sourceEmoji?.id || template.sourceId) +
+      "." + extension + "?size=128";
+
+    const input = await fetchRemoteImageBufferForEmoji(sourceUrl);
+    if (!input) return null;
+
+    let output = input;
+
+    if (!template.animated) {
+      output = await sharp(input, { failOn: "none" })
+        .ensureAlpha()
+        .resize({
+          width: 128,
+          height: 128,
+          fit: "contain",
+          background: { r: 0, g: 0, b: 0, alpha: 0 }
+        })
+        .png({ compressionLevel: 9 })
+        .toBuffer();
+    }
+
+    if (output.length > 256 * 1024) return null;
+
+    const created = await guild.emojis.create({
+      attachment: output,
+      name: template.localName,
+      reason: "Steal An Egg Dr. Scramble experiment alert emoji"
+    });
+
+    experimentCustomEmojiCache.set(template.key, created);
+    console.log("Created experiment custom emoji:", template.localName, created.id);
+    return created;
+  } catch (error) {
+    console.warn(
+      "Experiment custom emoji setup failed for " + template.localName + ":",
+      error?.message || error
+    );
+    return null;
+  }
+}
+
+async function ensureExperimentCustomEmojis(sourceEmojis = []) {
+  if (experimentCustomEmojiSetupState.running) {
+    return experimentCustomEmojiSetupState.ready;
+  }
+
+  const guild = await getEggEmojiGuild();
+  if (!guild) {
+    experimentCustomEmojiSetupState.lastError = "No target guild available";
+    return false;
+  }
+
+  experimentCustomEmojiSetupState.running = true;
+
+  try {
+    const sources = Array.isArray(sourceEmojis) ? sourceEmojis : [];
+
+    for (const template of EXPERIMENT_EMOJI_TEMPLATES) {
+      const sourceEmoji = sources.find(item =>
+        normalizeFeedKey(item?.name) === normalizeFeedKey(template.sourceName)
+      );
+      await ensureExperimentCustomEmoji(guild, template, sourceEmoji);
+    }
+
+    experimentCustomEmojiSetupState.ready = true;
+    experimentCustomEmojiSetupState.lastError = null;
+    console.log(
+      "Experiment custom emojis ready:",
+      experimentCustomEmojiCache.size + "/" + EXPERIMENT_EMOJI_TEMPLATES.length
+    );
+    return true;
+  } catch (error) {
+    experimentCustomEmojiSetupState.lastError = error?.message || String(error);
+    console.warn(
+      "Experiment emoji initialization failed:",
+      experimentCustomEmojiSetupState.lastError
+    );
+    return false;
+  } finally {
+    experimentCustomEmojiSetupState.running = false;
+  }
+}
+
 function getEggAlertEmoji(event) {
   const entry =
     findCatalogEgg(event?.eggName || event?.displayName) ||
@@ -2420,6 +2635,10 @@ function updateLiveFeedHealth() {
 function cleanupCaches(now = Date.now()) {
   for (const [key, timestamp] of seenRiftAlerts) {
     if (now - timestamp > RIFT_DEDUP_TTL_MS) seenRiftAlerts.delete(key);
+  }
+
+  for (const [key, timestamp] of seenExperimentAlerts) {
+    if (now - timestamp > 15 * 60 * 1000) seenExperimentAlerts.delete(key);
   }
 
   for (const [key, timestamp] of seen) {
@@ -3369,6 +3588,67 @@ async function sendRiftAlert(event, options = {}) {
   return true;
 }
 
+async function sendExperimentAlert(event, options = {}) {
+  if (!EVENT_ALERTS_ENABLED || !CHANNEL_ID || !event) return false;
+
+  const isTest = options.test === true;
+  const key = experimentEventKey(event);
+
+  if (!isTest) {
+    const previous = seenExperimentAlerts.get(key) || 0;
+    if (Date.now() - previous < 15 * 60 * 1000) return false;
+    seenExperimentAlerts.set(key, Date.now());
+  }
+
+  const channel = await getAlertChannel();
+  await ensureExperimentCustomEmojis(event.customEmojis || []);
+
+  const roleId = await resolveExperimentRoleId(channel.guild);
+  const scrambleEmoji = getExperimentEmoji("scramble");
+
+  const mentionContent =
+    (roleId ? "<@&" + roleId + "> " : "") +
+    scrambleEmoji +
+    " **A Forbidden Experiment Has Appeared!**";
+
+  const embed = buildExperimentAlertEmbed(event, {
+    scramble: scrambleEmoji,
+    roblox: getExperimentEmoji("roblox"),
+    loading: getExperimentEmoji("loading")
+  });
+
+  const row = buildExperimentActionRow(event);
+  const payload = {
+    content: mentionContent,
+    embeds: [embed],
+    components: row ? [row] : undefined,
+    allowedMentions: {
+      roles: roleId ? [roleId] : []
+    }
+  };
+
+  const message = await channel.send(payload);
+
+  experimentState.lastAppearedAt = Number(event.appearedAt || Date.now());
+  experimentState.nextExperimentAt = Number(event.nextExperimentAt || (
+    experimentState.lastAppearedAt + EXPERIMENT_CYCLE_MINUTES * 60_000
+  ));
+  experimentState.lastSourceMessageId = event.sourceMessageId || null;
+  experimentState.lastSourceName = event.sourceName || null;
+  experimentState.lastAlertMessageId = message.id;
+
+  if (!isTest) scheduleStateSave();
+
+  console.log(
+    "Experiment alert sent:",
+    event.experimentName || "Dr. Scramble Experiment",
+    "nextAt=" + new Date(experimentState.nextExperimentAt).toISOString(),
+    "message=" + message.id
+  );
+
+  return true;
+}
+
 async function sendAlert(event, latencyMs = null) {
   const entry = resolveAlertEntry(event);
   if (!entry) {
@@ -3542,6 +3822,28 @@ async function processSpawnMessage(message) {
   lastSourceMessageAt = new Date(message.createdTimestamp || Date.now()).toISOString();
   lastSourceMessageId = message.id || null;
 
+  const experimentEvent = parseExperimentAlert(messageData);
+  if (experimentEvent) {
+    experimentEvent.sourceMessageId = message.id || null;
+    experimentEvent.sourceName =
+      message.author?.tag ||
+      message.author?.username ||
+      "Discord Source";
+
+    const key = experimentEventKey(experimentEvent);
+    const seenAt = seenExperimentAlerts.get(key) || 0;
+
+    if (Date.now() - seenAt >= 15 * 60 * 1000) {
+      try {
+        await ensureExperimentCustomEmojis(experimentEvent.customEmojis || []);
+        await sendExperimentAlert(experimentEvent);
+      } catch (error) {
+        monitorErrors++;
+        console.warn("Experiment alert failed:", error?.message || error);
+      }
+    }
+  }
+
   const event = parseSpawn(messageData, RARITIES);
   if (!event) return;
 
@@ -3691,6 +3993,11 @@ app.get("/health", (_req, res) => {
     lastSeenMessagesReady,
     customEggEmojisReady: eggCustomEmojiSetupState.ready,
     customEggEmojiCount: eggCustomEmojiCache.size,
+    experimentTrackerReady: true,
+    experimentNextAt: experimentState.nextExperimentAt,
+    experimentLastAppearedAt: experimentState.lastAppearedAt,
+    experimentCustomEmojisReady: experimentCustomEmojiSetupState.ready,
+    experimentCustomEmojiCount: experimentCustomEmojiCache.size,
     cachedPetImages: [...imageFallbackCache.keys()].filter(key => key.startsWith("pet:") && imageFallbackCache.get(key)?.url).length
   });
 });
@@ -3717,6 +4024,16 @@ app.get("/api/rift", (_req, res) => {
     bossAlertsEnabled: RIFT_BOSS_ALERTS_ENABLED,
     state: riftState,
     history: riftHistory.slice(0, 20)
+  });
+});
+
+app.get("/api/experiment", (_req, res) => {
+  res.json({
+    enabled: EVENT_ALERTS_ENABLED,
+    cycleMinutes: EXPERIMENT_CYCLE_MINUTES,
+    activeMinutes: EXPERIMENT_ACTIVE_MINUTES,
+    activeAreas: EXPERIMENT_ACTIVE_AREAS,
+    state: experimentState
   });
 });
 
@@ -3775,7 +4092,8 @@ client.once("clientReady", async () => {
   if (CHANNEL_ID || LAST_SEEN_CHANNEL_ID) {
     try {
       await ensureEggCustomEmojis();
-      console.log("Custom egg emojis ready for configured guild.");
+      await ensureExperimentCustomEmojis();
+      console.log("Custom alert emojis ready for configured guild.");
     } catch (error) {
       monitorErrors++;
       console.error("Custom egg emoji initialization failed:", error);
@@ -3947,6 +4265,21 @@ client.on("interactionCreate", async interaction => {
         "🎮 Event history: " + gameEventHistory.length
       );
       checks.push(
+        "🧪 Experiment tracker: " +
+        (EVENT_ALERTS_ENABLED ? "ENABLED" : "DISABLED")
+      );
+      checks.push(
+        "⏭️ Next Experiment: " +
+        (experimentState.nextExperimentAt
+          ? "<t:" + Math.floor(experimentState.nextExperimentAt / 1000) + ":R>"
+          : "WAITING")
+      );
+      checks.push(
+        "🧪 Experiment emojis: " +
+        experimentCustomEmojiCache.size + "/" +
+        EXPERIMENT_EMOJI_TEMPLATES.length
+      );
+      checks.push(
         "⏱️ Uptime: " + Math.floor(process.uptime()) + "s"
       );
 
@@ -3981,6 +4314,14 @@ client.on("interactionCreate", async interaction => {
         "🖼️ **Character PNG:** " + (SOURCE_IMAGE_ALPHA_ONLY ? "ENABLED" : "NORMALIZE"),
         "🔄 **Auto catalog:** " + (AUTO_DISCOVERY_ENABLED ? "ENABLED" : "DISABLED") + " (" + autoDiscoveredCount + " new)",
         "🎮 **Event alerts:** " + (EVENT_ALERTS_ENABLED ? "ON" : "OFF"),
+        "🧪 **Experiment tracker:** " + (EVENT_ALERTS_ENABLED ? "ON" : "OFF"),
+        "⏭️ **Next Experiment:** " +
+          (experimentState.nextExperimentAt
+            ? "<t:" + Math.floor(experimentState.nextExperimentAt / 1000) + ":R>"
+            : "WAITING"),
+        "🧪 **Experiment emojis:** " +
+          experimentCustomEmojiCache.size + "/" +
+          EXPERIMENT_EMOJI_TEMPLATES.length,
         "🟣 **Rift tracker:** " + (RIFT_ALERTS_ENABLED ? "ON" : "OFF"),
         "🌀 **Current Rift:** " + (riftState.currentBannerName || "WAITING"),
         "⏭️ **Rift next change:** " + (riftState.nextChangeLabel || "Unknown"),
@@ -4129,6 +4470,44 @@ client.on("interactionCreate", async interaction => {
       });
     }
 
+    if (interaction.commandName === "experiment-test") {
+      if (!CHANNEL_ID) {
+        return await interaction.reply({
+          content: "❌ DISCORD_DEFAULT_CHANNEL_ID is not configured.",
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const appearedAt = Date.now();
+      const testEvent = parseExperimentAlert({
+        text:
+          "<:Scramble_Experiment:1550937506013253724> " +
+          "A Forbidden Experiment Has Appeared. " +
+          "[Click Here](https://www.roblox.com/games/start?placeId=107778070777162) " +
+          "Next experiment in: (in 30 minutes)",
+        createdTimestamp: appearedAt,
+        messageUrl: null,
+        authorId: interaction.user.id
+      });
+
+      testEvent.appearedAt = appearedAt;
+      testEvent.nextExperimentAt =
+        appearedAt + EXPERIMENT_CYCLE_MINUTES * 60_000;
+      testEvent.sourceMessageId = "manual-test";
+      testEvent.sourceName =
+        interaction.user.tag || interaction.user.username;
+
+      const sent = await sendExperimentAlert(testEvent, { test: true });
+
+      return await interaction.editReply({
+        content: sent
+          ? "✅ Dr. Scramble experiment test alert sent."
+          : "⚠️ Experiment test alert was not sent."
+      });
+    }
+
     if (interaction.commandName === "image-check") {
       const requested = interaction.options.getString("egg", true);
       const entry = findCatalogEgg(requested) || findCatalogPet(requested);
@@ -4198,6 +4577,7 @@ client.on("interactionCreate", async interaction => {
 
       if (CHANNEL_ID || LAST_SEEN_CHANNEL_ID) {
         await ensureEggCustomEmojis();
+        await ensureExperimentCustomEmojis();
       }
 
       if (LAST_SEEN_CHANNEL_ID) {
@@ -4336,6 +4716,8 @@ client.on("interactionCreate", async interaction => {
 
 client.on("shardReconnecting", shardId => {
   alertChannel = null;
+  experimentCustomEmojiCache.clear();
+  experimentCustomEmojiSetupState.ready = false;
   lastSeenMessagesReady = false;
   lastSeenMessageCache.clear();
   lastSeenMessagesInitInFlight = null;
@@ -4349,6 +4731,8 @@ client.on("shardReady", shardId => {
 
 client.on("shardDisconnect", (event, shardId) => {
   alertChannel = null;
+  experimentCustomEmojiCache.clear();
+  experimentCustomEmojiSetupState.ready = false;
   lastSeenMessagesReady = false;
   lastSeenMessageCache.clear();
   lastSeenMessagesInitInFlight = null;
