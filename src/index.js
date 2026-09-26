@@ -1,6 +1,8 @@
 import "dotenv/config";
 import express from "express";
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import {
   Client,
   GatewayIntentBits,
@@ -113,6 +115,32 @@ const LIVE_FEED_TIMEOUT_MS =
 
 const LIVE_FEED_MAX_AGE_MS =
   Math.max(60, Number(process.env.LIVE_FEED_MAX_AGE_SECONDS || 600)) * 1000;
+
+let eggImageCatalog = [];
+try {
+  const catalogPath = path.resolve(process.cwd(), "data/eggs.json");
+  const catalog = JSON.parse(fs.readFileSync(catalogPath, "utf8"));
+  eggImageCatalog = Array.isArray(catalog.eggs) ? catalog.eggs : [];
+} catch (error) {
+  console.warn("Egg image catalog could not be loaded:", error?.message || error);
+}
+
+function catalogImageForEgg(input) {
+  const wanted = normalizeFeedKey(input);
+  if (!wanted) return null;
+
+  const match = eggImageCatalog.find(entry => {
+    const names = [
+      entry?.eggName,
+      entry?.displayName,
+      ...(Array.isArray(entry?.aliases) ? entry.aliases : [])
+    ].filter(Boolean);
+
+    return names.some(name => normalizeFeedKey(name) === wanted);
+  });
+
+  return normalizeImageUrl(match?.image);
+}
 
 const API_RATE_LIMIT_PER_MINUTE =
   Math.max(1, Number(process.env.INGEST_RATE_LIMIT_PER_MINUTE || 120));
@@ -295,6 +323,9 @@ async function fetchPageImage(pageUrl) {
 async function resolveImageUrl(eggName, providedUrl = null) {
   const direct = normalizeImageUrl(providedUrl);
   if (direct) return direct;
+
+  const catalogImage = catalogImageForEgg(eggName);
+  if (catalogImage) return catalogImage;
 
   const key = normalizeFeedKey(eggName);
   if (!key) return null;
@@ -557,7 +588,8 @@ async function pollEggWatch() {
           candidate.eggName,
           "area=" + candidate.biome,
           "spawnedAt=" + candidate.spawnedAt,
-          "url=" + url
+          "url=" + url,
+          "catalogImage=" + (catalogImageForEgg(candidate.eggName) ? "available" : "none")
         );
         return;
       }
