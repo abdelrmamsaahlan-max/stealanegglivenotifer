@@ -27,6 +27,188 @@ let circuitOpenUntil = 0;
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
+\nfunction mergeStructuredRowsIntoState(state, result) {
+  const next = state && typeof state === "object" ? state : {};
+
+  const existingSpawnKeys = new Set(
+    Array.isArray(next.spawnHistory)
+      ? next.spawnHistory.map(item => [
+          item?.source || "",
+          item?.sourceEventId || item?.id || "",
+          item?.spawnedAt || ""
+        ].join("|"))
+      : []
+  );
+
+  const existingEventKeys = new Set(
+    Array.isArray(next.gameEventHistory)
+      ? next.gameEventHistory.map(item => [
+          item?.source || "",
+          item?.sourceEventId || item?.id || "",
+          item?.title || "",
+          item?.date || item?.occurredAt || ""
+        ].join("|"))
+      : []
+  );
+
+  const existingRiftKeys = new Set(
+    Array.isArray(next.riftHistory)
+      ? next.riftHistory.map(item => [
+          item?.source || "",
+          item?.sourceEventId || item?.id || "",
+          item?.type || "",
+          item?.bannerKey || item?.bossName || "",
+          item?.createdTimestamp || ""
+        ].join("|"))
+      : []
+  );
+
+  for (const row of Array.isArray(result?.events) ? result.events : []) {
+    const raw = row?.raw_payload && typeof row.raw_payload === "object"
+      ? row.raw_payload
+      : {};
+
+    if (row?.event_type === "egg_spawn") {
+      const record = {
+        ...raw,
+        id: raw.id || row.id || null,
+        source: raw.source || row.source || "unknown",
+        sourceEventId: raw.sourceEventId || row.source_event_id || row.id || null,
+        rarity: raw.rarity || row.rarity || "Unknown",
+        eggName: raw.eggName || row.egg_name || "Unknown Egg",
+        petName: raw.petName || row.title || row.egg_name || "Unknown",
+        area: raw.area || row.area || "Unknown",
+        spawnedAt: raw.spawnedAt || row.occurred_at || row.created_at || new Date().toISOString(),
+        detectedAt: raw.detectedAt || row.first_seen_at || row.created_at || new Date().toISOString(),
+        confidence: raw.confidence ?? row.confidence ?? null,
+        incidentId: raw.incidentId || row.incident_id || null,
+        eventState: raw.eventState || row.event_state || null
+      };
+
+      const key = [
+        record.source,
+        record.sourceEventId || record.id || "",
+        record.spawnedAt || ""
+      ].join("|");
+
+      if (!existingSpawnKeys.has(key)) {
+        next.spawnHistory = [record, ...(Array.isArray(next.spawnHistory) ? next.spawnHistory : [])];
+        existingSpawnKeys.add(key);
+      }
+      continue;
+    }
+
+    if (String(row?.event_type || "").startsWith("rift_")) {
+      const record = {
+        ...raw,
+        id: raw.id || row.id || null,
+        source: raw.source || row.source || "unknown",
+        sourceEventId: raw.sourceEventId || row.source_event_id || row.id || null,
+        type: raw.type || String(row.event_type).replace(/^rift_/, ""),
+        bannerKey: raw.bannerKey || null,
+        bannerName: raw.bannerName || row.title || null,
+        bossName: raw.bossName || row.title || null,
+        rotationChance: raw.rotationChance || null,
+        changedLabel: raw.changedLabel || row.description || null,
+        nextChangeLabel: raw.nextChangeLabel || null,
+        createdTimestamp: Number(raw.createdTimestamp || Date.parse(row.occurred_at) || Date.now()),
+        confidence: raw.confidence ?? row.confidence ?? null,
+        incidentId: raw.incidentId || row.incident_id || null,
+        eventState: raw.eventState || row.event_state || null
+      };
+      const key = [
+        record.source,
+        record.sourceEventId || record.id || "",
+        record.type,
+        record.bannerKey || record.bossName || "",
+        record.createdTimestamp
+      ].join("|");
+
+      if (!existingRiftKeys.has(key)) {
+        next.riftHistory = [record, ...(Array.isArray(next.riftHistory) ? next.riftHistory : [])];
+        existingRiftKeys.add(key);
+      }
+      continue;
+    }
+
+    const record = {
+      ...raw,
+      id: raw.id || row.id || null,
+      source: raw.source || row.source || "Auto Discovery",
+      sourceEventId: raw.sourceEventId || row.source_event_id || row.id || null,
+      type: raw.type || row.event_type || "event",
+      title: raw.title || row.title || "Game Event",
+      description: raw.description || row.description || "",
+      date: raw.date || row.occurred_at || row.created_at || null,
+      confidence: raw.confidence ?? row.confidence ?? null,
+      incidentId: raw.incidentId || row.incident_id || null,
+      eventState: raw.eventState || row.event_state || null,
+      evidence: Array.isArray(raw.evidence) ? raw.evidence : (Array.isArray(row.evidence) ? row.evidence : [])
+    };
+
+    const key = [
+      record.source,
+      record.sourceEventId || record.id || "",
+      record.title,
+      record.date || ""
+    ].join("|");
+
+    if (!existingEventKeys.has(key)) {
+      next.gameEventHistory = [record, ...(Array.isArray(next.gameEventHistory) ? next.gameEventHistory : [])];
+      existingEventKeys.add(key);
+    }
+  }
+
+  next.spawnHistory = (Array.isArray(next.spawnHistory) ? next.spawnHistory : []).slice(0, 100);
+  next.gameEventHistory = (Array.isArray(next.gameEventHistory) ? next.gameEventHistory : []).slice(0, 30);
+  next.riftHistory = (Array.isArray(next.riftHistory) ? next.riftHistory : []).slice(0, 30);
+
+  const currentLastSeen = next.lastSeenByRarity && typeof next.lastSeenByRarity === "object"
+    ? next.lastSeenByRarity
+    : {};
+
+  for (const row of Array.isArray(result?.lastSeen) ? result.lastSeen : []) {
+    const rarity = String(row?.rarity || "").toLowerCase();
+    if (!["secret", "eternal", "divine"].includes(rarity)) continue;
+    currentLastSeen[rarity] = currentLastSeen[rarity] || {};
+
+    const raw = row?.raw_payload && typeof row.raw_payload === "object"
+      ? row.raw_payload
+      : {};
+
+    currentLastSeen[rarity][String(row.identity_key || raw.identityKey || row.egg_name || "").toLowerCase()] = {
+      eggName: row.egg_name || raw.eggName || "Unknown Egg",
+      petName: raw.petName || row.egg_name || "Unknown",
+      area: row.area || raw.area || "Unknown",
+      spawnedAt: raw.spawnedAt || row.last_seen_at || row.first_seen_at || new Date().toISOString(),
+      detectedAt: raw.detectedAt || row.first_seen_at || row.last_seen_at || new Date().toISOString()
+    };
+  }
+  next.lastSeenByRarity = currentLastSeen;
+
+  const existingCatalog = Array.isArray(next.dynamicEggs) ? next.dynamicEggs : [];
+  const seenCatalog = new Set(existingCatalog.map(item => String(item?.eggName || "").toLowerCase()));
+  for (const row of Array.isArray(result?.catalog) ? result.catalog : []) {
+    if (row?.source !== "Auto Discovery" || !row?.egg_name || seenCatalog.has(String(row.egg_name).toLowerCase())) continue;
+    existingCatalog.push({
+      eggName: row.egg_name,
+      displayName: row.display_name || row.egg_name,
+      petName: row.pet_name || String(row.egg_name).replace(/\s+Egg$/i, ""),
+      rarity: row.rarity,
+      biome: row.biome || "Unknown",
+      aliases: Array.isArray(row.aliases) ? row.aliases : [],
+      active: row.active !== false,
+      source: row.source,
+      sourcePage: row.source_page || null,
+      discoveredAt: row.discovered_at || null
+    });
+    seenCatalog.add(String(row.egg_name).toLowerCase());
+  }
+  next.dynamicEggs = existingCatalog.slice(0, 50);
+
+  return next;
+}
+
 
 export function persistenceEnabled() {
   return ENABLED && Boolean(STORAGE_URL && STORAGE_SECRET);
@@ -171,7 +353,7 @@ export async function hydrateRuntimeStateFile() {
 
   try {
     const result = await callStorage("load");
-    const state = result?.state;
+    const state = mergeStructuredRowsIntoState(result?.state || {}, result);
 
     if (!state || typeof state !== "object") {
       return false;
