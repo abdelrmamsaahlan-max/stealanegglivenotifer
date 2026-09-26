@@ -154,11 +154,28 @@ function eggNameMatchesTarget(value, targetName) {
   return left.replace(/\begg\b/g, "").trim() === right.replace(/\begg\b/g, "").trim();
 }
 
-function extractAttribute(tag, name) {
-  const match = tag.match(new RegExp("\\b" + name + "\\s*=\\s*\\"([^\\"]+)\\"", "i"));
-  return match?.[1] || "";
+
+function extractTagAttributes(tag) {
+  const attrs = {};
+  const pattern = /([:\\w-]+)\\s*=\\s*"([^"]*)"/g;
+  for (const match of tag.matchAll(pattern)) {
+    attrs[match[1].toLowerCase()] = match[2];
+  }
+  return attrs;
 }
 
+function absolutizeUrl(value, pageUrl) {
+  const normalized = normalizeImageUrl(value);
+  if (normalized) return normalized;
+
+  try {
+    if (!value) return null;
+    const resolved = new URL(value, pageUrl).href;
+    return normalizeImageUrl(resolved);
+  } catch {
+    return null;
+  }
+}
 const API_RATE_LIMIT_PER_MINUTE =
   Math.max(1, Number(process.env.INGEST_RATE_LIMIT_PER_MINUTE || 120));
 
@@ -313,33 +330,36 @@ const imageFallbackCache = new Map();
 const IMAGE_CACHE_TTL_MS = 60 * 60 * 1000;
 
 
+
 async function fetchExactEggImage(pageUrl, targetEggName) {
   try {
     const { response, body } = await fetchLiveFeed(pageUrl);
     if (!response.ok) return null;
 
-    const tags = body.match(/<img\\b[^>]*>/gi) || [];
+    const tags = body.match(/<img\b[^>]*>/gi) || [];
     const candidates = tags.map(tag => {
-      const src = extractAttribute(tag, "src") ||
-        extractAttribute(tag, "data-src") ||
-        extractAttribute(tag, "data-lazy-src");
-      const alt = extractAttribute(tag, "alt");
-      const title = extractAttribute(tag, "title");
-      const className = extractAttribute(tag, "class");
+      const attrs = extractTagAttributes(tag);
+      const src = attrs.src || attrs["data-src"] || attrs["data-lazy-src"] || "";
+      const alt = attrs.alt || "";
+      const title = attrs.title || "";
+      const className = attrs.class || "";
       const metadata = (alt + " " + title + " " + className + " " + src).toLowerCase();
 
       let score = 0;
-      if (eggNameMatchesTarget(alt, targetEggName)) score += 100;
-      if (eggNameMatchesTarget(title, targetEggName)) score += 70;
-      if (metadata.includes(normalizeFeedKey(targetEggName))) score += 40;
-      if (/\\begg\\b/i.test(alt) || /\\begg\\b/i.test(title)) score += 20;
+      if (eggNameMatchesTarget(alt, targetEggName)) score += 120;
+      if (eggNameMatchesTarget(title, targetEggName)) score += 90;
+      if (metadata.includes(normalizeFeedKey(targetEggName))) score += 50;
+      if (/\begg\b/i.test(alt) || /\begg\b/i.test(title)) score += 20;
 
-      if (/\\b(og|hero|banner|logo|site-header|favicon)\\b/i.test(metadata)) score -= 150;
-      if (/\\b(article|author|avatar|profile)\\b/i.test(metadata)) score -= 80;
+      if (/\b(og|hero|banner|logo|site-header|favicon)\b/i.test(metadata)) score -= 200;
+      if (/\b(article|author|avatar|profile|icon|sprite)\b/i.test(metadata)) score -= 100;
 
-      return { src: normalizeImageUrl(src), score };
+      return {
+        src: absolutizeUrl(src, pageUrl),
+        score
+      };
     })
-      .filter(item => item.src && item.score >= 60)
+      .filter(item => item.src && item.score >= 70)
       .sort((a, b) => b.score - a.score);
 
     return candidates[0]?.src || null;
@@ -349,8 +369,9 @@ async function fetchExactEggImage(pageUrl, targetEggName) {
 }
 
 async function resolveImageUrl(eggName, providedUrl = null) {
+  // Do not use generic website banners or Open Graph images.
   const direct = normalizeImageUrl(providedUrl);
-  if (direct && /\\.(?:png|jpe?g|gif|webp)(?:\\?|$)/i.test(direct)) return direct;
+  if (direct && /\.(?:png|jpe?g|gif|webp)(?:\?|$)/i.test(direct)) return direct;
 
   const key = normalizeFeedKey(eggName);
   if (!key) return null;
@@ -362,7 +383,7 @@ async function resolveImageUrl(eggName, providedUrl = null) {
 
   const canonicalName = canonicalEggName(eggName);
   const catalogEntry = findCatalogEgg(eggName);
-  const slug = slugify(canonicalName.replace(/\\s+Egg$/i, ""));
+  const slug = slugify(canonicalName.replace(/\s+Egg$/i, ""));
   const pages = [];
 
   if (catalogEntry?.sourcePage) pages.push(catalogEntry.sourcePage);
