@@ -21,7 +21,7 @@ function clean(value) {
 
 function decodeUrl(value) {
   return String(value || "")
-    .replace(/\\&/g, "&")
+    .replace(/\\+&/g, "&")
     .replace(/&amp;/gi, "&")
     .replace(/["')]+$/g, "");
 }
