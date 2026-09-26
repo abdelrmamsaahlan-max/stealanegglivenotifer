@@ -1247,6 +1247,14 @@ function parseImgCandidates(html, pageUrl, targetPetName) {
     if (metadata.includes(normalizeFeedKey(targetPetName))) score += 35;
     if (/\b(avatar|pet)\b/i.test(alt + " " + title)) score += 20;
     if (/\/images\/pets\//i.test(src)) score += 50;
+    if (
+      /\/images\/pets\//i.test(src) &&
+      normalizeFeedKey(src).includes(
+        normalizeFeedKey(slugify(targetPetName)).replace(/-/g, " ")
+      )
+    ) {
+      score += 260;
+    }
     if (/\/images\/pets\/[^/]*-art\//i.test(src)) score += 220;
     if (/\/images\/pets\/[^/]+\/[^/]*-art\//i.test(src)) score += 200;
     if (/\.(?:webp|png)(?:\?|$)/i.test(src)) score += 10;
@@ -1323,10 +1331,11 @@ async function resolvePetImageSource(petName) {
   const slug = petSlugForEntry(entry);
 
   for (const base of directArtBases) {
-    directArtUrls.push(
-      base + encodeURIComponent(slug) + ".webp",
-      base + encodeURIComponent(slug) + ".png"
-    );
+    for (const extension of [".webp", ".png", ".jpg", ".jpeg"]) {
+      directArtUrls.push(
+        base + encodeURIComponent(slug) + extension
+      );
+    }
   }
 
   for (const url of directArtUrls) {
@@ -1667,10 +1676,22 @@ async function warmPetImageCache(options = {}) {
 
       try {
         const source = await resolvePetImageSource(entry.petName);
-        if (!source) continue;
+        if (!source) {
+          failed.push(entry.petName);
+          console.warn("No usable pet image source found:", entry.petName);
+          continue;
+        }
 
         const buffer = await getPetPngBuffer(entry.petName);
-        if (buffer) warmed++;
+        if (buffer) {
+          warmed++;
+        } else {
+          failed.push(entry.petName);
+          console.warn(
+            "Pet image source found but PNG processing failed:",
+            entry.petName
+          );
+        }
       } catch (error) {
         failed.push(entry.petName);
         console.warn(
