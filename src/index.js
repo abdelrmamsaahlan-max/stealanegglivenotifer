@@ -230,9 +230,6 @@ const LIVE_FEED_STALE_AFTER_MS =
 const AUTO_DISCOVERY_ENABLED =
   (process.env.AUTO_DISCOVERY_ENABLED || "true").toLowerCase() === "true";
 
-const AUTO_DISCOVERY_POLL_MS =
-  Math.max(30_000, Number(process.env.AUTO_DISCOVERY_POLL_SECONDS || 120) * 1000);
-
 const EVENT_ALERTS_ENABLED =
   (process.env.EVENT_ALERTS_ENABLED || "true").toLowerCase() === "true";
 
@@ -2014,6 +2011,65 @@ function decodeHtmlText(value) {
     .trim();
 }
 
+function recordSpawnHistory(event, source = "EggWatch Global Feed") {
+  const timestamp = Date.parse(event?.spawnedAt);
+  const record = {
+    id: event?.sourceEventId || [
+      normalizeFeedKey(event?.rarity),
+      normalizeFeedKey(event?.eggName),
+      normalizeFeedKey(event?.biome),
+      event?.spawnedAt || Date.now()
+    ].join("|"),
+    eggName: event?.eggName || "Unknown Egg",
+    petName: event?.displayName || event?.eggName || "Unknown",
+    rarity: event?.rarity || "Unknown",
+    area: event?.biome || "Unknown",
+    spawnedAt: Number.isFinite(timestamp)
+      ? new Date(timestamp).toISOString()
+      : new Date().toISOString(),
+    detectedAt: new Date().toISOString(),
+    source
+  };
+
+  const same = spawnHistory.find(item => item.id === record.id);
+  if (same) return same;
+
+  spawnHistory.unshift(record);
+  if (spawnHistory.length > MAX_HISTORY) spawnHistory.length = MAX_HISTORY;
+
+  recordLastSeen(event);
+  scheduleStateSave();
+  return record;
+}
+
+function recordGameEvent(event) {
+  const key = [
+    event.type || "event",
+    normalizeFeedKey(event.title),
+    event.date || ""
+  ].join("|");
+
+  if (gameEventHistory.some(item => item.key === key)) return null;
+
+  const record = {
+    key,
+    type: event.type || "event",
+    title: String(event.title || "Game Event").slice(0, 200),
+    description: String(event.description || "").slice(0, 800),
+    date: event.date || null,
+    source: event.source || "Game Update Discovery",
+    detectedAt: new Date().toISOString()
+  };
+
+  gameEventHistory.unshift(record);
+  if (gameEventHistory.length > MAX_EVENT_HISTORY) {
+    gameEventHistory.length = MAX_EVENT_HISTORY;
+  }
+
+  scheduleStateSave();
+  return record;
+}
+
 function updateDiscoverySourceHealth(source, patch = {}) {
   autoDiscoverySourceHealth.set(source.key, {
     key: source.key,
@@ -3620,7 +3676,6 @@ async function sendAlert(event, latencyMs = null) {
   const petName = String(event.displayName || event.eggName || "Unknown").trim();
   const area = String(event.biome || "Unknown").trim();
   const alertEggEmoji = getEggAlertEmoji(event);
-  const baseIncome = event.gameStats?.income || "Not available";
 
   const alertText =
     alertEggEmoji +
@@ -3963,6 +4018,12 @@ app.get("/api/events", (_req, res) => {
     count: gameEventHistory.length,
     lastUpdateTitle,
     lastUpdateCheckAt,
+    autoDiscovery: {
+      enabled: AUTO_DISCOVERY_ENABLED,
+      pollMs: AUTO_DISCOVERY_POLL_MS,
+      summary: autoDiscoveryLastSummary,
+      sources: discoverySummary()
+    },
     items: gameEventHistory.slice(0, 20)
   });
 });
@@ -4277,6 +4338,7 @@ client.on("interactionCreate", async interaction => {
         "⏭️ **Rift next change:** " + (riftState.nextChangeLabel || "Unknown"),
         "🧩 **Rift source filter:** " + (RIFT_SOURCE_BOT_IDS.size ? "BOT FILTER" : "ALL BOTS"),
         "🆕 **Last update:** " + (lastUpdateTitle || "Unknown"),
+        "🔎 **Discovery sources:** " + [...autoDiscoverySourceHealth.values()].filter(item => item.status === "ACTIVE").length + "/" + AUTO_DISCOVERY_SOURCES.length + " active",
         "🥚 **Alerts sent:** " + alertCount,
         "🔎 **Eggs detected:** " + detectedCount,
         "⚡ **Average alert latency:** " + (latencySamples
@@ -4513,7 +4575,6 @@ client.on("interactionCreate", async interaction => {
       lastSeenMessagesInitInFlight = null;
       petPageCache.clear();
       petPngBufferCache.clear();
-      petStatsCache.clear();
       imageFallbackCache.clear();
       resolvedRoleCache.clear();
 
