@@ -161,6 +161,11 @@ export async function persistSourceHealth(source) {
   });
 }
 
+export async function cleanupStorage(retentionDays = 30) {
+  const days = Math.max(7, Math.min(3650, Number(retentionDays || 30)));
+  return callStorage("cleanup", { retentionDays: days });
+}
+
 export async function hydrateRuntimeStateFile() {
   if (!persistenceEnabled()) return false;
 
