@@ -1334,13 +1334,15 @@ function extractLatestUpdateFromHomepage(html) {
   );
 
   const lines = text.split("\n").map(decodeHtmlText).filter(Boolean);
-  const index = lines.findIndex(line => /latest update/i.test(line));
+  const index = lines.findIndex(line => /^(latest update|game update)$/i.test(line));
 
   if (index === -1) return null;
 
   const windowLines = lines.slice(index, index + 15);
-  const title = windowLines.find(line =>
-    /update\s*#?\d+|latest update|update$/i.test(line)
+  const title = windowLines.find((line, offset) =>
+    offset > 0 &&
+    !/^(latest update|game update|admin abuse)$/i.test(line) &&
+    /(?:update|darkness|event|egg|angels|demons|rifts?)/i.test(line)
   ) || windowLines[1] || null;
 
   if (!title) return null;
@@ -1454,6 +1456,7 @@ async function scanForGameUpdates() {
   }
 
   let added = 0;
+  const newlyAdded = [];
 
   for (const item of supportedEggs) {
     const before = findCatalogEgg(item.eggName);
@@ -1462,6 +1465,7 @@ async function scanForGameUpdates() {
     if (entry && !before) {
       added++;
       autoDiscoveredCount++;
+      newlyAdded.push(entry);
 
       getPetPngBuffer(entry.petName)
         .then(buffer => {
@@ -1480,6 +1484,18 @@ async function scanForGameUpdates() {
           );
         });
     }
+  }
+
+  if (newlyAdded.length && lastUpdateFingerprint) {
+    recordGameEvent({
+      type: "catalog_change",
+      title: "New rare eggs discovered",
+      description:
+        newlyAdded.map(item =>
+          item.rarity + " • " + (item.petName || item.eggName)
+        ).join(", ").slice(0, 800),
+      source: "Auto Catalog Sync"
+    });
   }
 
   if (homepageUpdate?.title) {
@@ -2267,6 +2283,7 @@ client.on("interactionCreate", async interaction => {
         "🌐 EggWatch feed: " + liveFeedHealth(),
         "🖼️ Character PNG: " + (BACKGROUND_REMOVAL_ENABLED ? "ENABLED" : "SOURCE ONLY"),
         "🔄 Auto catalog: " + (AUTO_DISCOVERY_ENABLED ? "ENABLED" : "DISABLED") + " (" + autoDiscoveredCount + " new)",
+        "🆕 Last update: " + (lastUpdateTitle || "Unknown"),
         "🧾 Spawn history: " + spawnHistory.length,
         "🎮 Game events: " + gameEventHistory.length,
         "🥚 Alerts sent: " + alertCount,
