@@ -1,11 +1,17 @@
 import "dotenv/config";
 import express from "express";
 import crypto from "node:crypto";
-import { Client, GatewayIntentBits, EmbedBuilder } from "discord.js";
+import { Client, GatewayIntentBits, EmbedBuilder, REST, Routes, SlashCommandBuilder } from "discord.js";
 
 const app = express();
 app.use(express.json({ limit: "32kb" }));
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
+const DEV_GUILD_ID = process.env.DISCORD_DEV_GUILD_ID || "";
+const COMMANDS = [
+  new SlashCommandBuilder().setName("ping").setDescription("Check if the notifier is online."),
+  new SlashCommandBuilder().setName("status").setDescription("Show live monitor and configuration status."),
+  new SlashCommandBuilder().setName("testegg").setDescription("Send a test egg alert to the configured alert channel.")
+].map(c => c.toJSON());
 
 const PORT = Number(process.env.PORT || 3000);
 const SECRET = process.env.INGEST_SHARED_SECRET || "";
@@ -78,7 +84,7 @@ async function sendAlert(event) {
   await channel.send({ embeds: [embed] });
 }
 
-app.get("/health", (req, res) => res.json({
+app.get("/health", (req, res) => res.status(client.isReady() ? 200 : 503).json({
   ok: true, botReady: client.isReady(), sourceMonitorEnabled: MONITOR_ENABLED,
   liveSourceConfigured: Boolean(SECRET), channelConfigured: Boolean(CHANNEL_ID),
   sourceChannelFilterConfigured: SOURCE_CHANNEL_IDS.size > 0, sourceBotFilterConfigured: SOURCE_BOT_IDS.size > 0
