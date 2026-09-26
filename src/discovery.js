@@ -92,8 +92,139 @@ export function extractSupportedEggsFromDiscovery(html) {
   return dedupeEggs(found);
 }
 
+export function normalizeDiscoveryEggName(value) {
+  return cleanText(value)
+    .replace(/\s+egg$/i, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+export function sourceConfidenceScore(sourceRank, sourceCount = 1) {
+  const rank = Math.max(0, Math.min(10, Number(sourceRank || 0)));
+  const count = Math.max(1, Number(sourceCount || 1));
+  return Math.min(99, Math.round(35 + rank * 4 + Math.min(3, count - 1) * 10));
+}
+
+export function calculateEvidenceConfidence(observations = []) {
+  const valid = observations.filter(item => item?.name || item?.source);
+  if (!valid.length) return 0;
+
+  const uniqueSources = new Map();
+  for (const item of valid) {
+    const key = item.sourceKey || item.source || "unknown";
+    const current = uniqueSources.get(key);
+    const rank = Number(item.sourceRank || 0);
+    if (!current || rank > current.rank) {
+      uniqueSources.set(key, { rank });
+    }
+  }
+
+  const ranks = [...uniqueSources.values()].map(item => item.rank);
+  const maxRank = Math.max(...ranks, 0);
+  return sourceConfidenceScore(maxRank, uniqueSources.size);
+}
+
+export function mergeEggObservations(observations = []) {
+  const groups = new Map();
+
+  for (const item of observations) {
+    if (!item?.eggName || !item?.rarity) continue;
+
+    const key =
+      cleanText(item.rarity).toLowerCase() +
+      "|" +
+      normalizeDiscoveryEggName(item.eggName);
+
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  }
+
+  return [...groups.entries()].map(([key, items]) => {
+    const sorted = [...items].sort(
+      (a, b) => Number(b.sourceRank || 0) - Number(a.sourceRank || 0)
+    );
+
+    const best = sorted[0];
+    const sources = [...new Map(
+      items.map(item => [
+        item.sourceKey || item.source || "unknown",
+        {
+          key: item.sourceKey || item.source || "unknown",
+          name: item.source || item.sourceKey || "Unknown source",
+          rank: Number(item.sourceRank || 0)
+        }
+      ])
+    ).values()];
+
+    return {
+      key,
+      eggName: best.eggName,
+      rarity: best.rarity,
+      area: best.area || "Unknown",
+      sources,
+      sourceCount: sources.length,
+      confidence: sourceConfidenceScore(
+        Math.max(...sources.map(item => item.rank), 0),
+        sources.length
+      )
+    };
+  });
+}
+
+export function snapshotEggs(items = []) {
+  const snapshot = {};
+
+  for (const item of items) {
+    if (!item?.key) continue;
+
+    snapshot[item.key] = {
+      eggName: item.eggName,
+      rarity: item.rarity,
+      area: item.area || "Unknown",
+      sourceCount: Number(item.sourceCount || 1),
+      confidence: Number(item.confidence || 0)
+    };
+  }
+
+  return snapshot;
+}
+
+export function detectCatalogChanges(previous = {}, current = {}) {
+  const added = [];
+  const removed = [];
+  const changed = [];
+
+  for (const [key, now] of Object.entries(current)) {
+    if (!previous[key]) {
+      added.push({ key, ...now });
+      continue;
+    }
+
+    const before = previous[key];
+    if (
+      before.eggName !== now.eggName ||
+      before.rarity !== now.rarity ||
+      before.area !== now.area
+    ) {
+      changed.push({
+        key,
+        before,
+        after: now
+      });
+    }
+  }
+
+  for (const [key, before] of Object.entries(previous)) {
+    if (!current[key]) {
+      removed.push({ key, ...before });
+    }
+  }
+
+  return { added, removed, changed };
+}
+
 function dedupeEggs(items) {
-  const map = new Map();
 
   for (const item of items || []) {
     if (!item?.eggName || !item?.rarity) continue;
@@ -195,8 +326,12 @@ export function extractDiscoveryEvents(html, source = "Auto Discovery") {
 
   const patterns = [
     {
-      type: "limited_event",
-      re: /\bDr\.?\s*Scramble(?:'s)?(?:\s+Revenge)?\b[^\n]{0,220}/i
+      type: "official_event",
+      re: /\bDr\.?\s*Scramble['’]s\s+Revenge\b[^\n]{0,260}/i
+    },
+    {
+      type: "experiment_event",
+      re: /\b(?:Dr\.?\s*Scramble|Forbidden\s+Experiment|Experiment\s+Shop|Samples)\b[^\n]{0,260}/i
     },
     {
       type: "limited_event",
