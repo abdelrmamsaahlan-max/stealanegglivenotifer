@@ -68,3 +68,23 @@ test("event keys stay stable for the same minute", () => {
   assert.ok(first && second);
   assert.equal(experimentEventKey(first), experimentEventKey(second));
 });
+
+
+test("detects flexible Dr. Scramble active wording", () => {
+  const event = parseExperimentAlert({
+    text: "Dr. Scramble is active! Next experiment in: (in 12 minutes)",
+    createdTimestamp: Date.UTC(2026, 8, 26, 8, 10, 0)
+  });
+
+  assert.ok(event);
+  assert.equal(event.experimentName, "Dr. Scramble Experiment");
+  assert.equal(event.nextExperimentAt, Date.UTC(2026, 8, 26, 8, 22, 0));
+});
+
+test("detects a short forbidden experiment spawn message", () => {
+  const event = parseExperimentAlert({
+    text: "Forbidden Experiment spawned"
+  });
+
+  assert.ok(event);
+});
