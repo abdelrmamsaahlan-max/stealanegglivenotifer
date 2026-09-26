@@ -68,6 +68,18 @@ test("parses a Secret egg when the same message also announces a Forbidden Exper
 });
 
 
+test("parses a text-only rare egg announcement combined with Forbidden Experiment", () => {
+  const event = parseSpawn({
+    text: "A Forbidden Experiment Has Appeared!\nKitsune Egg • Divine • 📍 Cherry Blossom"
+  }, rarities);
+
+  assert.ok(event);
+  assert.equal(event.eggName, "Kitsune Egg");
+  assert.equal(event.rarity, "Divine");
+  assert.equal(event.biome, "Unknown");
+});
+
+
 test("prioritizes the structured rarity when event text contains another rarity mention", () => {
   const event = parseSpawn({
     text:
