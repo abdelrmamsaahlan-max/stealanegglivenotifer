@@ -76,7 +76,7 @@ import {
   timestampGuard,
   transitionEventState
 } from "./reliability.js";
-import { shouldProcessLiveFeedCandidate } from "./live-feed-gate.js";
+import {\n  mergeNearDuplicateFeedCandidates,\n  shouldProcessLiveFeedCandidate\n} from "./live-feed-gate.js";
 
 const app = express();
 
@@ -1939,6 +1939,15 @@ function alertDeliveryKeys(event) {
     "core|" + rarity + "|" + egg + "|" + area + "|" + timeBucket
   ];
 
+  // Cross-source observations can have different IDs and a few seconds of
+  // timestamp drift. Persist a short source-independent claim as well.
+  const semanticBucket = Number.isFinite(parsedTime)
+    ? Math.round(parsedTime / ALERT_SEMANTIC_DEDUP_BUCKET_MS)
+    : null;
+  if (semanticBucket !== null) {
+    keys.push("semantic|" + rarity + "|" + egg + "|" + area + "|" + semanticBucket);
+  }
+
   if (event?.sourceEventId) {
     keys.push("source|" + String(event.sourceEventId).slice(0, 200));
   }
@@ -2675,7 +2684,7 @@ async function removeSimpleBackground(input) {
     let head = 0;
     let tail = 0;
 
-    const maxDistance = 82;
+    const maxDistance = 118;
     const pixelsToCheck = [];
 
     function trySeed(x, y) {
@@ -2715,7 +2724,7 @@ async function removeSimpleBackground(input) {
 
       if (
         distanceToMedian <= maxDistance ||
-        distanceToEdgeSample <= Math.min(96, maxDistance + 20)
+        distanceToEdgeSample <= Math.min(132, maxDistance + 24)
       ) {
         visited[index] = 1;
         queue[tail++] = index;
@@ -2743,7 +2752,7 @@ async function removeSimpleBackground(input) {
       trySeed(x, y + 1);
     }
 
-    if (pixelsToCheck.length < Math.max(100, Math.floor(width * height * 0.01))) {
+    if (pixelsToCheck.length < Math.max(64, Math.floor(width * height * 0.0025))) {
       return null;
     }
 
@@ -2808,52 +2817,68 @@ async function getPetPngBuffer(petName) {
     if (input.length > MAX_REMOTE_IMAGE_BYTES) return null;
 
     let pngBuffer = null;
+    let transparent = false;
     const alreadyTransparent = await imageHasTransparentPixels(input);
 
-    if (!alreadyTransparent) {
+    if (alreadyTransparent) {
+      pngBuffer = input;
+      transparent = true;
+      console.log("Transparent source PNG accepted:", entry.petName);
+    } else {
       pngBuffer = await removeSimpleBackground(input);
 
       if (pngBuffer) {
+        transparent = true;
         console.log("Character cutout created:", entry.petName);
       } else {
+        // Always keep a valid PNG so an alert never becomes image-less.
+        pngBuffer = await sharp(input, { failOn: "none" })
+          .ensureAlpha()
+          .resize({
+            width: 1024,
+            height: 1024,
+            fit: "inside",
+            withoutEnlargement: true
+          })
+          .png({
+            compressionLevel: 9,
+            adaptiveFiltering: true
+          })
+          .toBuffer();
+        transparent = await imageHasTransparentPixels(pngBuffer);
         console.warn(
-          "Background could not be fully removed; keeping normalized PNG:",
+          transparent
+            ? "Transparent PNG fallback produced:"
+            : "Using normalized PNG fallback (opaque source):",
           entry.petName
         );
       }
     }
 
-    if (!pngBuffer) {
-      console.warn(
-        "Opaque pet artwork rejected; no transparent cutout available:",
-        entry.petName
-      );
-      return null;
-    } else {
-      pngBuffer = await sharp(pngBuffer, { failOn: "none" })
-        .ensureAlpha()
-        .resize({
-          width: 1024,
-          height: 1024,
-          fit: "inside",
-          withoutEnlargement: true
-        })
-        .png({
-          compressionLevel: 9,
-          adaptiveFiltering: true
-        })
-        .toBuffer();
-    }
+    pngBuffer = await sharp(pngBuffer, { failOn: "none" })
+      .ensureAlpha()
+      .resize({
+        width: 1024,
+        height: 1024,
+        fit: "inside",
+        withoutEnlargement: true
+      })
+      .png({
+        compressionLevel: 9,
+        adaptiveFiltering: true
+      })
+      .toBuffer();
 
     if (!isPngBuffer(pngBuffer)) {
       throw new Error("pet_output_is_not_png");
     }
 
-    if (!(await imageHasTransparentPixels(pngBuffer))) {
-      throw new Error("pet_output_is_not_transparent");
+    transparent = await imageHasTransparentPixels(pngBuffer);
+    if (!transparent) {
+      console.warn("Pet PNG is valid but opaque:", entry.petName);
     }
 
-    petPngBufferCache.set(key, { buffer: pngBuffer, at: Date.now() });
+    petPngBufferCache.set(key, { buffer: pngBuffer, at: Date.now(), transparent });
     trimImageCaches();
     return pngBuffer;
   } catch (error) {
@@ -2951,7 +2976,14 @@ async function warmPetImageCache(options = {}) {
     console.log(
       "Pet image cache warm:",
       warmed + "/" + entries.length,
-      "(transparent PNG cache)"
+      "(valid PNG cache)"
+    );
+    const transparentReady = entries.filter(entry =>
+      Boolean(petPngBufferCache.get(normalizeFeedKey(entry.petName))?.transparent)
+    ).length;
+    console.log(
+      "Transparent PNG coverage:",
+      transparentReady + "/" + entries.length
     );
     if (failed.length) {
       console.warn(
@@ -3542,11 +3574,15 @@ async function pollLiveFeed() {
       }
     }
 
-    const candidates = [...candidateMap.values()]
+    const rawCandidates = [...candidateMap.values()]
       .sort((a, b) => {
         if (a.eventTime !== b.eventTime) return a.eventTime - b.eventTime;
         return b.candidate.score - a.candidate.score;
       });
+
+    const candidates = mergeNearDuplicateFeedCandidates(rawCandidates, {
+      toleranceMs: LIVE_FEED_EVENT_MERGE_MS
+    });
 
     if (!candidates.length) {
       return;
@@ -6634,7 +6670,7 @@ async function findRecentMatchingAlertMessage(channel, event, entry) {
       const embedTimestamp = Date.parse(embed.timestamp || "");
       if (!Number.isFinite(embedTimestamp)) return false;
 
-      return Math.abs(embedTimestamp - targetTimestamp) <= 10_000;
+      return Math.abs(embedTimestamp - targetTimestamp) <= Math.max(10_000, ALERT_SEMANTIC_DEDUP_BUCKET_MS);
     }) || null;
   } catch (error) {
     console.warn(
@@ -6852,6 +6888,8 @@ async function sendAlert(event, latencyMs = null) {
   });
 
   releaseAlertDelivery(deliveryKeys, true);
+  // Persist the claim immediately so a restart cannot replay a fresh alert.
+  scheduleStateSave();
   return true;
 }
 
@@ -7140,7 +7178,7 @@ app.get("/api/images/status", (_req, res) => {
         rarity: entry.rarity,
         ready: Boolean(cached?.buffer),
         format: cached?.buffer ? "image/png" : null,
-        transparent: Boolean(cached?.buffer)
+        transparent: Boolean(cached?.transparent)
       };
     });
 
