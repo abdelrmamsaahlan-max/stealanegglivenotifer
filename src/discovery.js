@@ -253,6 +253,15 @@ function dedupeEvents(items) {
   return [...map.values()];
 }
 
+const ALLOWED_DISCOVERY_HOSTS = new Set([
+  "roblox.com",
+  "www.roblox.com",
+  "robloxstealanegg.wiki",
+  "eggwatcher.com",
+  "eggipedia.com",
+  "stealanegg.store"
+]);
+
 export function extractRelevantLinks(html, baseUrl, maxLinks = 4) {
   const found = [];
   const seen = new Set();
@@ -266,7 +275,9 @@ export function extractRelevantLinks(html, baseUrl, maxLinks = 4) {
 
     try {
       const url = new URL(href, baseUrl).href;
-      if (!/^https?:$/i.test(new URL(url).protocol)) continue;
+      const parsed = new URL(url);
+      if (!/^https?:$/i.test(parsed.protocol)) continue;
+      if (!ALLOWED_DISCOVERY_HOSTS.has(parsed.hostname.toLowerCase())) continue;
 
       const lower = (url + " " + label).toLowerCase();
       if (!/(update|event|scramble|rift|darkness|angel|demon|news)/i.test(lower)) continue;
