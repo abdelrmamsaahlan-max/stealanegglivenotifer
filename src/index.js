@@ -76,7 +76,10 @@ import {
   timestampGuard,
   transitionEventState
 } from "./reliability.js";
-import {\n  mergeNearDuplicateFeedCandidates,\n  shouldProcessLiveFeedCandidate\n} from "./live-feed-gate.js";
+import {
+  mergeNearDuplicateFeedCandidates,
+  shouldProcessLiveFeedCandidate
+} from "./live-feed-gate.js";
 
 const app = express();
 
