@@ -14,7 +14,8 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  MessageFlags
+  MessageFlags,
+  PermissionFlagsBits
 } from "discord.js";
 import { extractMessageData, parseSpawn } from "./parser.js";
 import {
@@ -49,7 +50,8 @@ const COMMANDS = [
     .setDescription("View live feed, alerts, Rift, images, roles, memory, uptime, and source status."),
   new SlashCommandBuilder()
     .setName("egg-test")
-    .setDescription("Send a sample rare-egg alert to test the embed, image, roles, and Join Game button.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .setDescription("Admin: send a sample rare-egg alert to test the embed, image, roles, and Join Game button.")
     .addStringOption(option =>
       option
         .setName("egg")
@@ -67,7 +69,8 @@ const COMMANDS = [
     .setDescription("Show the current Rift banner, change times, rotation chance, and possible pets."),
   new SlashCommandBuilder()
     .setName("rift-test")
-    .setDescription("Send a sample Rift alert to test the Rift embed and Join Game button.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .setDescription("Admin: send a sample Rift alert to test the Rift embed and Join Game button.")
     .addStringOption(option =>
       option
         .setName("banner")
@@ -80,6 +83,7 @@ const COMMANDS = [
     .setDescription("Run a full health check for Discord, EggWatch, Rift, alerts, images, memory, and storage."),
   new SlashCommandBuilder()
     .setName("role-test")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .setDescription("Admin: send a test mention for a Secret, Eternal, or Divine alert role.")
     .addStringOption(option =>
       option
@@ -103,8 +107,16 @@ const COMMANDS = [
     ),
   new SlashCommandBuilder()
     .setName("bot-reload")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .setDescription("Admin: clear runtime caches, refresh image data, reload roles, and sync Discord commands.")
 ].map(command => command.toJSON());
+
+const ADMIN_COMMANDS = new Set([
+  "egg-test",
+  "rift-test",
+  "role-test",
+  "bot-reload"
+]);
 
 async function registerDiscordCommands(rest, applicationId) {
   if (DEV_GUILD_ID) {
@@ -963,7 +975,10 @@ function parseGameStatsFromPetPage(body) {
     .replace(/\s+/g, " ")
     .trim();
 
-  const incomeMatch = text.match(/Base income\s*\$?([0-9.,]+\s*[KMBT])\/s/i);
+  const incomeMatch =
+    text.match(/(?:Base\s+(?:income|earnings?)|(?:Money|Income)\s*\/\s*s)\s*[:\-]?\s*\$?([0-9.,]+\s*(?:[KMBT])?)\s*\/s/i) ||
+    text.match(/\$([0-9.,]+\s*(?:[KMBT])?)\s*\/s/i);
+
   const speedMatch = text.match(/(?:you need|requires?|minimum(?: gate)?[:\s]+)([0-9.,]+\s*[KMBT])\s*Speed/i);
 
   return {
@@ -1189,10 +1204,10 @@ async function getPetPngBuffer(petName) {
   const sourceUrl = await resolvePetImageSource(entry.petName);
   if (!sourceUrl) return null;
 
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), LIVE_FEED_TIMEOUT_MS);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), LIVE_FEED_TIMEOUT_MS);
 
+  try {
     const response = await fetch(sourceUrl, {
       headers: {
         "accept": "image/avif,image/webp,image/png,image/*;q=0.9,*/*;q=0.8",
@@ -1200,8 +1215,6 @@ async function getPetPngBuffer(petName) {
       },
       signal: controller.signal
     });
-
-    clearTimeout(timeout);
 
     if (!response.ok) return null;
 
@@ -1244,6 +1257,8 @@ async function getPetPngBuffer(petName) {
       error?.message || error
     );
     return null;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 async function resolveImageUrl(eggName, _providedUrl = null) {
@@ -1271,7 +1286,7 @@ async function warmPetImageCache(options = {}) {
   imageWarmupInFlight = true;
 
   const maxWorkers = Math.max(1, Number(options.workers || 1));
-  const entries = eggImageCatalog.filter(entry => entry?.active !== false);
+  const entries = eggImageCatalog.filter(isLastSeenEligibleEntry);
   let warmed = 0;
   let cursor = 0;
 
@@ -1469,7 +1484,7 @@ function syncLastSeenFromFeedPayload(payload) {
     const entry = findCatalogEgg(eggName) ||
       ensureCatalogEgg(eggName, candidate.rarity, candidate.biome || "Unknown");
 
-    if (!entry) continue;
+    if (!entry || !isLastSeenEligibleEntry(entry)) continue;
 
     const key = normalizeFeedKey(entry.eggName);
     const existing = lastSeenByRarity[rarity].get(key);
@@ -1615,6 +1630,8 @@ async function processAdditionalEggWatchCandidates(payload, primaryCandidate, ur
   let sent = 0;
 
   for (const candidate of candidates) {
+    if (!resolveAlertEntry(candidate)) continue;
+
     const feedEventKey = [
       "feed",
       candidate.rarity.toLowerCase(),
@@ -1713,6 +1730,23 @@ async function pollEggWatch() {
 
       if (!candidate || !candidate.eggName || !candidate.spawnedAt) {
         liveFeedLastUrl = url;
+        continue;
+      }
+
+      const candidateEntry = resolveAlertEntry(candidate);
+      if (!candidateEntry) {
+        liveFeedLastUrl = url;
+        liveFeedEventsReceived++;
+        const ineligibleFingerprint = [
+          candidate.sourceEventId ? String(candidate.sourceEventId) : "",
+          normalizeFeedKey(candidate.eggName),
+          normalizeFeedKey(candidate.rarity),
+          normalizeFeedKey(candidate.biome),
+          candidate.spawnedAt
+        ].join("|");
+
+        liveFeedLastFingerprint = ineligibleFingerprint;
+        liveFeedPrimed = true;
         continue;
       }
 
@@ -2167,6 +2201,14 @@ async function scanForGameUpdates() {
     }
   }
 
+  if (newlyAdded.length && (CHANNEL_ID || LAST_SEEN_CHANNEL_ID)) {
+    setTimeout(() => {
+      ensureEggCustomEmojis().catch(error => {
+        console.warn("Dynamic custom emoji refresh failed:", error?.message || error);
+      });
+    }, 0);
+  }
+
   if (newlyAdded.length && lastUpdateFingerprint) {
     recordGameEvent({
       type: "catalog_change",
@@ -2446,6 +2488,8 @@ function isLiveEvent(value) {
     if (ageSeconds > MAX_INGEST_SKEW_SECONDS) return false;
   }
 
+  if (!resolveAlertEntry(value)) return false;
+
   return true;
 }
 
@@ -2477,6 +2521,22 @@ function isLastSeenEligibleEntry(entry) {
   }
 
   return true;
+}
+
+function isAlertEligibleEntry(entry) {
+  return isLastSeenEligibleEntry(entry);
+}
+
+function resolveAlertEntry(event) {
+  const name = event?.eggName || event?.displayName || "";
+  if (!name) return null;
+
+  const existing = findCatalogEgg(name);
+  const entry =
+    existing ||
+    ensureCatalogEgg(name, event?.rarity || "", event?.biome || "Unknown");
+
+  return isAlertEligibleEntry(entry) ? entry : null;
 }
 
 function getLastSeenEntries(rarity) {
@@ -3078,7 +3138,7 @@ function buildAlertEmbed(event, _latencyMs = null, includeImage = true) {
   const emoji = getEggAlertEmoji(event);
   const eggName = String(event.displayName || event.eggName || "Unknown").trim();
   const area = String(event.biome || "Unknown").trim();
-  const baseIncome = event.gameStats?.income || "Unknown";
+  const baseIncome = event.gameStats?.income || "Not available";
 
   const timestamp = Date.parse(event.spawnedAt);
   const unix = Number.isFinite(timestamp)
@@ -3139,12 +3199,9 @@ function buildActionRow(event) {
   return new ActionRowBuilder().addComponents(...buttons.slice(0, 5));
 }
 
-async function enrichAlertEvent(event) {
-  const entry =
-    findCatalogEgg(event.eggName || event.displayName) ||
-    ensureCatalogEgg(event.eggName || event.displayName, event.rarity, event.biome);
-
-  if (!entry) return event;
+async function enrichAlertEvent(event, entryOverride = null) {
+  const entry = entryOverride || resolveAlertEntry(event);
+  if (!entry) return null;
 
   event.eggName = entry.eggName;
   event.displayName = entry.petName || entry.displayName || entry.eggName;
@@ -3310,16 +3367,27 @@ async function sendRiftAlert(event, options = {}) {
 }
 
 async function sendAlert(event, latencyMs = null) {
-  await enrichAlertEvent(event);
+  const entry = resolveAlertEntry(event);
+  if (!entry) {
+    console.warn(
+      "Skipped ineligible egg alert:",
+      event?.rarity || "Unknown",
+      event?.eggName || event?.displayName || "Unknown"
+    );
+    return false;
+  }
+
+  const enriched = await enrichAlertEvent(event, entry);
+  if (!enriched) return false;
+
   const channel = await getAlertChannel();
   const rarity = String(event.rarity || "Unknown").trim();
   const rarityKey = rarity.toLowerCase();
   const roleId = await resolveAlertRoleId(rarity);
-  const emoji = getRarityEmoji(rarity);
-
   const petName = String(event.displayName || event.eggName || "Unknown").trim();
   const area = String(event.biome || "Unknown").trim();
   const alertEggEmoji = getEggAlertEmoji(event);
+  const baseIncome = event.gameStats?.income || "Not available";
 
   const alertText =
     alertEggEmoji +
@@ -3329,7 +3397,9 @@ async function sendAlert(event, latencyMs = null) {
     petName +
     " spawned in " +
     area +
-    "!**";
+    "!**\n" +
+    "💰 **Base Income:** " +
+    baseIncome;
 
   const mentionContent =
     ALERT_MENTION_MODE === "role" && roleId
@@ -3425,6 +3495,8 @@ async function sendAlert(event, latencyMs = null) {
   });
 
   if (recentSpawns.length > 25) recentSpawns.length = 25;
+
+  return true;
 }
 
 
@@ -3470,6 +3542,16 @@ async function processSpawnMessage(message) {
 
   const event = parseSpawn(messageData, RARITIES);
   if (!event) return;
+
+  if (!resolveAlertEntry(event)) {
+    console.warn(
+      "Ignored ineligible source spawn:",
+      event.rarity,
+      event.eggName,
+      "area=" + event.biome
+    );
+    return;
+  }
 
   event.spawnedAt = new Date(messageData.createdTimestamp || Date.now()).toISOString();
   if (messageData.imageUrl) event.imageUrl = messageData.imageUrl;
@@ -3681,9 +3763,18 @@ client.once("clientReady", async () => {
 
   await rebuildLastSeenFromHistory();
 
-  if (LAST_SEEN_CHANNEL_ID) {
+  if (CHANNEL_ID || LAST_SEEN_CHANNEL_ID) {
     try {
       await ensureEggCustomEmojis();
+      console.log("Custom egg emojis ready for configured guild.");
+    } catch (error) {
+      monitorErrors++;
+      console.error("Custom egg emoji initialization failed:", error);
+    }
+  }
+
+  if (LAST_SEEN_CHANNEL_ID) {
+    try {
       await ensureLastSeenMessages();
       console.log("Last Seen tracker ready.");
     } catch (error) {
@@ -3762,6 +3853,19 @@ setInterval(() => {
 client.on("interactionCreate", async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
+  if (
+    ADMIN_COMMANDS.has(interaction.commandName) &&
+    (
+      !interaction.inGuild() ||
+      !interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)
+    )
+  ) {
+    return await interaction.reply({
+      content: "⛔ You need the **Manage Server** permission to use this command.",
+      flags: MessageFlags.Ephemeral
+    });
+  }
+
   try {
     if (interaction.commandName === "health-check") {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -3810,6 +3914,17 @@ client.on("interactionCreate", async interaction => {
         "🥚 Catalog: " + eggImageCatalog.length + " entries"
       );
       checks.push(
+        "🧩 Custom egg emojis: " +
+        eggCustomEmojiCache.size + "/" +
+        eggImageCatalog.filter(isLastSeenEligibleEntry).length
+      );
+      checks.push(
+        "🕒 Last Seen messages: " +
+        (LAST_SEEN_CHANNEL_ID
+          ? (lastSeenMessagesReady ? "READY" : "WAITING")
+          : "DISABLED")
+      );
+      checks.push(
         "🧾 Spawn history: " + spawnHistory.length
       );
       checks.push(
@@ -3837,7 +3952,7 @@ client.on("interactionCreate", async interaction => {
         "⏱️ **Uptime:** " + days + "d " + hours + "h " + minutes + "m",
         "📡 **Live monitor:** " + (MONITOR_ENABLED ? "ENABLED" : "DISABLED"),
         "🎯 **Rarities:** " + [...RARITIES].join(", "),
-        "📥 **Source channels:** " + (SOURCE_CHANNEL_IDS.size ? [...SOURCE_CHANNEL_IDS].join(", ") : "ALL"),
+        "📥 **Source channels:** " + (SOURCE_CHANNEL_IDS.size ? SOURCE_CHANNEL_IDS.size + " configured" : "ALL"),
         "📤 **Alert channel:** " + (CHANNEL_ID ? "CONFIGURED" : "NOT CONFIGURED"),
         "🕒 **Last Seen channel:** " + (LAST_SEEN_CHANNEL_ID ? "CONFIGURED" : "NOT CONFIGURED"),
         "🔔 **Role ping:** " + ALERT_MENTION_MODE.toUpperCase(),
@@ -3881,7 +3996,7 @@ client.on("interactionCreate", async interaction => {
       }
 
       const historyText = spawnHistory.slice(0, 15).map(item =>
-        getRarityEmoji(item.rarity) +
+        getEggAlertEmoji(item) +
         " **" + item.petName + "** • " +
         item.rarity +
         " • 📍 " + item.area +
