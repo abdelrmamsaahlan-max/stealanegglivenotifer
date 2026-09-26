@@ -4,7 +4,6 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import sharp from "sharp";
-import { removeBackground } from "@imgly/background-removal-node";
 import {
   Client,
   GatewayIntentBits,
@@ -359,11 +358,8 @@ const PUBLIC_BASE_URL = normalizePublicBaseUrl(
 const STEAL_AN_EGG_GAME_URL =
   "https://www.roblox.com/games/107778070777162/Steal-An-Egg";
 
-const BACKGROUND_REMOVAL_ENABLED =
-  (process.env.BACKGROUND_REMOVAL_ENABLED || "true").toLowerCase() === "true";
-
-const BACKGROUND_REMOVAL_MODEL =
-  String(process.env.BACKGROUND_REMOVAL_MODEL || "small").trim() || "small";
+const SOURCE_IMAGE_ALPHA_ONLY =
+  (process.env.SOURCE_IMAGE_ALPHA_ONLY || "true").toLowerCase() === "true";
 
 let liveFeedPollInFlight = false;
 
@@ -868,7 +864,7 @@ async function trimImageCaches() {
   }
 }
 
-async function imageHasTransparentPixels(input) {
+async async function imageHasTransparentPixels(input) {
   try {
     const { data, info } = await sharp(input)
       .ensureAlpha()
@@ -879,7 +875,7 @@ async function imageHasTransparentPixels(input) {
       if (data[offset] < 250) return true;
     }
   } catch {
-    // Treat an unreadable alpha channel as opaque and let the remover handle it.
+    return false;
   }
 
   return false;
@@ -905,7 +901,7 @@ async function getPetPngBuffer(petName) {
     const response = await fetch(sourceUrl, {
       headers: {
         "accept": "image/avif,image/webp,image/png,image/*;q=0.9,*/*;q=0.8",
-        "user-agent": "FSMM-SAB-Live-Notifier/4.0"
+        "user-agent": "FSMM-SAB-Live-Notifier/5.0"
       },
       signal: controller.signal
     });
@@ -920,26 +916,12 @@ async function getPetPngBuffer(petName) {
     const input = Buffer.from(await response.arrayBuffer());
     if (input.length > MAX_REMOTE_IMAGE_BYTES) return null;
 
-    let processed;
-
-    if (!BACKGROUND_REMOVAL_ENABLED || await imageHasTransparentPixels(input)) {
-      processed = input;
-    } else {
-      console.log("Removing image background:", entry.petName);
-
-      const sourceBlob = new Blob([input], { type: "image/png" });
-      const removed = await removeBackground(sourceBlob, {
-        model: BACKGROUND_REMOVAL_MODEL
-      });
-      processed = Buffer.from(await removed.arrayBuffer());
+    if (SOURCE_IMAGE_ALPHA_ONLY && !await imageHasTransparentPixels(input)) {
+      console.warn("Skipping non-transparent pet source:", entry.petName, sourceUrl);
+      return null;
     }
 
-    // Final normalization:
-    // - PNG output
-    // - real alpha channel
-    // - trim transparent margins
-    // This guarantees Discord receives a cut-out PNG instead of the source card.
-    const pngBuffer = await sharp(processed, { failOn: "none" })
+    const pngBuffer = await sharp(input, { failOn: "none" })
       .ensureAlpha()
       .trim()
       .png({ compressionLevel: 9 })
@@ -949,7 +931,10 @@ async function getPetPngBuffer(petName) {
     trimImageCaches();
     return pngBuffer;
   } catch (error) {
-    console.warn("Pet PNG/background-removal failed for " + entry.petName + ":", error?.message || error);
+    console.warn(
+      "Pet transparent PNG processing failed for " + entry.petName + ":",
+      error?.message || error
+    );
     return null;
   }
 }
@@ -2622,8 +2607,8 @@ app.get("/health", (_req, res) => {
     liveFeedEventsAccepted,
     liveFeedErrors,
     publicPngProxy: Boolean(PUBLIC_BASE_URL),
-    backgroundRemovalEnabled: BACKGROUND_REMOVAL_ENABLED,
-    backgroundRemovalModel: BACKGROUND_REMOVAL_MODEL,
+    sourceImageAlphaOnly: SOURCE_IMAGE_ALPHA_ONLY,
+
     autoDiscoveryEnabled: AUTO_DISCOVERY_ENABLED,
     autoDiscoveredCount,
     lastUpdateCheckAt,
@@ -2829,8 +2814,8 @@ client.on("interactionCreate", async interaction => {
         (RIFT_SOURCE_BOT_IDS.size ? "CONFIGURED" : "ALL")
       );
       checks.push(
-        (BACKGROUND_REMOVAL_ENABLED ? "✅" : "🟡") +
-        " Transparent PNG processing"
+        (SOURCE_IMAGE_ALPHA_ONLY ? "✅" : "🟡") +
+        " Transparent source image mode"
       );
       checks.push(
         (memoryMb < MEMORY_SOFT_LIMIT_MB ? "✅" : memoryMb < MEMORY_HARD_LIMIT_MB ? "🟡" : "❌") +
@@ -2873,7 +2858,7 @@ client.on("interactionCreate", async interaction => {
         "📡 Discord source: " + sourceHealth(),
         "🌐 EggWatch feed: " + liveFeedHealth(),
         "🖼️ Character PNG: " +
-          (BACKGROUND_REMOVAL_ENABLED ? "ENABLED/" + BACKGROUND_REMOVAL_MODEL : "SOURCE ONLY"),
+          (SOURCE_IMAGE_ALPHA_ONLY ? "TRANSPARENT SOURCE ONLY" : "SOURCE NORMALIZE"),
         "🔄 Auto catalog: " + (AUTO_DISCOVERY_ENABLED ? "ENABLED" : "DISABLED") + " (" + autoDiscoveredCount + " new)",
         "🎮 Event alerts: " + (EVENT_ALERTS_ENABLED ? "ON" : "OFF"),
         "🟣 Rift tracker: " + (RIFT_ALERTS_ENABLED ? "ON" : "OFF"),
@@ -3061,6 +3046,7 @@ client.on("interactionCreate", async interaction => {
           "🛠️ Errors: " + monitorErrors,
           "📡 Source: " + sourceHealth(),
           "🌐 EggWatch: " + liveFeedHealth(),
+          "🖼️ Images: " + (SOURCE_IMAGE_ALPHA_ONLY ? "TRANSPARENT SOURCE ONLY" : "NORMALIZE"),
           "🔄 Auto catalog: " + (AUTO_DISCOVERY_ENABLED ? "ON" : "OFF"),
           "⏱️ Uptime: " + days + "d " + hours + "h " + minutes + "m",
           "💾 Cache: " + seen.size,
