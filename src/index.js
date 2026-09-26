@@ -325,6 +325,12 @@ const lastSeenMessageIds = {
 let lastSeenChannel = null;
 const lastSeenUpdateTimers = new Map();
 const lastSeenUpdateInFlight = new Map();
+const eggCustomEmojiCache = new Map();
+const eggCustomEmojiSetupState = {
+  running: false,
+  ready: false,
+  lastError: null
+};
 
 function loadRuntimeState() {
   try {
@@ -2476,6 +2482,206 @@ function getLastSeenEntries(rarity) {
       record: map.get(normalizeFeedKey(entry.eggName)) || null
     }));
 }
+function customEmojiNameForEgg(entry) {
+  const raw = String(entry?.eggName || entry?.petName || "egg")
+    .toLowerCase()
+    .replace(/\s+egg$/i, "")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+  return ("egg_" + raw).slice(0, 32).replace(/_+$/g, "") || "egg_icon";
+}
+
+function getEggCustomEmoji(entry) {
+  return eggCustomEmojiCache.get(normalizeFeedKey(entry?.eggName)) || null;
+}
+
+function buildEggLinePrefix(entry) {
+  const emoji = getEggCustomEmoji(entry);
+  return emoji ? emoji.toString() : "🥚";
+}
+
+async function fetchRemoteImageBufferForEmoji(url) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), LIVE_FEED_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        "accept": "image/avif,image/webp,image/png,image/jpeg,image/*;q=0.9,*/*;q=0.8",
+        "user-agent": "FSMM-SAB-Live-Notifier/6.0"
+      },
+      signal: controller.signal
+    });
+
+    if (!response.ok) return null;
+
+    const contentLength = Number(response.headers.get("content-length") || 0);
+    if (contentLength && contentLength > MAX_REMOTE_IMAGE_BYTES) return null;
+
+    const input = Buffer.from(await response.arrayBuffer());
+    if (input.length > MAX_REMOTE_IMAGE_BYTES) return null;
+
+    return input;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function resolveEggCustomEmojiBuffer(entry) {
+  if (!entry?.sourcePage) return null;
+
+  try {
+    const { response, body } = await fetchLiveFeed(entry.sourcePage);
+    if (!response.ok) return null;
+
+    const eggKey = normalizeFeedKey(entry.eggName);
+    const petKey = normalizeFeedKey(entry.petName);
+    const candidates = [];
+
+    for (const match of String(body || "").matchAll(/<img\b[^>]*>/gi)) {
+      const attrs = extractTagAttributes(match[0]);
+      const src = attrs.src || attrs["data-src"] || attrs["data-lazy-src"] || "";
+      if (!src) continue;
+
+      const alt = String(attrs.alt || "").toLowerCase();
+      const title = String(attrs.title || "").toLowerCase();
+      let score = 0;
+
+      if (normalizeFeedKey(alt).includes(eggKey)) score += 40;
+      if (normalizeFeedKey(title).includes(eggKey)) score += 25;
+      if (normalizeFeedKey(alt).includes(petKey)) score += 10;
+
+      try {
+        const resolved = new URL(src, entry.sourcePage).href;
+        const pathname = new URL(resolved).pathname.toLowerCase();
+
+        if (pathname.includes("egg")) score += 10;
+        if (pathname.includes(slugify(entry.petName || ""))) score += 5;
+
+        candidates.push({ url: resolved, score });
+      } catch {}
+    }
+
+    candidates.sort((a, b) => b.score - a.score);
+
+    for (const candidate of candidates.slice(0, 5)) {
+      const input = await fetchRemoteImageBufferForEmoji(candidate.url);
+      if (!input) continue;
+
+      try {
+        const output = await sharp(input, { failOn: "none" })
+          .ensureAlpha()
+          .resize({
+            width: 128,
+            height: 128,
+            fit: "contain",
+            background: { r: 0, g: 0, b: 0, alpha: 0 }
+          })
+          .png({ compressionLevel: 9 })
+          .toBuffer();
+
+        if (output.length <= 256 * 1024) return output;
+      } catch {}
+    }
+  } catch (error) {
+    console.warn(
+      "Egg emoji image lookup failed for " + entry.eggName + ":",
+      error?.message || error
+    );
+  }
+
+  return null;
+}
+
+async function getEggEmojiGuild() {
+  try {
+    if (LAST_SEEN_CHANNEL_ID) {
+      const channel = await getLastSeenChannel();
+      if (channel?.guild) return channel.guild;
+    }
+  } catch {}
+
+  if (alertChannel?.guild) return alertChannel.guild;
+
+  if (CHANNEL_ID) {
+    try {
+      const channel = await client.channels.fetch(CHANNEL_ID);
+      if (channel?.guild) {
+        alertChannel = channel;
+        return channel.guild;
+      }
+    } catch {}
+  }
+
+  return client.guilds.cache.first() || null;
+}
+
+async function ensureEggCustomEmojis() {
+  if (eggCustomEmojiSetupState.running) return eggCustomEmojiSetupState.ready;
+
+  const guild = await getEggEmojiGuild();
+  if (!guild) {
+    eggCustomEmojiSetupState.lastError = "No target guild available";
+    return false;
+  }
+
+  eggCustomEmojiSetupState.running = true;
+
+  try {
+    const existing = await guild.emojis.fetch();
+
+    for (const entry of eggImageCatalog.filter(isLastSeenEligibleEntry)) {
+      const emojiName = customEmojiNameForEgg(entry);
+      const current = existing.find(emoji => emoji.name === emojiName);
+
+      if (current) {
+        eggCustomEmojiCache.set(normalizeFeedKey(entry.eggName), current);
+        continue;
+      }
+
+      const buffer = await resolveEggCustomEmojiBuffer(entry);
+      if (!buffer) {
+        console.warn("No egg artwork available for custom emoji:", entry.eggName);
+        continue;
+      }
+
+      try {
+        const created = await guild.emojis.create({
+          attachment: buffer,
+          name: emojiName,
+          reason: "Steal An Egg Last Seen custom egg icon"
+        });
+
+        eggCustomEmojiCache.set(normalizeFeedKey(entry.eggName), created);
+        console.log("Created custom egg emoji:", emojiName, created.id);
+      } catch (error) {
+        console.warn(
+          "Custom emoji creation failed for " + entry.eggName + ":",
+          error?.message || error
+        );
+      }
+    }
+
+    eggCustomEmojiSetupState.ready = true;
+    eggCustomEmojiSetupState.lastError = null;
+
+    console.log(
+      "Custom egg emojis ready:",
+      eggCustomEmojiCache.size + "/" +
+      eggImageCatalog.filter(isLastSeenEligibleEntry).length
+    );
+
+    return true;
+  } catch (error) {
+    eggCustomEmojiSetupState.lastError = error?.message || String(error);
+    console.warn("Custom egg emoji setup failed:", eggCustomEmojiSetupState.lastError);
+    return false;
+  } finally {
+    eggCustomEmojiSetupState.running = false;
+  }
+}
+
 function getEggVisuals(entry) {
   const petKey = normalizeFeedKey(entry?.petName || entry?.eggName);
 
@@ -2508,44 +2714,33 @@ function getEggVisuals(entry) {
     "unicorn": "🦄",
     "nightflame": "🌑",
     "world burner": "🌍",
-    "archangel": "👼",
-    "bomboclat crocolat": "🐊",
-    "strawberry elephant": "🍓"
+    "archangel": "👼"
   };
 
   return {
-    egg: "🥚",
+    egg: buildEggLinePrefix(entry),
     pet: icons[petKey] || "✨"
   };
 }
 
-
 function buildLastSeenEmbed(rarity) {
   const entries = getLastSeenEntries(rarity);
-  const seenEntries = entries.filter(item => item.record);
-  const neverEntries = entries.filter(item => !item.record);
+  const seenEntries = entries
+    .filter(item => item.record)
+    .sort((a, b) =>
+      (Date.parse(b.record?.spawnedAt || "") || 0) -
+      (Date.parse(a.record?.spawnedAt || "") || 0)
+    );
 
-  const total = entries.length;
-  const seenCount = seenEntries.length;
-  const coverage = total ? Math.round((seenCount / total) * 100) : 0;
-  const filledBars = Math.round(coverage / 10);
-  const progressBar = "█".repeat(filledBars) + "░".repeat(10 - filledBars);
-
-  const sortedSeen = [...seenEntries].sort((a, b) => {
-    const aTime = Date.parse(a.record?.spawnedAt || "") || 0;
-    const bTime = Date.parse(b.record?.spawnedAt || "") || 0;
-    return bTime - aTime;
-  });
-
-  const sortedNever = [...neverEntries].sort((a, b) =>
-    String(a.entry.petName || a.entry.eggName).localeCompare(
-      String(b.entry.petName || b.entry.eggName)
-    )
-  );
+  const neverEntries = [...entries]
+    .filter(item => !item.record)
+    .sort((a, b) =>
+      String(a.entry.eggName || "").localeCompare(String(b.entry.eggName || ""))
+    );
 
   const lines = [];
 
-  for (const { entry, record } of sortedSeen) {
+  for (const { entry, record } of seenEntries) {
     const timestamp = Date.parse(record.spawnedAt);
     const unix = Number.isFinite(timestamp)
       ? Math.floor(timestamp / 1000)
@@ -2556,88 +2751,34 @@ function buildLastSeenEmbed(rarity) {
         ? record.area
         : entry.biome || "Unknown";
 
-    const visuals = getEggVisuals(entry);
-    const eggName = entry.eggName || (entry.petName + " Egg");
-
     lines.push(
-      visuals.egg + " **" + eggName + "** " + visuals.pet +
-      "\n> 📍 **" + String(displayArea).slice(0, 70) +
-      "**  •  <t:" + unix + ":R>"
+      buildEggLinePrefix(entry) +
+      " **" + (entry.eggName || (entry.petName + " Egg")) +
+      "** — <t:" + unix + ":R> • 📍 " +
+      String(displayArea).slice(0, 60)
     );
   }
 
-  if (sortedNever.length) {
-    lines.push("", "────── **NOT SEEN YET** ──────");
+  if (neverEntries.length) {
+    lines.push("", "**Not seen yet**");
 
-    for (const { entry } of sortedNever) {
-      const visuals = getEggVisuals(entry);
+    for (const { entry } of neverEntries) {
       lines.push(
-        visuals.egg + " **" + (entry.eggName || (entry.petName + " Egg")) +
-        "** " + visuals.pet + "  •  Never seen"
+        buildEggLinePrefix(entry) +
+        " **" + (entry.eggName || (entry.petName + " Egg")) +
+        "** — Never"
       );
     }
   }
 
-  if (!lines.length) {
-    lines.push("⚪ No eggs are configured for this rarity yet.");
-  }
-
-  const latestRecord = sortedSeen[0]?.record || null;
-  let latestText = "No confirmed spawn recorded yet.";
-
-  if (latestRecord) {
-    const latestTime = Date.parse(latestRecord.spawnedAt);
-    const latestUnix = Number.isFinite(latestTime)
-      ? Math.floor(latestTime / 1000)
-      : Math.floor(Date.now() / 1000);
-    const latestArea = latestRecord.area || "Unknown";
-    const latestEntry = sortedSeen[0]?.entry || null;
-    const latestVisuals = getEggVisuals(latestEntry || {});
-
-    latestText =
-      latestVisuals.egg + " **" + (latestRecord.eggName || latestRecord.petName || "Unknown Egg") +
-      "** " + latestVisuals.pet + " • 📍 " + String(latestArea).slice(0, 45) +
-      " • <t:" + latestUnix + ":R>";
-  }
-
-  const feedText = liveFeedLastSuccessAt
-    ? "🟢 Live • <t:" + Math.floor(new Date(liveFeedLastSuccessAt).getTime() / 1000) + ":R>"
-    : "🟡 Waiting";
-
-  const description = lines.join("\n").slice(0, 3900);
+  if (!lines.length) lines.push("No eggs are configured for this rarity.");
 
   return new EmbedBuilder()
     .setColor(lastSeenColor(rarity))
-    .setAuthor({
-      name: "STEAL AN EGG  •  LIVE TRACKER"
-    })
-    .setTitle("🕒 " + lastSeenLabel(rarity) + " Last Seen")
-    .setDescription(
-      "**🥚 Live Egg Tracker**\n" +
-      "Every entry shows its egg icon, monster icon, location, and latest spawn time.\n\n" +
-      description
-    )
-    .addFields(
-      {
-        name: "📊 Coverage",
-        value:
-          "**" + seenCount + "/" + total + "** seen\n" +
-          "\`" + progressBar + "\` **" + coverage + "%**",
-        inline: true
-      },
-      {
-        name: "📡 Feed",
-        value: feedText,
-        inline: true
-      },
-      {
-        name: "⚡ Latest Spawn",
-        value: latestText,
-        inline: false
-      }
-    )
+    .setTitle("🕒 " + lastSeenLabel(rarity) + " • Last Seen")
+    .setDescription(lines.join("\n").slice(0, 4090))
     .setFooter({
-      text: "🥚 Steal An Egg • Last Seen • Auto-updated"
+      text: "Steal An Egg • Auto-updated"
     })
     .setTimestamp();
 }
@@ -3480,6 +3621,7 @@ client.once("clientReady", async () => {
 
   if (LAST_SEEN_CHANNEL_ID) {
     try {
+      await ensureEggCustomEmojis();
       await ensureLastSeenMessages();
       console.log("Last Seen tracker ready.");
     } catch (error) {
@@ -3853,6 +3995,7 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (LAST_SEEN_CHANNEL_ID) {
+        await ensureEggCustomEmojis();
         await ensureLastSeenMessages();
       }
 
