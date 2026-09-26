@@ -1842,7 +1842,7 @@ function collectEggCandidates(value, path = [], out = []) {
           eggName: catalogEgg.eggName,
           rarity: catalogEgg.rarity,
           biome: catalogEgg.biome || (typeof area === "string" && area.trim() ? area.trim() : "Unknown"),
-          petName: catalogEgg.petName || catalogEgg.eggName.replace(/s+Egg$/i, "").trim(),
+          petName: catalogEgg.petName || catalogEgg.eggName.replace(/\s+Egg$/i, "").trim(),
           spawnedAt: parsedTime.toISOString(),
           sourceEventId: sourceEventId ? String(sourceEventId) : null,
           imageUrl: normalizeImageUrl(imageUrl),
@@ -2326,15 +2326,9 @@ async function pollLiveFeed() {
         normalizeFeedKey(event.biome)
       ].join("|");
 
-      const previousSeen = seen.get(semanticKey) || 0;
-
-      // A different spawn of the same egg/area is allowed when it has a new
-      // timestamp; only suppress a rapid duplicate announcement.
-      if (now - previousSeen < SEMANTIC_DEDUP_WINDOW_MS) {
-        continue;
-      }
-
-      seen.set(semanticKey, now);
+      // Live feed events are already deduplicated by their event fingerprint
+      // above. Do not apply the older same-egg/same-area window here because
+      // legitimate rapid spawns can share the same egg and area.
       inFlightKeys.add(semanticKey);
 
       try {
