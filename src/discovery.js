@@ -70,12 +70,148 @@ function extractUpdateNumber(text) {
   return match ? Number(match[1]) : null;
 }
 
+const DISCOVERY_AREAS = [
+  "Jungle",
+  "Snow",
+  "Volcano",
+  "Abyss Ocean",
+  "Prehistoric",
+  "Cosmic",
+  "Cherry Blossom",
+  "Titan Temple",
+  "Angels and Demons",
+  "Area not listed"
+];
+
+function cleanDiscoveryName(value) {
+  let name = cleanText(value)
+    .replace(/^image\s*:\s*/i, "")
+    .replace(/\s+Egg$/i, "")
+    .trim();
+
+  if (!name || name.length > 90) return "";
+
+  const normalized = name.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  if (normalized.length >= 6 && normalized.length % 2 === 0) {
+    const midpoint = normalized.length / 2;
+    if (normalized.slice(0, midpoint) === normalized.slice(midpoint)) {
+      const rawHalf = name.slice(0, Math.floor(name.length / 2)).trim();
+      if (rawHalf) name = rawHalf;
+    }
+  }
+
+  return name;
+}
+
+function pushDiscoveredEgg(found, name, rarity, area) {
+  const cleanName = cleanDiscoveryName(name);
+  if (!cleanName) return;
+
+  const cleanRarity = cleanText(rarity);
+  const cleanArea = cleanText(area);
+
+  if (
+    !/^(Secret|Eternal|Divine)$/i.test(cleanRarity) ||
+    !DISCOVERY_AREAS.some(candidate =>
+      candidate.toLowerCase() === cleanArea.toLowerCase()
+    )
+  ) {
+    return;
+  }
+
+  found.push({
+    eggName: cleanName + " Egg",
+    rarity:
+      cleanRarity[0].toUpperCase() + cleanRarity.slice(1).toLowerCase(),
+    area: DISCOVERY_AREAS.find(candidate =>
+      candidate.toLowerCase() === cleanArea.toLowerCase()
+    ) || cleanArea
+  });
+}
+
+function extractDiscoveryTableEggs(html, found) {
+  for (const rowMatch of String(html || "").matchAll(
+    /<tr\b[^>]*>([\s\S]*?)<\/tr>/gi
+  )) {
+    const cells = [...rowMatch[1].matchAll(
+      /<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/gi
+    )].map(match =>
+      cleanText(match[1].replace(/<[^>]+>/g, " "))
+    );
+
+    if (cells.length < 3) continue;
+
+    const rarityIndex = cells.findIndex(cell =>
+      /^(Secret|Eternal|Divine)$/i.test(cell)
+    );
+    const areaIndex = cells.findIndex(cell =>
+      DISCOVERY_AREAS.some(area =>
+        area.toLowerCase() === cell.toLowerCase()
+      )
+    );
+
+    if (rarityIndex < 0 || areaIndex < 0 || rarityIndex === areaIndex) {
+      continue;
+    }
+
+    const nameIndex = Math.min(rarityIndex, areaIndex) - 1;
+    const name = nameIndex >= 0
+      ? cells[nameIndex]
+      : cells.find((cell, index) =>
+          index !== rarityIndex &&
+          index !== areaIndex &&
+          cell.length >= 2
+        );
+
+    pushDiscoveredEgg(found, name, cells[rarityIndex], cells[areaIndex]);
+  }
+}
+
 export function extractSupportedEggsFromDiscovery(html) {
-  const lines = htmlToLines(html);
   const found = [];
+
+  // First handle normal HTML tables used by current wiki/tier-list pages.
+  extractDiscoveryTableEggs(html, found);
+
+  const lines = htmlToLines(html);
   let rarity = "";
 
   for (const line of lines) {
+    const pipeCells = line
+      .split("|")
+      .map(cleanText)
+      .filter(Boolean);
+
+    if (pipeCells.length >= 3) {
+      const rarityIndex = pipeCells.findIndex(cell =>
+        /^(Secret|Eternal|Divine)$/i.test(cell)
+      );
+      const areaIndex = pipeCells.findIndex(cell =>
+        DISCOVERY_AREAS.some(area =>
+          area.toLowerCase() === cell.toLowerCase()
+        )
+      );
+
+      if (rarityIndex >= 0 && areaIndex >= 0 && rarityIndex !== areaIndex) {
+        const nameIndex = Math.min(rarityIndex, areaIndex) - 1;
+        const name = nameIndex >= 0
+          ? pipeCells[nameIndex]
+          : pipeCells.find((cell, index) =>
+              index !== rarityIndex &&
+              index !== areaIndex &&
+              cell.length >= 2
+            );
+
+        pushDiscoveredEgg(
+          found,
+          name,
+          pipeCells[rarityIndex],
+          pipeCells[areaIndex]
+        );
+        continue;
+      }
+    }
+
     if (/^Secret$/i.test(line)) {
       rarity = "Secret";
       continue;
@@ -96,17 +232,7 @@ export function extractSupportedEggsFromDiscovery(html) {
 
     if (!match) continue;
 
-    const name = cleanText(match[1])
-      .replace(/\s+Egg$/i, "")
-      .trim();
-
-    if (!name || name.length > 90) continue;
-
-    found.push({
-      eggName: name + " Egg",
-      rarity,
-      area: match[2]
-    });
+    pushDiscoveredEgg(found, match[1], rarity, match[2]);
   }
 
   return dedupeEggs(found);
