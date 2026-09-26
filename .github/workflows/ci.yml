@@ -17,7 +17,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Install dependencies
         run: npm install --ignore-scripts
@@ -27,3 +27,25 @@ jobs:
 
       - name: Docker build smoke test
         run: docker build --pull -t steal-an-egg-live-notifier:ci .
+
+      - name: Docker runtime smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name steal-an-egg-smoke -p 3030:3000 \
+            -e DISCORD_BOT_TOKEN= \
+            -e LIVE_FEED_ENABLED=false \
+            -e AUTO_DISCOVERY_ENABLED=false \
+            -e RIFT_ALERTS_ENABLED=false \
+            -e SOURCE_MONITOR_ENABLED=false \
+            steal-an-egg-live-notifier:ci
+          trap 'docker logs steal-an-egg-smoke || true; docker rm -f steal-an-egg-smoke >/dev/null 2>&1 || true' EXIT
+          for i in {1..10}; do
+            if curl --fail --silent http://127.0.0.1:3030/health >/tmp/health.json; then
+              cat /tmp/health.json
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs steal-an-egg-smoke
+          exit 1
