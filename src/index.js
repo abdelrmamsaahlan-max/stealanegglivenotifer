@@ -448,36 +448,36 @@ function collectEggCandidates(value, path = [], out = []) {
 
   if (typeof eggName === "string" && typeof rarity === "string") {
     const rarityKey = rarity.trim().toLowerCase();
+
     if (["secret", "eternal", "divine"].includes(rarityKey)) {
       const catalogEgg = findCatalogEgg(eggName.trim());
-      if (!catalogEgg) {
-        return out;
-      }
-
       const parsedTime = parseTimestamp(spawnedAt);
-      const pathText = path.join(".").toLowerCase();
-      let score = 0;
 
-      for (const marker of [
-        "latest", "current", "confirmed", "latestconfirmed",
-        "latestegg", "currentegg", "lastspawn", "recent", "feed"
-      ]) {
-        if (pathText.includes(marker)) score += 5;
+      if (catalogEgg && parsedTime && catalogEgg.rarity.toLowerCase() === rarityKey) {
+        const pathText = path.join(".").toLowerCase();
+        let score = 20;
+
+        for (const marker of [
+          "latest", "current", "confirmed", "latestconfirmed",
+          "latestegg", "currentegg", "lastspawn", "recent", "feed"
+        ]) {
+          if (pathText.includes(marker)) score += 5;
+        }
+
+        if (sourceEventId) score += 8;
+        if (typeof area === "string" && area.trim()) score += 2;
+
+        out.push({
+          eggName: catalogEgg.eggName,
+          rarity: catalogEgg.rarity,
+          biome: catalogEgg.biome || (typeof area === "string" && area.trim() ? area.trim() : "Unknown"),
+          spawnedAt: parsedTime.toISOString(),
+          sourceEventId: sourceEventId ? String(sourceEventId) : null,
+          imageUrl: normalizeImageUrl(imageUrl),
+          score,
+          path: path.join(".")
+        });
       }
-
-      if (parsedTime) score += 10;
-      if (typeof area === "string" && area.trim()) score += 2;
-
-      out.push({
-        eggName: canonicalEggName(eggName.trim()),
-        rarity: rarityKey[0].toUpperCase() + rarityKey.slice(1),
-        biome: typeof area === "string" && area.trim() ? area.trim() : "Unknown",
-        spawnedAt: parsedTime ? parsedTime.toISOString() : null,
-        sourceEventId: sourceEventId ? String(sourceEventId) : null,
-        imageUrl: normalizeImageUrl(imageUrl),
-        score,
-        path: path.join(".")
-      });
     }
   }
 
