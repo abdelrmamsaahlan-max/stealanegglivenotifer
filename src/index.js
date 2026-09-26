@@ -4726,8 +4726,18 @@ async function processSpawnMessage(message) {
   // Rare-egg processing deliberately continues immediately. Event alerts are
   // isolated in their own async jobs so a slow/failing Doctor Scramble or Rift
   // send can never block a Secret/Eternal/Divine spawn from being evaluated.
-  if (SOURCE_CHANNEL_IDS.size && !SOURCE_CHANNEL_IDS.has(message.channelId)) return;
-  if (SOURCE_BOT_IDS.size && !SOURCE_BOT_IDS.has(message.author?.id)) return;
+  // A valid combined Experiment + rare-egg announcement is allowed through
+  // the rare source filter because the same message has already passed the
+  // strict rare-egg parser. Ordinary rare-egg messages remain source-filtered.
+  const combinedExperimentRareCandidate = Boolean(experimentEvent);
+  const rareSourceChannelAllowed =
+    !SOURCE_CHANNEL_IDS.size || SOURCE_CHANNEL_IDS.has(message.channelId);
+  const rareSourceBotAllowed =
+    !SOURCE_BOT_IDS.size || SOURCE_BOT_IDS.has(message.author?.id);
+
+  if ((!rareSourceChannelAllowed || !rareSourceBotAllowed) && !combinedExperimentRareCandidate) {
+    return;
+  }
 
   lastSourceMessageAt = new Date(message.createdTimestamp || Date.now()).toISOString();
   lastSourceMessageId = message.id || null;
