@@ -103,8 +103,8 @@ function extractLabel(combined, marker) {
     .trim();
 }
 
-function parsePets(combined) {
-  const known = Object.values(RIFT_DATA).flatMap(item => item.pets);
+function parsePets(combined, bannerKey) {
+  const known = RIFT_DATA[bannerKey]?.pets || [];
 
   return known.map(pet => {
     const pattern = new RegExp(
@@ -143,10 +143,13 @@ export function parseRiftChange(data) {
   );
 
   const directBanner = combined.match(/\b(Riftborn|Riftbeasts|Shattered\s+Rift)\b/i);
+  const rotationSignal =
+    /\b(?:Changed|Next\s+Change|Rotation\s+Chance|Current\s+Egg)\b/i.test(combined);
+
   const bannerKey = toRiftKey(
     bannerMatch?.[1] ||
     shiftedMatch?.[1] ||
-    directBanner?.[1]
+    (rotationSignal ? directBanner?.[1] : "")
   );
 
   const bossSignal =
@@ -184,7 +187,7 @@ export function parseRiftChange(data) {
       fieldValue(fields, ["Next Change", "Next"]) ||
       extractLabel(combined, "Next Change") ||
       extractLabel(combined, "Next"),
-    possiblePets: parsePets(combined),
+    possiblePets: parsePets(combined, bannerKey),
     joinUrl: extractRobloxJoinUrl(data),
     createdTimestamp: Number(data?.createdTimestamp || Date.now()),
     messageUrl: data?.messageUrl || null,
@@ -218,8 +221,7 @@ export function buildRiftAlertEmbed(event) {
   const description = data
     ? "🟣 **" + event.bannerName + " is Active!**\n\n" +
       "**Changed:** " + changed +
-      "\n**Next Change:** " + next +
-      "\n**Rotation Chance:** " + data.rotationChance
+      "\n**Next Change:** " + next
     : "🌀 **Abyss Overlord is Active!**\n\n" +
       "**Next Boss:** " + (event.nextChangeLabel || "Not provided");
 
