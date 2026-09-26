@@ -46,11 +46,11 @@ export const RIFT_DATA = {
 
 function clean(value) {
   return String(value ?? "")
-    .replace(/<a?:\\w+:\\d+>/g, "")
-    .replace(/\\*\\*/g, "")
-    .replace(/\\r/g, "")
-    .replace(/\\\\n/g, "\\n")
-    .replace(/[\\u200B-\\u200D\\uFEFF]/g, "")
+    .replace(/<a?:\w+:\d+>/g, "")
+    .replace(/\*\*/g, "")
+    .replace(/\r/g, "")
+    .replace(/\\n/g, "\n")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
     .trim();
 }
 
@@ -58,7 +58,7 @@ function normalize(value) {
   return clean(value)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
-    .replace(/\\s+/g, " ")
+    .replace(/\s+/g, " ")
     .trim();
 }
 
@@ -81,47 +81,86 @@ function fieldValue(fields, names) {
 
 function extractRobloxJoinUrl(data) {
   const urls = Array.isArray(data?.linkUrls) ? data.linkUrls : [];
-  return urls.find(url => /roblox\\.com\\/games\\/start/i.test(url)) ||
-    urls.find(url => /roblox\\.com\\/games\\//i.test(url)) ||
+  return urls.find(url => /roblox\.com\/games\/start/i.test(url)) ||
+    urls.find(url => /roblox\.com\/games\//i.test(url)) ||
     null;
 }
 
+function escapeRegExp(value) {
+  return String(value || "").replace(/[.*+?^()|[\]\\]/g, "\\$&");
+}
+
 function extractLabel(combined, marker) {
-  const match = combined.match(new RegExp("\\\\b" + marker + "\\\\s*[:：-]?\\\\s*([^\\\\n]+)", "i"));
-  return match?.[1]?.split(/\\s+(?:Next Change|Join Game|Possible Pets)\\b/i)[0]?.trim() || "";
+  const pattern = new RegExp(
+    "\\b" + escapeRegExp(marker) + "\\s*[:：-]?\\s*([^\\n]+)",
+    "i"
+  );
+  const match = combined.match(pattern);
+  if (!match?.[1]) return "";
+
+  return match[1]
+    .split(/\s+(?:Next Change|Join Game|Possible Pets|Rotation Chance)\b/i)[0]
+    .trim();
 }
 
 function parsePets(combined) {
   const known = Object.values(RIFT_DATA).flatMap(item => item.pets);
+
   return known.map(pet => {
-    const safe = pet.name.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&");
-    const match = combined.match(new RegExp("(?:" + safe + ")[^\\\\n]{0,100}?(\\\\d+(?:\\\\.\\\\d+)?%)\\\\s+[^\\\\n]{0,50}?(\\\\$?[0-9.,]+\\\\s*[KMBT]\\\\s*\\\\/s)", "i"));
+    const pattern = new RegExp(
+      "\\b" + escapeRegExp(pet.name) +
+      "\\b[\\s\\S]{0,140}?(\\d+(?:\\.\\d+)?)%[\\s\\S]{0,50}?(\\$?[0-9.,]+\\s*[KMBT]\\s*\\/s)",
+      "i"
+    );
+
+    const match = combined.match(pattern);
+
     return {
       ...pet,
-      chance: match?.[1] || pet.chance,
-      income: match?.[2]?.replace(/\\s+/g, "") || pet.income
+      chance: match?.[1] ? match[1] + "%" : pet.chance,
+      income: match?.[2]?.replace(/\s+/g, "") || pet.income
     };
   });
 }
 
 export function parseRiftChange(data) {
   const fields = Array.isArray(data?.fields) ? data.fields : [];
-  const combined = [data?.text || "", ...fields.flatMap(field => [field?.name || "", field?.value || ""])].filter(Boolean).join("\\n");
+  const combined = [
+    data?.text || "",
+    ...fields.flatMap(field => [field?.name || "", field?.value || ""])
+  ]
+    .filter(Boolean)
+    .join("\n");
+
   const lower = normalize(combined);
 
-  const bannerMatch = combined.match(/\\b(Riftborn|Riftbeasts|Shattered\\s+Rift)\\b[^\\n]{0,100}?\\b(?:is\\s+now\\s+active|is\\s+active|active\\s+now|went\\s+live|live\\s+now|became\\s+active)\\b/i);
-  const shiftedMatch = combined.match(/\\bThe\\s+Rift\\s+shifted\\b[^\\n]{0,100}?\\b(Riftborn|Riftbeasts|Shattered\\s+Rift)\\b/i);
-  const bannerKey = toRiftKey(bannerMatch?.[1] || shiftedMatch?.[1] || combined.match(/\\b(Riftborn|Riftbeasts|Shattered\\s+Rift)\\b/i)?.[1]);
+  const bannerMatch = combined.match(
+    /\b(Riftborn|Riftbeasts|Shattered\s+Rift)\b[^\n]{0,120}?\b(?:is\s+now\s+active|is\s+active|active\s+now|went\s+live|live\s+now|became\s+active)\b/i
+  );
 
-  const bossSignal = /\\babyss\\s+overlord\\b[\\s\\S]{0,160}\\b(?:spawned|started|open|opened|active)\\b/i.test(lower) ||
-    /\\brift\\s+has\\s+been\\s+opened\\b/i.test(lower) ||
-    /\\bboss\\s+fight\\b[\\s\\S]{0,80}\\b(?:started|live|active)\\b/i.test(lower);
+  const shiftedMatch = combined.match(
+    /\bThe\s+Rift\s+shifted\b[^\n]{0,120}?\b(Riftborn|Riftbeasts|Shattered\s+Rift)\b/i
+  );
+
+  const directBanner = combined.match(/\b(Riftborn|Riftbeasts|Shattered\s+Rift)\b/i);
+  const bannerKey = toRiftKey(
+    bannerMatch?.[1] ||
+    shiftedMatch?.[1] ||
+    directBanner?.[1]
+  );
+
+  const bossSignal =
+    /\babyss\s+overlord\b[\s\S]{0,160}\b(?:spawned|started|open|opened|active)\b/i.test(lower) ||
+    /\brift\s+has\s+been\s+opened\b/i.test(lower) ||
+    /\bboss\s+fight\b[\s\S]{0,80}\b(?:started|live|active)\b/i.test(lower);
 
   if (bossSignal && !bannerKey) {
     return {
       type: "boss",
       bossName: "Abyss Overlord",
-      nextChangeLabel: extractLabel(combined, "Next boss fight") || extractLabel(combined, "Next Boss"),
+      nextChangeLabel:
+        extractLabel(combined, "Next boss fight") ||
+        extractLabel(combined, "Next Boss"),
       joinUrl: extractRobloxJoinUrl(data),
       createdTimestamp: Number(data?.createdTimestamp || Date.now()),
       messageUrl: data?.messageUrl || null,
@@ -137,8 +176,14 @@ export function parseRiftChange(data) {
     bannerName: RIFT_DATA[bannerKey].name,
     eggName: RIFT_DATA[bannerKey].eggName,
     rotationChance: RIFT_DATA[bannerKey].rotationChance,
-    changedLabel: fieldValue(fields, ["Changed", "Change", "Current"]) || extractLabel(combined, "Changed") || extractLabel(combined, "Change"),
-    nextChangeLabel: fieldValue(fields, ["Next Change", "Next"]) || extractLabel(combined, "Next Change") || extractLabel(combined, "Next"),
+    changedLabel:
+      fieldValue(fields, ["Changed", "Change", "Current"]) ||
+      extractLabel(combined, "Changed") ||
+      extractLabel(combined, "Change"),
+    nextChangeLabel:
+      fieldValue(fields, ["Next Change", "Next"]) ||
+      extractLabel(combined, "Next Change") ||
+      extractLabel(combined, "Next"),
     possiblePets: parsePets(combined),
     joinUrl: extractRobloxJoinUrl(data),
     createdTimestamp: Number(data?.createdTimestamp || Date.now()),
@@ -154,30 +199,49 @@ function petLine(pet) {
 export function buildRiftAlertEmbed(event) {
   const data = RIFT_DATA[event?.bannerKey] || null;
   const changedUnix = Math.floor(Number(event?.createdTimestamp || Date.now()) / 1000);
-  const nextUnix = Number.isFinite(event?.nextChangeAt) ? Math.floor(event.nextChangeAt / 1000) : null;
-  const changed = event?.changedLabel || "<t:" + changedUnix + ":R> • <t:" + changedUnix + ":t>";
-  const next = event?.nextChangeLabel || (nextUnix ? "<t:" + nextUnix + ":R> • <t:" + nextUnix + ":t>" : "Not provided");
-  const pets = event?.possiblePets?.length ? event.possiblePets : (data?.pets || []);
+  const nextUnix = Number.isFinite(event?.nextChangeAt)
+    ? Math.floor(event.nextChangeAt / 1000)
+    : null;
+
+  const changed = event?.changedLabel ||
+    "<t:" + changedUnix + ":R> • <t:" + changedUnix + ":t>";
+
+  const next = event?.nextChangeLabel ||
+    (nextUnix
+      ? "<t:" + nextUnix + ":R> • <t:" + nextUnix + ":t>"
+      : "Not provided");
+
+  const pets = event?.possiblePets?.length
+    ? event.possiblePets
+    : (data?.pets || []);
+
+  const description = data
+    ? "🟣 **" + event.bannerName + " is Active!**\n\n" +
+      "**Changed:** " + changed +
+      "\n**Next Change:** " + next +
+      "\n**Rotation Chance:** " + data.rotationChance
+    : "🌀 **Abyss Overlord is Active!**\n\n" +
+      "**Next Boss:** " + (event.nextChangeLabel || "Not provided");
 
   const embed = new EmbedBuilder()
     .setColor(0x8b5cf6)
     .setTitle("・RIFT EVENT")
-    .setDescription(
-      data
-        ? "🟣 **" + event.bannerName + " is Active!**\\n\\n**Changed:** " + changed +
-          "\\n**Next Change:** " + next + "\\n**Rotation Chance:** " + data.rotationChance
-        : "🌀 **Abyss Overlord is Active!**\\n\\n**Next Boss:** " + (event.nextChangeLabel || "Not provided")
-    )
+    .setDescription(description)
     .setTimestamp(new Date(event?.createdTimestamp || Date.now()))
     .setFooter({ text: "Steal An Egg • Rift Tracker" });
 
   embed.addFields({
     name: data ? "🐾 Possible Pets" : "⚔️ Rift Boss",
-    value: data ? pets.slice(0, 5).map(petLine).join("\\n") : "**Abyss Overlord** spawned and the boss fight is active.",
+    value: data
+      ? pets.slice(0, 5).map(petLine).join("\n")
+      : "**Abyss Overlord** spawned and the boss fight is active.",
     inline: false
   });
 
-  if (event?.imageUrl) embed.setThumbnail(event.imageUrl);
+  if (event?.imageUrl) {
+    embed.setThumbnail(event.imageUrl);
+  }
+
   return embed;
 }
 
@@ -186,12 +250,18 @@ export function buildRiftActionRow(event) {
     new ButtonBuilder()
       .setLabel("Join Game")
       .setStyle(ButtonStyle.Link)
-      .setURL(event?.joinUrl || "https://www.roblox.com/games/107778070777162/Steal-An-Egg")
+      .setURL(
+        event?.joinUrl ||
+        "https://www.roblox.com/games/107778070777162/Steal-An-Egg"
+      )
   );
 }
 
 export function riftBannerChoices() {
-  return Object.entries(RIFT_DATA).map(([value, data]) => ({ name: data.name, value }));
+  return Object.entries(RIFT_DATA).map(([value, data]) => ({
+    name: data.name,
+    value
+  }));
 }
 
 export function getRiftData(value) {
