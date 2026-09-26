@@ -49,10 +49,18 @@ export function extractMessageData(message) {
     if (attachment) imageUrl = attachment.url;
   }
 
+  const linkUrls = [];
+  for (const row of message.components || []) {
+    for (const component of row.components || []) {
+      if (component.url) linkUrls.push(component.url);
+    }
+  }
+
   return {
     text: parts.filter(Boolean).join("\n"),
     fields,
     imageUrl,
+    linkUrls: [...new Set(linkUrls)].slice(0, 5),
     createdTimestamp: message.createdTimestamp || Date.now(),
     messageUrl: message.url || null,
     authorId: message.author?.id || null
@@ -157,7 +165,9 @@ export function parseSpawn(data, allowedRarities) {
   const optional = {
     chance: getField("chance", "spawn chance"),
     speed: getField("speed", "required speed", "steal speed"),
-    value: getField("value", "worth", "money"),
+    value: getField("value", "worth", "money", "money per second", "income per second"),
+    money: getField("money", "money per second", "cash per second"),
+    recommendedSpeed: getField("recommended speed", "required speed", "steal speed"),
     income: getField("income", "cash per second", "money per second"),
     mutation: getField("mutation", "mutations"),
     countdown: getField("countdown", "time left", "expires", "remaining")
