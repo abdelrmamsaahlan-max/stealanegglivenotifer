@@ -4367,7 +4367,6 @@ async function sendRiftAlert(event, options = {}) {
   if (!isTest) {
     const previous = seenRiftAlerts.get(dedupKey) || 0;
     if (Date.now() - previous < RIFT_DEDUP_TTL_MS) return false;
-    seenRiftAlerts.set(dedupKey, Date.now());
   }
 
   const channel = await getAlertChannel();
@@ -4386,6 +4385,10 @@ async function sendRiftAlert(event, options = {}) {
       roles: roleId ? [roleId] : []
     }
   });
+
+  if (!isTest) {
+    seenRiftAlerts.set(dedupKey, Date.now());
+  }
 
   recordRiftHistory(event, isTest);
 
@@ -4407,7 +4410,6 @@ async function sendExperimentAlert(event, options = {}) {
   if (!isTest) {
     const previous = seenExperimentAlerts.get(key) || 0;
     if (Date.now() - previous < 15 * 60 * 1000) return false;
-    seenExperimentAlerts.set(key, Date.now());
   }
 
   const channel = await getAlertChannel();
@@ -4434,6 +4436,10 @@ async function sendExperimentAlert(event, options = {}) {
   if (row) payload.components = [row];
 
   const message = await channel.send(payload);
+
+  if (!isTest) {
+    seenExperimentAlerts.set(key, Date.now());
+  }
 
   experimentState.lastAppearedAt = Number(event.appearedAt || Date.now());
   experimentState.nextExperimentAt = Number(event.nextExperimentAt || (
@@ -5809,7 +5815,8 @@ if (!process.env.DISCORD_BOT_TOKEN) {
 } else {
   client.login(process.env.DISCORD_BOT_TOKEN).catch(error => {
     console.error("Discord login failed:", error);
-    process.exitCode = 1;
+    saveRuntimeState();
+    process.exit(1);
   });
 }
 
