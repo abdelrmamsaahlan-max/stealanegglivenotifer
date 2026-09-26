@@ -97,8 +97,11 @@ const API_RATE_LIMIT_PER_MINUTE =
 const MAX_INGEST_SKEW_SECONDS =
   Math.max(0, Number(process.env.INGEST_MAX_SKEW_SECONDS || 60));
 
-const ALERT_MENTION_MODE =
+const requestedMentionMode =
   (process.env.ALERT_MENTION_MODE || "role").toLowerCase();
+const ALERT_MENTION_MODE = ["none", "role", "here"].includes(requestedMentionMode)
+  ? requestedMentionMode
+  : "role";
 
 const ALERT_EMOJIS = {
   secret: process.env.ALERT_EMOJI_SECRET || "🥚",
@@ -765,6 +768,9 @@ client.on("interactionCreate", async interaction => {
 
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
+      const beforeAlerts = alertCount;
+      const beforeLastSpawn = lastSpawnAt;
+
       const testEvent = {
         live: true,
         eggName: "Test Egg",
@@ -776,6 +782,10 @@ client.on("interactionCreate", async interaction => {
       };
 
       await sendAlert(testEvent);
+
+      alertCount = beforeAlerts;
+      lastSpawnAt = beforeLastSpawn;
+      recentSpawns.shift();
 
       return await interaction.editReply({
         content: "✅ Test egg alert sent successfully."
