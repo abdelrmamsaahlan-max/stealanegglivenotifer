@@ -57,9 +57,6 @@ const COMMANDS = [
         .setRequired(false)
     ),
   new SlashCommandBuilder()
-    .setName("eggs-lastseen")
-    .setDescription("Show the most recently detected rare eggs and when they were last seen."),
-  new SlashCommandBuilder()
     .setName("egg-history")
     .setDescription("View recent rare-egg spawn history with rarity, location, and detection time."),
   new SlashCommandBuilder()
@@ -137,6 +134,7 @@ async function registerDiscordCommands(rest, applicationId) {
 const PORT = Number(process.env.PORT || 3000);
 const SECRET = process.env.INGEST_SHARED_SECRET || "";
 const CHANNEL_ID = process.env.DISCORD_DEFAULT_CHANNEL_ID || "";
+const LAST_SEEN_CHANNEL_ID = process.env.LAST_SEEN_CHANNEL_ID || "";
 const MONITOR_ENABLED = (process.env.SOURCE_MONITOR_ENABLED || "true").toLowerCase() === "true";
 
 const RARITIES = new Set(
@@ -279,6 +277,23 @@ let riftState = {
 
 const seenRiftAlerts = new Map();
 
+const LAST_SEEN_RARITIES = ["secret", "eternal", "divine"];
+const LAST_SEEN_UPDATE_DELAY_MS = 1000;
+const LAST_SEEN_RETRY_DELAY_MS = 2000;
+const lastSeenByRarity = {
+  secret: new Map(),
+  eternal: new Map(),
+  divine: new Map()
+};
+const lastSeenMessageIds = {
+  secret: null,
+  eternal: null,
+  divine: null
+};
+let lastSeenChannel = null;
+const lastSeenUpdateTimers = new Map();
+const lastSeenUpdateInFlight = new Map();
+
 function loadRuntimeState() {
   try {
     if (!fs.existsSync(STATE_FILE)) return;
@@ -299,6 +314,39 @@ function loadRuntimeState() {
 
     if (state.riftState && typeof state.riftState === "object") {
       riftState = { ...riftState, ...state.riftState };
+    }
+
+    if (state.lastSeenMessageIds && typeof state.lastSeenMessageIds === "object") {
+      for (const rarity of LAST_SEEN_RARITIES) {
+        if (typeof state.lastSeenMessageIds[rarity] === "string") {
+          lastSeenMessageIds[rarity] = state.lastSeenMessageIds[rarity];
+        }
+      }
+    }
+
+    if (state.lastSeenByRarity && typeof state.lastSeenByRarity === "object") {
+      for (const rarity of LAST_SEEN_RARITIES) {
+        const entries = state.lastSeenByRarity[rarity];
+        if (!entries || typeof entries !== "object") continue;
+
+        for (const [eggKey, record] of Object.entries(entries)) {
+          if (
+            record &&
+            typeof record === "object" &&
+            typeof record.eggName === "string" &&
+            typeof record.petName === "string" &&
+            typeof record.spawnedAt === "string"
+          ) {
+            lastSeenByRarity[rarity].set(eggKey, {
+              eggName: record.eggName,
+              petName: record.petName,
+              area: record.area || "Unknown",
+              spawnedAt: record.spawnedAt,
+              detectedAt: record.detectedAt || record.spawnedAt
+            });
+          }
+        }
+      }
     }
 
     if (typeof state.lastUpdateFingerprint === "string") {
@@ -350,6 +398,13 @@ function saveRuntimeState() {
       gameEventHistory: gameEventHistory.slice(0, MAX_EVENT_HISTORY),
       riftState,
       riftHistory: riftHistory.slice(0, MAX_RIFT_HISTORY),
+      lastSeenMessageIds,
+      lastSeenByRarity: Object.fromEntries(
+        LAST_SEEN_RARITIES.map(rarity => [
+          rarity,
+          Object.fromEntries(lastSeenByRarity[rarity])
+        ])
+      ),
       dynamicEggs: eggImageCatalog
         .filter(entry => entry?.source === "EggWatch live auto-discovery")
         .slice(0, 50)
@@ -373,6 +428,9 @@ function scheduleStateSave() {
 }
 
 loadRuntimeState();
+rebuildLastSeenFromHistory().catch(error => {
+  console.warn("Last Seen history rebuild failed:", error?.message || error);
+});
 
 function normalizePublicBaseUrl(value) {
   const raw = String(value || "").trim();
@@ -1837,6 +1895,8 @@ function recordSpawnHistory(event, source = "EggWatch Global Feed") {
 
   spawnHistory.unshift(record);
   if (spawnHistory.length > MAX_HISTORY) spawnHistory.length = MAX_HISTORY;
+
+  recordLastSeen(event);
   scheduleStateSave();
   return record;
 }
@@ -2325,7 +2385,243 @@ function isLiveEvent(value) {
   return true;
 }
 
-async function getAlertChannel() {
+function lastSeenColor(rarity) {
+  return {
+    secret: 0x7c3aed,
+    eternal: 0xf59e0b,
+    divine: 0xef4444
+  }[rarity] || 0x5865f2;
+}
+
+function lastSeenLabel(rarity) {
+  return rarity[0].toUpperCase() + rarity.slice(1);
+}
+
+function getLastSeenEntries(rarity) {
+  const map = lastSeenByRarity[rarity];
+  if (!map) return [];
+
+  return eggImageCatalog
+    .filter(entry => entry?.active !== false && entry?.rarity?.toLowerCase() === rarity)
+    .map(entry => ({
+      entry,
+      record: map.get(normalizeFeedKey(entry.eggName)) || null
+    }));
+}
+
+function buildLastSeenEmbed(rarity) {
+  const entries = getLastSeenEntries(rarity);
+  const seenEntries = entries.filter(item => item.record);
+  const neverEntries = entries.filter(item => !item.record);
+
+  const lines = [];
+
+  for (const { entry, record } of entries) {
+    if (!record) {
+      lines.push("⚪ **" + (entry.petName || entry.eggName) + "** — Never");
+      continue;
+    }
+
+    const timestamp = Date.parse(record.spawnedAt);
+    const unix = Number.isFinite(timestamp)
+      ? Math.floor(timestamp / 1000)
+      : Math.floor(Date.now() / 1000);
+
+    lines.push(
+      "🟢 **" + (entry.petName || record.petName || entry.eggName) + "** — <t:" +
+      unix + ":R> • 📍 " + String(record.area || entry.biome || "Unknown").slice(0, 80)
+    );
+  }
+
+  if (!lines.length) {
+    lines.push("⚪ No eggs are configured for this rarity yet.");
+  }
+
+  const description = lines.join("\n").slice(0, 4090);
+
+  return new EmbedBuilder()
+    .setColor(lastSeenColor(rarity))
+    .setTitle("🕒 " + lastSeenLabel(rarity) + " • Last Seen")
+    .setDescription(
+      "**Live tracker — updates automatically after every spawn.**\n\n" +
+      description
+    )
+    .addFields(
+      {
+        name: "📊 Tracking",
+        value:
+          "**" + seenEntries.length + "** seen • **" +
+          neverEntries.length + "** never seen",
+        inline: true
+      },
+      {
+        name: "🔄 Update delay",
+        value: "~1–2 seconds after a confirmed spawn",
+        inline: true
+      }
+    )
+    .setFooter({ text: "Steal An Egg • Live Last Seen Tracker" })
+    .setTimestamp();
+}
+
+async function getLastSeenChannel() {
+  if (!LAST_SEEN_CHANNEL_ID) return null;
+  if (lastSeenChannel?.isTextBased()) return lastSeenChannel;
+
+  const channel = await client.channels.fetch(LAST_SEEN_CHANNEL_ID);
+  if (!channel || !channel.isTextBased()) {
+    throw new Error("last_seen_channel_unavailable");
+  }
+
+  lastSeenChannel = channel;
+  return channel;
+}
+
+async function ensureLastSeenMessages() {
+  const channel = await getLastSeenChannel();
+  if (!channel) return false;
+
+  for (const rarity of LAST_SEEN_RARITIES) {
+    const embed = buildLastSeenEmbed(rarity);
+    let message = null;
+
+    if (lastSeenMessageIds[rarity]) {
+      try {
+        message = await channel.messages.fetch(lastSeenMessageIds[rarity]);
+      } catch {
+        message = null;
+      }
+    }
+
+    if (message) {
+      await message.edit({ embeds: [embed] });
+      continue;
+    }
+
+    const created = await channel.send({ embeds: [embed] });
+    lastSeenMessageIds[rarity] = created.id;
+  }
+
+  scheduleStateSave();
+  return true;
+}
+
+async function updateLastSeenMessage(rarity) {
+  if (!LAST_SEEN_CHANNEL_ID || !LAST_SEEN_RARITIES.includes(rarity)) return;
+
+  const channel = await getLastSeenChannel();
+  if (!channel) return;
+
+  const embed = buildLastSeenEmbed(rarity);
+  const existingPromise = lastSeenUpdateInFlight.get(rarity);
+
+  if (existingPromise) {
+    await existingPromise;
+    return;
+  }
+
+  const promise = (async () => {
+    let message = null;
+
+    if (lastSeenMessageIds[rarity]) {
+      try {
+        message = await channel.messages.fetch(lastSeenMessageIds[rarity]);
+      } catch {
+        message = null;
+      }
+    }
+
+    if (message) {
+      await message.edit({ embeds: [embed] });
+    } else {
+      const created = await channel.send({ embeds: [embed] });
+      lastSeenMessageIds[rarity] = created.id;
+    }
+
+    scheduleStateSave();
+  })();
+
+  lastSeenUpdateInFlight.set(rarity, promise);
+
+  try {
+    await promise;
+  } finally {
+    lastSeenUpdateInFlight.delete(rarity);
+  }
+}
+
+function scheduleLastSeenUpdate(rarity, retry = false) {
+  if (!LAST_SEEN_CHANNEL_ID || !LAST_SEEN_RARITIES.includes(rarity)) return;
+
+  const oldTimer = lastSeenUpdateTimers.get(rarity);
+  if (oldTimer) clearTimeout(oldTimer);
+
+  const delay = retry ? LAST_SEEN_RETRY_DELAY_MS : LAST_SEEN_UPDATE_DELAY_MS;
+
+  const timer = setTimeout(() => {
+    lastSeenUpdateTimers.delete(rarity);
+
+    updateLastSeenMessage(rarity).catch(error => {
+      monitorErrors++;
+      console.warn(
+        "Last Seen update failed for " + rarity + ":",
+        error?.message || error
+      );
+
+      scheduleLastSeenUpdate(rarity, true);
+    });
+  }, delay);
+
+  lastSeenUpdateTimers.set(rarity, timer);
+}
+
+function recordLastSeen(event) {
+  const rarity = String(event?.rarity || "").trim().toLowerCase();
+  if (!LAST_SEEN_RARITIES.includes(rarity)) return;
+
+  const eggName = canonicalEggName(event?.eggName || event?.displayName || "Unknown Egg");
+  const entry = findCatalogEgg(eggName) ||
+    ensureCatalogEgg(eggName, event.rarity, event.biome);
+
+  const canonical = entry?.eggName || eggName;
+  const petName = entry?.petName || event?.displayName || canonical.replace(/\\s+Egg$/i, "").trim();
+
+  lastSeenByRarity[rarity].set(normalizeFeedKey(canonical), {
+    eggName: canonical,
+    petName,
+    area: event?.biome || entry?.biome || "Unknown",
+    spawnedAt: event?.spawnedAt || new Date().toISOString(),
+    detectedAt: new Date().toISOString()
+  });
+
+  scheduleLastSeenUpdate(rarity);
+}
+
+async function rebuildLastSeenFromHistory() {
+  if (!spawnHistory.length) return;
+
+  for (const record of [...spawnHistory].reverse()) {
+    const key = String(record?.rarity || "").toLowerCase();
+    if (!LAST_SEEN_RARITIES.includes(key)) continue;
+
+    const eggName = canonicalEggName(record.eggName || record.petName);
+    const entry = findCatalogEgg(eggName);
+    if (!entry) continue;
+
+    const mapKey = normalizeFeedKey(entry.eggName);
+    if (!lastSeenByRarity[key].has(mapKey)) {
+      lastSeenByRarity[key].set(mapKey, {
+        eggName: entry.eggName,
+        petName: entry.petName || record.petName || entry.eggName,
+        area: record.area || entry.biome || "Unknown",
+        spawnedAt: record.spawnedAt,
+        detectedAt: record.detectedAt || record.spawnedAt
+      });
+    }
+  }
+}
+
+async function getAlertChannel() {async function getAlertChannel() {
   if (alertChannel?.isTextBased()) return alertChannel;
   if (!CHANNEL_ID) throw new Error("DISCORD_DEFAULT_CHANNEL_ID is not configured");
 
@@ -2957,6 +3253,18 @@ client.once("clientReady", async () => {
     }
   }
 
+  await rebuildLastSeenFromHistory();
+
+  if (LAST_SEEN_CHANNEL_ID) {
+    try {
+      await ensureLastSeenMessages();
+      console.log("Last Seen tracker ready.");
+    } catch (error) {
+      monitorErrors++;
+      console.error("Last Seen tracker initialization failed:", error);
+    }
+  }
+
   scheduleImageWarmup();
 
   try {
@@ -3041,6 +3349,9 @@ client.on("interactionCreate", async interaction => {
         (CHANNEL_ID ? "✅" : "❌") + " Alert channel configuration"
       );
       checks.push(
+        (LAST_SEEN_CHANNEL_ID ? "✅" : "🟡") + " Last Seen channel configuration"
+      );
+      checks.push(
         (liveFeedHealth() === "ACTIVE" ? "✅" : liveFeedHealth() === "WAITING" ? "🟡" : "❌") +
         " EggWatch feed: " + liveFeedHealth()
       );
@@ -3101,6 +3412,7 @@ client.on("interactionCreate", async interaction => {
         "🎯 **Rarities:** " + [...RARITIES].join(", "),
         "📥 **Source channels:** " + (SOURCE_CHANNEL_IDS.size ? [...SOURCE_CHANNEL_IDS].join(", ") : "ALL"),
         "📤 **Alert channel:** " + (CHANNEL_ID ? "CONFIGURED" : "NOT CONFIGURED"),
+        "🕒 **Last Seen channel:** " + (LAST_SEEN_CHANNEL_ID ? "CONFIGURED" : "NOT CONFIGURED"),
         "🔔 **Role ping:** " + ALERT_MENTION_MODE.toUpperCase(),
         "📡 **Discord source:** " + sourceHealth(),
         "🌐 **EggWatch feed:** " + liveFeedHealth(),
@@ -3133,28 +3445,6 @@ client.on("interactionCreate", async interaction => {
         flags: MessageFlags.Ephemeral
       });
     }
-    if (interaction.commandName === "eggs-lastseen") {
-      if (!recentSpawns.length) {
-        return await interaction.reply({
-          content: "📭 No rare egg has been detected yet.",
-          flags: MessageFlags.Ephemeral
-        });
-      }
-
-      const text = recentSpawns.slice(0, 10).map(item =>
-        getRarityEmoji(item.rarity) +
-        " **" + item.eggName + "** • " +
-        item.rarity +
-        " • 📍 " + item.area +
-        " • <t:" + Math.floor(new Date(item.at).getTime() / 1000) + ":R>"
-      ).join("\n");
-
-      return await interaction.reply({
-        content: "🕒 **Last Seen**\n" + text,
-        flags: MessageFlags.Ephemeral
-      });
-    }
-
     if (interaction.commandName === "egg-history") {
       if (!spawnHistory.length) {
         return await interaction.reply({
@@ -3337,6 +3627,10 @@ client.on("interactionCreate", async interaction => {
       if (CHANNEL_ID) {
         await getAlertChannel();
         await validateAlertRoles();
+      }
+
+      if (LAST_SEEN_CHANNEL_ID) {
+        await ensureLastSeenMessages();
       }
 
       warmPetImageCache({ workers: 2 }).catch(error => {
