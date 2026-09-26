@@ -119,6 +119,7 @@ export function experimentEventKey(event) {
 export function buildExperimentAlertEmbed(event, emojiMap = {}) {
   const scrambleEmoji = emojiMap.scramble || "🧪";
   const robloxEmoji = emojiMap.roblox || "🎮";
+  const loadingEmoji = emojiMap.loading || "⏳";
   const appearedUnix = Math.floor(
     Number(event?.appearedAt || Date.now()) / 1000
   );
@@ -126,48 +127,33 @@ export function buildExperimentAlertEmbed(event, emojiMap = {}) {
     Number(event?.nextExperimentAt || (Date.now() + 30 * 60_000)) / 1000
   );
 
+  const joinLine = event?.joinUrl
+    ? robloxEmoji + " **Join Game:** [Click Here](" + event.joinUrl + ")"
+    : robloxEmoji + " **Join Game:** Link not provided";
+
+  const nextLine =
+    loadingEmoji +
+    " **Next experiment in:** <t:" +
+    nextUnix +
+    ":t> (<t:" +
+    nextUnix +
+    ":R>)";
+
   return new EmbedBuilder()
     .setColor(0xec4899)
-    .setTitle(scrambleEmoji + "  A Forbidden Experiment Has Appeared")
+    .setTitle("「・EXPERIMENT EVENT」")
     .setDescription(
-      "**" + (event?.experimentName || "Dr. Scramble Experiment") +
-      "** has appeared!\n\n" +
-      "Get ready for the next experiment " +
-      "<t:" + nextUnix + ":R>."
-    )
-    .addFields(
-      {
-        name: "🧪 Experiment",
-        value: "Dr. Scramble",
-        inline: true
-      },
-      {
-        name: "⏳ Next Experiment",
-        value: "<t:" + nextUnix + ":t> • <t:" + nextUnix + ":R>",
-        inline: true
-      },
-      {
-        name: "⌛ Active Window",
-        value: (event?.activeMinutes || EXPERIMENT_ACTIVE_MINUTES) + " minutes",
-        inline: true
-      },
-      {
-        name: "📍 Active Areas",
-        value: event?.activeAreas || EXPERIMENT_ACTIVE_AREAS,
-        inline: false
-      },
-      {
-        name: robloxEmoji + " Join Game",
-        value: event?.joinUrl
-          ? "[Click Here](" + event.joinUrl + ")"
-          : "Join Game link not provided",
-        inline: false
-      }
+      scrambleEmoji +
+      " **A Forbidden Experiment Has Appeared**\n\n" +
+      "**Dr. Scramble Experiment** has appeared!\n" +
+      joinLine +
+      "\n" +
+      nextLine
     )
     .setFooter({
-      text: "Steal An Egg • Experiment Tracker"
+      text: "SenZ V2 | Steal An Egg Experiment Tracker"
     })
-    .setTimestamp(new Date(Number(event?.appearedAt || Date.now())));
+    .setTimestamp(new Date(appearedUnix * 1000));
 }
 
 export function buildExperimentActionRow(event) {
