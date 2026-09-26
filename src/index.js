@@ -1627,7 +1627,10 @@ async function getPetPngBuffer(petName) {
       pngBuffer = await sharp(input, { failOn: "none" })
         .ensureAlpha()
         .trim()
-        .png({ compressionLevel: 9 })
+        .png({
+          compressionLevel: 9,
+          adaptiveFiltering: true
+        })
         .toBuffer();
     }
 
@@ -4284,16 +4287,14 @@ async function enrichAlertEvent(event, entryOverride = null) {
     event.imageBuffer = cachedPng.buffer;
   }
 
-  const cachedSource = imageFallbackCache.get(normalizeFeedKey(entry.eggName));
-  if (!event.imageUrl) {
-    event.imageUrl =
-      cachedSource?.url ||
-      (PUBLIC_BASE_URL ? publicPetImageUrl(entry.petName) : null);
-  }
+  // Live alerts are PNG-only. Never expose the original WebP/JPEG source
+  // directly in a Discord embed. A warmed transparent PNG is attached to the
+  // message, or generated immediately after delivery.
+  event.imageUrl = null;
 
-  // Never block a live alert on image processing. A cached PNG or public CDN
-  // URL is used immediately; a missing PNG is prepared in the background and
-  // attached after the alert has already been delivered.
+  // Never block a live alert on a cold image cache. A cached PNG is used
+  // immediately; a missing PNG is prepared in the background and attached
+  // after the alert has already been delivered.
   if (!cachedPng) {
     getPetPngBuffer(entry.petName)
       .then(buffer => {
@@ -4658,12 +4659,10 @@ async function processSpawnMessage(message) {
           riftEvent.bannerName || riftEvent.bossName || "unknown"
         );
 
-        try {
-          await sendRiftAlert(riftEvent);
-        } catch (error) {
-          monitorErrors++;
-          console.warn("Rift alert failed:", error?.message || error);
-        }
+        safeRun(
+          sendRiftAlert(riftEvent),
+          "Rift alert"
+        );
       }
     }
   }
@@ -4686,16 +4685,17 @@ async function processSpawnMessage(message) {
     const seenAt = seenExperimentAlerts.get(key) || 0;
 
     if (Date.now() - seenAt >= 15 * 60 * 1000) {
-      try {
-        await ensureExperimentCustomEmojis(experimentEvent.customEmojis || []);
-        await sendExperimentAlert(experimentEvent);
-      } catch (error) {
-        monitorErrors++;
-        console.warn("Experiment alert failed:", error?.message || error);
-      }
+      safeRun(
+        ensureExperimentCustomEmojis(experimentEvent.customEmojis || [])
+          .then(() => sendExperimentAlert(experimentEvent)),
+        "Experiment alert"
+      );
     }
   }
 
+  // Rare-egg processing deliberately continues immediately. Event alerts are
+  // isolated in their own async jobs so a slow/failing Doctor Scramble or Rift
+  // send can never block a Secret/Eternal/Divine spawn from being evaluated.
   if (SOURCE_CHANNEL_IDS.size && !SOURCE_CHANNEL_IDS.has(message.channelId)) return;
   if (SOURCE_BOT_IDS.size && !SOURCE_BOT_IDS.has(message.author?.id)) return;
 
