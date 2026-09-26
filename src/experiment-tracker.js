@@ -151,7 +151,7 @@ export function buildExperimentAlertEmbed(event, emojiMap = {}) {
       nextLine
     )
     .setFooter({
-      text: "SenZ V2 | Steal An Egg Experiment Tracker"
+      text: "Powered by FSMM • Steal An Egg"
     })
     .setTimestamp(new Date(appearedUnix * 1000));
 }
