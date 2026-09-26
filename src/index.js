@@ -6879,21 +6879,26 @@ async function sendAlert(event, latencyMs = null) {
 
   if (recentSpawns.length > 25) recentSpawns.length = 25;
 
-  persistAlertDelivery(
-    deliveryKeys.map(deliveryKey => ({
-      deliveryKey,
-      channelId: sentMessage?.channelId || CHANNEL_ID || null,
-      discordMessageId: sentMessage?.id || null,
-      status: "sent",
-      attempts: 1,
-      sentAt: new Date().toISOString(),
-      incidentId: event?.incidentId || null,
-      confidence: Number.isFinite(Number(event?.confidence)) ? Number(event.confidence) : null,
-      evidence: Array.isArray(event?.evidence) ? event.evidence.slice(0, 8) : []
-    }))
-  ).catch(error => {
+  try {
+    await persistAlertDelivery(
+      deliveryKeys.map(deliveryKey => ({
+        deliveryKey,
+        eventId: event?.eventId || event?.storedEventId || null,
+        channelId: sentMessage?.channelId || CHANNEL_ID || null,
+        discordMessageId: sentMessage?.id || null,
+        status: "sent",
+        attempts: 1,
+        sentAt: new Date().toISOString(),
+        incidentId: event?.incidentId || null,
+        confidence: Number.isFinite(Number(event?.confidence)) ? Number(event.confidence) : null,
+        evidence: Array.isArray(event?.evidence) ? event.evidence.slice(0, 8) : []
+      }))
+    );
+  } catch (error) {
+    // Discord delivery is already successful; storage must not turn a good
+    // alert into a false failure. The failed persistence is still surfaced.
     recordMonitorError("storage", error, "Supabase alert delivery persistence failed");
-  });
+  }
 
   releaseAlertDelivery(deliveryKeys, true);
   // Persist the claim immediately so a restart cannot replay a fresh alert.
