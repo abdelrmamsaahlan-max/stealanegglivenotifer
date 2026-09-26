@@ -1398,6 +1398,60 @@ function pickLatestEggFromFeed(payload) {
   return pool[0];
 }
 
+function syncLastSeenFromFeedPayload(payload) {
+  const candidates = collectEggCandidates(payload);
+  if (!candidates.length) return 0;
+
+  const changedRarities = new Set();
+
+  for (const candidate of candidates) {
+    const rarity = String(candidate?.rarity || "").trim().toLowerCase();
+    if (!LAST_SEEN_RARITIES.includes(rarity)) continue;
+
+    const spawnedTime = Date.parse(candidate?.spawnedAt || "");
+    if (!Number.isFinite(spawnedTime) || spawnedTime > Date.now() + 60_000) continue;
+
+    const eggName = canonicalEggName(candidate.eggName);
+    const entry = findCatalogEgg(eggName) ||
+      ensureCatalogEgg(eggName, candidate.rarity, candidate.biome || "Unknown");
+
+    if (!entry) continue;
+
+    const key = normalizeFeedKey(entry.eggName);
+    const existing = lastSeenByRarity[rarity].get(key);
+    const existingTime = existing ? Date.parse(existing.spawnedAt || "") : NaN;
+
+    if (existing && Number.isFinite(existingTime) && existingTime >= spawnedTime) {
+      continue;
+    }
+
+    const candidateArea =
+      candidate.biome && candidate.biome !== "Unknown"
+        ? candidate.biome
+        : entry.biome || "Unknown";
+
+    lastSeenByRarity[rarity].set(key, {
+      eggName: entry.eggName,
+      petName: entry.petName || candidate.petName || entry.eggName.replace(/\s+Egg$/i, "").trim(),
+      area: candidateArea,
+      spawnedAt: new Date(spawnedTime).toISOString(),
+      detectedAt: existing?.detectedAt || new Date().toISOString()
+    });
+
+    changedRarities.add(rarity);
+  }
+
+  for (const rarity of changedRarities) {
+    scheduleLastSeenUpdate(rarity);
+  }
+
+  if (changedRarities.size) {
+    scheduleStateSave();
+  }
+
+  return changedRarities.size;
+}
+
 function feedStateLooksOffline(payload) {
   try {
     const json = JSON.stringify(payload).toLowerCase();
@@ -1592,6 +1646,10 @@ async function pollEggWatch() {
         }
       }
 
+      // EggWatch can keep prior detections in the same feed payload.
+      // Sync those saved detections into Last Seen without sending alerts.
+      syncLastSeenFromFeedPayload(payload);
+
       // The live API is the authoritative receiver. Do not scrape page HTML here:
       // the page contains banners/marketing artwork that can never be a spawn image.
       const candidate =
@@ -1631,6 +1689,9 @@ async function pollEggWatch() {
           "url=" + url,
           "catalogSource=" + (findCatalogEgg(candidate.eggName) ? "available" : "none")
         );
+
+        // The first live result is still valid Last Seen data,
+        // but must never be sent as a duplicate alert.
         return;
       }
 
@@ -2368,9 +2429,14 @@ function buildLastSeenEmbed(rarity) {
       ? Math.floor(timestamp / 1000)
       : Math.floor(Date.now() / 1000);
 
+    const displayArea =
+      record.area && record.area !== "Unknown"
+        ? record.area
+        : entry.biome || "Unknown";
+
     lines.push(
       "🟢 **" + (entry.petName || record.petName || entry.eggName) + "** — <t:" +
-      unix + ":R> • 📍 " + String(record.area || entry.biome || "Unknown").slice(0, 80)
+      unix + ":R> • 📍 " + String(displayArea).slice(0, 80)
     );
   }
 
@@ -2527,10 +2593,15 @@ function recordLastSeen(event) {
   const canonical = entry?.eggName || eggName;
   const petName = entry?.petName || event?.displayName || canonical.replace(/\\s+Egg$/i, "").trim();
 
+  const eventArea =
+    event?.biome && event.biome !== "Unknown"
+      ? event.biome
+      : entry?.biome || "Unknown";
+
   lastSeenByRarity[rarity].set(normalizeFeedKey(canonical), {
     eggName: canonical,
     petName,
-    area: event?.biome || entry?.biome || "Unknown",
+    area: eventArea,
     spawnedAt: event?.spawnedAt || new Date().toISOString(),
     detectedAt: new Date().toISOString()
   });
