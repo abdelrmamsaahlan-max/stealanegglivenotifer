@@ -761,11 +761,10 @@ function dedupeCatalogEntries() {
   }
 }
 
-loadRuntimeState();
-dedupeCatalogEntries();
-rebuildLastSeenFromHistory().catch(error => {
-  console.warn("Last Seen history rebuild failed:", error?.message || error);
-});
+// Catalog identity helpers are initialized before restoring runtime state.
+ // Runtime state may contain Auto Discovery entries that need canonical catalog matching.
+ // Keep restoration after these helpers exist so there is no temporal-dead-zone lookup.
+
 
 function eggIdentityKey(value) {
   return normalizeFeedKey(value)
@@ -786,11 +785,13 @@ function findCatalogEgg(input) {
   if (!wanted) return null;
 
   const identity = eggIdentityKey(wanted);
-  const verified = verifiedCatalogByIdentity.get(identity);
 
-  if (verified) return verified;
-
-  return eggImageCatalog.find(entry => {
+  // Always resolve against the live in-memory catalog first. This handles:
+  // - rarity-prefixed feeds such as "Divine Kitsune Egg"
+  // - alias names
+  // - Auto Discovery entries added after startup
+  // without relying on a stale startup-only index.
+  const direct = eggImageCatalog.find(entry => {
     const names = [
       entry?.eggName,
       entry?.displayName,
@@ -801,11 +802,19 @@ function findCatalogEgg(input) {
     return names.some(name => {
       const normalized = normalizeFeedKey(name);
       const normalizedIdentity = eggIdentityKey(normalized);
-
       return normalized === wanted || normalizedIdentity === identity;
     });
-  }) || null;
+  });
+
+  return direct || verifiedCatalogByIdentity.get(identity) || null;
 }
+
+// Restore runtime state only after catalog identity helpers/indexes are initialized.
+loadRuntimeState();
+dedupeCatalogEntries();
+rebuildLastSeenFromHistory().catch(error => {
+  console.warn("Last Seen history rebuild failed:", error?.message || error);
+});
 
 function normalizeRarityName(value) {
   const key = String(value || "").trim().toLowerCase();
@@ -4461,6 +4470,33 @@ function recordRiftHistory(event, test = false) {
   scheduleStateSave();
 }
 
+async function preparePngImageBuffer(url) {
+  const normalizedUrl = normalizeImageUrl(url);
+  if (!normalizedUrl) return null;
+
+  try {
+    const input = await fetchRemoteImageBufferForEmoji(normalizedUrl);
+    if (!input) return null;
+
+    return await sharp(input, { failOn: "none" })
+      .ensureAlpha()
+      .resize({
+        width: 1400,
+        height: 1400,
+        fit: "inside",
+        withoutEnlargement: true
+      })
+      .png({
+        compressionLevel: 9,
+        adaptiveFiltering: true
+      })
+      .toBuffer();
+  } catch (error) {
+    console.warn("PNG image normalization failed:", error?.message || error);
+    return null;
+  }
+}
+
 async function sendRiftAlert(event, options = {}) {
   const isTest = options.test === true;
 
@@ -4480,6 +4516,13 @@ async function sendRiftAlert(event, options = {}) {
   }
 
   const channel = await getAlertChannel();
+
+  // Rift embeds are PNG-only as well. Convert any upstream image before Discord sees it.
+  if (event?.imageUrl && !event?.imageBuffer) {
+    event.imageBuffer = await preparePngImageBuffer(event.imageUrl);
+    event.imageUrl = null;
+  }
+
   const roleId = await resolveRiftRoleId(channel.guild);
 
   const alertLine =
@@ -4487,14 +4530,24 @@ async function sendRiftAlert(event, options = {}) {
       ? "The Rift shifted — " + event.bannerName + " is now active!"
       : "Abyss Overlord is active!";
 
-  const message = await channel.send({
+  const riftPayload = {
     content: (roleId ? "<@&" + roleId + "> " : "") + alertLine,
     embeds: [buildRiftAlertEmbed(event)],
     components: [buildRiftActionRow(event)],
     allowedMentions: {
       roles: roleId ? [roleId] : []
     }
-  });
+  };
+
+  if (event?.imageBuffer) {
+    riftPayload.files = [{
+      attachment: event.imageBuffer,
+      name: "rift-event.png",
+      description: "PNG Rift event artwork"
+    }];
+  }
+
+  const message = await channel.send(riftPayload);
 
   if (!isTest) {
     seenRiftAlerts.set(dedupKey, Date.now());
