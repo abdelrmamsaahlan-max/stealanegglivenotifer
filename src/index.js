@@ -208,7 +208,6 @@ const ADMIN_COMMANDS = new Set([
   "scramble-test",
   "role-test",
   "bot-reload",
-  "discovery-scan",
   "alerts-pause",
   "alerts-resume"
 ]);
@@ -8173,7 +8172,6 @@ client.on("interactionCreate", async interaction => {
         bannerKey: requested,
         bannerName: data.name,
         eggName: data.eggName,
-        rotationChance: data.rotationChance,
         rotationChance: data.rotationChance,
         changedLabel: "Test alert",
         nextChangeLabel: "Test schedule",
