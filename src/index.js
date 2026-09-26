@@ -251,14 +251,14 @@ const RIFT_BOSS_ALERTS_ENABLED =
   (process.env.RIFT_BOSS_ALERTS_ENABLED || "true").toLowerCase() === "true";
 
 const RIFT_SOURCE_CHANNEL_IDS = new Set(
-  (process.env.RIFT_SOURCE_CHANNEL_IDS || process.env.DISCORD_SOURCE_CHANNEL_IDS || "")
+  (process.env.RIFT_SOURCE_CHANNEL_IDS || "")
     .split(",")
     .map(value => value.trim())
     .filter(Boolean)
 );
 
 const RIFT_SOURCE_BOT_IDS = new Set(
-  (process.env.RIFT_SOURCE_BOT_IDS || process.env.DISCORD_SOURCE_BOT_IDS || "")
+  (process.env.RIFT_SOURCE_BOT_IDS || "")
     .split(",")
     .map(value => value.trim())
     .filter(Boolean)
