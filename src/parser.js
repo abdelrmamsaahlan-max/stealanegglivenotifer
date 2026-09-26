@@ -133,7 +133,7 @@ export function parseSpawn(data, allowedRarities) {
   if (!eggName) {
     const eggPatterns = [
       /(?:egg|item)\s*(?:name|type)?\s*[:：\-]\s*([^\n|]+?)(?=\s+(?:in|at|on|near)\s+|[.!?]|$)/i,
-      /(?:secret|eternal|divine)\s+egg\s*[:：\-]?\s*([^\n|]+?)(?=\s+(?:in|at|on|near)\s+|[.!?]|$)/i,
+      /(?:secret|eternal|divine)\s+egg\s*[:：\-]\s*([^\n|]+?)(?=\s+(?:in|at|on|near)\s+|[.!?]|$)/i,
       /(?:secret|eternal|divine)\s+(?:egg\s+)?([^\n|]+?)\s+(?:spawned|appeared|has\s+spawned|has\s+appeared)(?=\s+(?:in|at|on|near)\s+|[.!?]|$)/i,
       /(?:spawned|appeared|has\s+spawned|has\s+appeared)\s*[:：\-]?\s*(?:the\s+)?([^\n|.!?]+?)(?=\s+(?:in|at|on|near)\s+|[.!?]|$)/i
     ];
