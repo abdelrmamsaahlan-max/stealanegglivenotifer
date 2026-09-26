@@ -82,7 +82,7 @@ const COMMANDS = [
         .addChoices(...riftBannerChoices())
     ),
   new SlashCommandBuilder()
-    .setName("doctor")
+    .setName("health-check")
     .setDescription("Run a full health check for Discord, EggWatch, Rift, alerts, images, memory, and storage."),
   new SlashCommandBuilder()
     .setName("role-test")
@@ -2812,7 +2812,7 @@ client.on("interactionCreate", async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
   try {
-    if (interaction.commandName === "doctor") {
+    if (interaction.commandName === "health-check") {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       const checks = [];
@@ -2897,7 +2897,7 @@ client.on("interactionCreate", async interaction => {
         "⏭️ Rift next change: " + (riftState.nextChangeLabel || "Unknown"),
         "🧩 Rift source filters: " +
           (RIFT_SOURCE_BOT_IDS.size ? "BOT FILTER" : "ALL BOTS"),
-        "🩺 Doctor: /doctor",
+        "🩺 Health check: /health-check",
         "🆕 Last update: " + (lastUpdateTitle || "Unknown"),
         "🧾 Spawn history: " + spawnHistory.length,
         "🎮 Game events: " + gameEventHistory.length,
