@@ -473,7 +473,17 @@ function loadRuntimeState() {
     }
 
     if (Array.isArray(state.gameEventHistory)) {
-      gameEventHistory.push(...state.gameEventHistory.slice(0, MAX_EVENT_HISTORY));
+      gameEventHistory.push(
+        ...state.gameEventHistory
+          .slice(0, MAX_EVENT_HISTORY)
+          .map(item => ({
+            ...item,
+            source:
+              item?.source === "Manual Test"
+                ? "Manual Test"
+                : PUBLIC_DISCOVERY_SOURCE_LABEL
+          }))
+      );
     }
 
     if (Array.isArray(state.riftHistory)) {
@@ -2067,7 +2077,7 @@ async function pollLiveFeed() {
       return;
     } catch (error) {
       liveFeedErrors++;
-      console.error("Live feed poll failed:", url, error?.message || error);
+      console.error("Live feed poll failed for endpoint:", LIVE_FEED_URLS.indexOf(url) + 1, error?.message || error);
     }
     }
   } finally {
@@ -2331,7 +2341,7 @@ async function runAutoDiscoverySweep() {
         checkedAt: new Date().toISOString(),
         error: String(error?.message || error).slice(0, 200)
       });
-      console.warn("Auto discovery fetch failed:", source.url, error?.message || error);
+      console.warn("Auto discovery source failed:", source.key, error?.message || error);
     }
   }
 
@@ -2367,7 +2377,7 @@ async function runAutoDiscoverySweep() {
       );
       detectedEvents.push(...extractDiscoveryEvents(body, pageSource));
     } catch (error) {
-      console.warn("Auto discovery linked-page fetch failed:", link.url, error?.message || error);
+      console.warn("Auto discovery linked-page fetch failed for source:", link.sourceName, error?.message || error);
     }
   }
 
