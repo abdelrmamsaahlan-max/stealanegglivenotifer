@@ -15,7 +15,6 @@
     "discord.js": "14.26.2",
     "dotenv": "^17.2.2",
     "express": "^5.1.0",
-    "sharp": "^0.35.4",
-    "@imgly/background-removal-node": "^1.4.5"
+    "sharp": "^0.35.4"
   }
 }
