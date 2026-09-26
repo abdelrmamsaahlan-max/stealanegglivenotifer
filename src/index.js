@@ -2482,14 +2482,27 @@ function buildLastSeenEmbed(rarity) {
   const seenEntries = entries.filter(item => item.record);
   const neverEntries = entries.filter(item => !item.record);
 
+  const total = entries.length;
+  const seenCount = seenEntries.length;
+  const coverage = total ? Math.round((seenCount / total) * 100) : 0;
+  const filledBars = Math.round(coverage / 10);
+  const progressBar = "█".repeat(filledBars) + "░".repeat(10 - filledBars);
+
+  const sortedSeen = [...seenEntries].sort((a, b) => {
+    const aTime = Date.parse(a.record?.spawnedAt || "") || 0;
+    const bTime = Date.parse(b.record?.spawnedAt || "") || 0;
+    return bTime - aTime;
+  });
+
+  const sortedNever = [...neverEntries].sort((a, b) =>
+    String(a.entry.petName || a.entry.eggName).localeCompare(
+      String(b.entry.petName || b.entry.eggName)
+    )
+  );
+
   const lines = [];
 
-  for (const { entry, record } of entries) {
-    if (!record) {
-      lines.push("⚪ **" + (entry.petName || entry.eggName) + "** — Never");
-      continue;
-    }
-
+  for (const { entry, record } of sortedSeen) {
     const timestamp = Date.parse(record.spawnedAt);
     const unix = Number.isFinite(timestamp)
       ? Math.floor(timestamp / 1000)
@@ -2501,42 +2514,83 @@ function buildLastSeenEmbed(rarity) {
         : entry.biome || "Unknown";
 
     lines.push(
-      "🟢 **" + (entry.petName || record.petName || entry.eggName) + "** — <t:" +
-      unix + ":R> • 📍 " + String(displayArea).slice(0, 80)
+      "🟢 **" + (entry.petName || record.petName || entry.eggName) +
+      "**\n> 📍 " + String(displayArea).slice(0, 70) +
+      "  •  <t:" + unix + ":R>"
     );
+  }
+
+  if (sortedNever.length) {
+    lines.push("", "────── **NOT SEEN YET** ──────");
+
+    for (const { entry } of sortedNever) {
+      lines.push(
+        "⚪ **" + (entry.petName || entry.eggName) + "**  •  Never seen"
+      );
+    }
   }
 
   if (!lines.length) {
     lines.push("⚪ No eggs are configured for this rarity yet.");
   }
 
-  const description = lines.join("\n").slice(0, 4090);
+  const latestRecord = sortedSeen[0]?.record || null;
+  let latestText = "No confirmed spawn recorded yet.";
+
+  if (latestRecord) {
+    const latestTime = Date.parse(latestRecord.spawnedAt);
+    const latestUnix = Number.isFinite(latestTime)
+      ? Math.floor(latestTime / 1000)
+      : Math.floor(Date.now() / 1000);
+    const latestArea = latestRecord.area || "Unknown";
+
+    latestText =
+      "**" + (latestRecord.petName || latestRecord.eggName) + "** • 📍 " +
+      String(latestArea).slice(0, 45) +
+      " • <t:" + latestUnix + ":R>";
+  }
+
+  const feedText = liveFeedLastSuccessAt
+    ? "🟢 Live • <t:" + Math.floor(new Date(liveFeedLastSuccessAt).getTime() / 1000) + ":R>"
+    : "🟡 Waiting";
+
+  const description = lines.join("\n").slice(0, 3900);
 
   return new EmbedBuilder()
     .setColor(lastSeenColor(rarity))
-    .setTitle("🕒 " + lastSeenLabel(rarity) + " • Last Seen")
+    .setAuthor({
+      name: "STEAL AN EGG  •  LIVE TRACKER"
+    })
+    .setTitle("🕒 " + lastSeenLabel(rarity) + " Last Seen")
     .setDescription(
-      "**Live tracker — updates automatically after every spawn.**\n\n" +
+      "**Automatic spawn tracking**\n" +
+      "Updates this message whenever a confirmed spawn is detected.\n\n" +
       description
     )
     .addFields(
       {
-        name: "📊 Tracking",
+        name: "📊 Coverage",
         value:
-          "**" + seenEntries.length + "** seen • **" +
-          neverEntries.length + "** never seen",
+          "**" + seenCount + "/" + total + "** seen\n" +
+          "\`" + progressBar + "\` **" + coverage + "%**",
         inline: true
       },
       {
-        name: "🔄 Update delay",
-        value: "~1–2 seconds after a confirmed spawn",
+        name: "📡 Feed",
+        value: feedText,
         inline: true
+      },
+      {
+        name: "⚡ Latest Spawn",
+        value: latestText,
+        inline: false
       }
     )
-    .setFooter({ text: "Steal An Egg • Live Last Seen Tracker" })
+    .setFooter({
+      text: "Steal An Egg • Last Seen • Auto-updated"
+    })
     .setTimestamp();
 }
-
 async function getLastSeenChannel() {
   if (!LAST_SEEN_CHANNEL_ID) return null;
   if (lastSeenChannel?.isTextBased()) return lastSeenChannel;
