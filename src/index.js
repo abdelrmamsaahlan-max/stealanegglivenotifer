@@ -127,7 +127,8 @@ function extractMessageData(message) {
 
   return {
     text: parts.filter(Boolean).join("\n"),
-    imageUrl
+    imageUrl,
+    createdTimestamp: message.createdTimestamp
   };
 }
 
@@ -163,11 +164,19 @@ async function sendAlert(event) {
 
   if (event.imageUrl) embed.setImage(event.imageUrl);
 
-  await channel.send({
+  const payload = {
     content: "🚨 **" + rarity.toUpperCase() + " EGG!**",
     embeds: [embed],
     allowedMentions: { parse: [] }
-  });
+  };
+
+  try {
+    await channel.send(payload);
+  } catch (firstError) {
+    alertChannel = null;
+    const freshChannel = await getAlertChannel();
+    await freshChannel.send(payload);
+  }
 
   alertCount++;
   lastSpawnAt = event.spawnedAt;
@@ -203,6 +212,9 @@ client.on("messageCreate", async (message) => {
   const event = parseSpawn(messageData.text);
   if (event && messageData.imageUrl) event.imageUrl = messageData.imageUrl;
   if (!event) return;
+  if (messageData.createdTimestamp) {
+    event.spawnedAt = new Date(messageData.createdTimestamp).toISOString();
+  }
   detectedCount++;
 
   const key = [message.channelId, event.rarity.toLowerCase(), event.eggName.toLowerCase(), event.biome.toLowerCase()].join("|");
