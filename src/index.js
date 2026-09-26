@@ -44,39 +44,53 @@ const client = new Client({
 
 const DEV_GUILD_ID = process.env.DISCORD_DEV_GUILD_ID || "";
 const COMMANDS = [
-  new SlashCommandBuilder().setName("ping").setDescription("Check if the notifier is online."),
-  new SlashCommandBuilder().setName("status").setDescription("Show live monitor and configuration status."),
   new SlashCommandBuilder()
-    .setName("testegg")
-    .setDescription("Send a real rare-egg alert test using the image/game data.")
+    .setName("bot-ping")
+    .setDescription("Check that the bot is online and view its Discord WebSocket latency."),
+  new SlashCommandBuilder()
+    .setName("bot-status")
+    .setDescription("View live feed, alerts, Rift, images, roles, memory, uptime, and source status."),
+  new SlashCommandBuilder()
+    .setName("egg-test")
+    .setDescription("Send a sample rare-egg alert to test the embed, image, roles, and Join Game button.")
     .addStringOption(option =>
       option
         .setName("egg")
-        .setDescription("Egg/pet name to test. Defaults to Gargoyle.")
+        .setDescription("Egg or pet name from the verified Secret/Eternal/Divine catalog.")
         .setRequired(false)
     ),
-  new SlashCommandBuilder().setName("lastseen").setDescription("Show recently detected rare eggs."),
-  new SlashCommandBuilder().setName("history").setDescription("Show the latest rare egg spawn history."),
-  new SlashCommandBuilder().setName("events").setDescription("Show discovered game events and updates."),
-  new SlashCommandBuilder().setName("rift").setDescription("Show the latest Rift banner and its possible pets."),
   new SlashCommandBuilder()
-    .setName("testrift")
-    .setDescription("Send a Rift banner test alert.")
+    .setName("eggs-lastseen")
+    .setDescription("Show the most recently detected rare eggs and when they were last seen."),
+  new SlashCommandBuilder()
+    .setName("egg-history")
+    .setDescription("View recent rare-egg spawn history with rarity, location, and detection time."),
+  new SlashCommandBuilder()
+    .setName("game-events")
+    .setDescription("View recent detected game events, updates, and automatic catalog discoveries."),
+  new SlashCommandBuilder()
+    .setName("rift")
+    .setDescription("Show the current Rift banner, change times, rotation chance, and possible pets."),
+  new SlashCommandBuilder()
+    .setName("rift-test")
+    .setDescription("Send a sample Rift alert to test the Rift embed and Join Game button.")
     .addStringOption(option =>
       option
         .setName("banner")
-        .setDescription("Which Rift banner to test.")
+        .setDescription("Rift banner to test: Riftborn, Riftbeasts, or Shattered Rift.")
         .setRequired(false)
         .addChoices(...riftBannerChoices())
     ),
-  new SlashCommandBuilder().setName("doctor").setDescription("Run a live self-check of the notifier."),
   new SlashCommandBuilder()
-    .setName("testrole")
-    .setDescription("Test a rarity role mention.")
+    .setName("doctor")
+    .setDescription("Run a full health check for Discord, EggWatch, Rift, alerts, images, memory, and storage."),
+  new SlashCommandBuilder()
+    .setName("role-test")
+    .setDescription("Send a test mention for a Secret, Eternal, or Divine alert role.")
     .addStringOption(option =>
       option
         .setName("rarity")
-        .setDescription("Which rarity role to test.")
+        .setDescription("Alert role to test: Secret, Eternal, or Divine.")
         .setRequired(true)
         .addChoices(
           { name: "Secret", value: "secret" },
@@ -84,19 +98,48 @@ const COMMANDS = [
           { name: "Divine", value: "divine" }
         )
     ),
-  new SlashCommandBuilder().setName("stats").setDescription("Show notifier performance statistics."),
   new SlashCommandBuilder()
-    .setName("imagecheck")
-    .setDescription("Preview the verified transparent character image for an egg.")
+    .setName("bot-stats")
+    .setDescription("View detections, alerts, latency, cache size, uptime, and error statistics."),
+  new SlashCommandBuilder()
+    .setName("image-check")
+    .setDescription("Verify the transparent character image and game data for a specific egg.")
     .addStringOption(option =>
       option
         .setName("egg")
-        .setDescription("Egg/pet name to inspect.")
+        .setDescription("Egg or pet name to inspect from the verified catalog.")
         .setRequired(true)
     ),
-  new SlashCommandBuilder().setName("reload").setDescription("Refresh notifier caches, images and Discord command registration.")
+  new SlashCommandBuilder()
+    .setName("bot-reload")
+    .setDescription("Clear runtime caches, refresh image data, reload roles, and sync Discord commands.")
 ].map(command => command.toJSON());
 
+async function registerDiscordCommands(rest, applicationId) {
+  if (DEV_GUILD_ID) {
+    await rest.put(
+      Routes.applicationGuildCommands(applicationId, DEV_GUILD_ID),
+      { body: COMMANDS }
+    );
+
+    // Prevent the same commands from being shown twice in the development guild.
+    // A guild can inherit global commands, so guild + global registration duplicates them.
+    await rest.put(
+      Routes.applicationCommands(applicationId),
+      { body: [] }
+    );
+
+    console.log("Slash commands registered in development guild; global commands cleared.");
+    return;
+  }
+
+  await rest.put(
+    Routes.applicationCommands(applicationId),
+    { body: COMMANDS }
+  );
+
+  console.log("Slash commands registered globally.");
+}
 const PORT = Number(process.env.PORT || 3000);
 const SECRET = process.env.INGEST_SHARED_SECRET || "";
 const CHANNEL_ID = process.env.DISCORD_DEFAULT_CHANNEL_ID || "";
@@ -2703,19 +2746,7 @@ client.once("clientReady", async () => {
   try {
     const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_BOT_TOKEN);
 
-    if (DEV_GUILD_ID) {
-      await rest.put(
-        Routes.applicationGuildCommands(client.user.id, DEV_GUILD_ID),
-        { body: COMMANDS }
-      );
-      console.log("Slash commands registered in development guild.");
-    }
-
-    await rest.put(
-      Routes.applicationCommands(client.user.id),
-      { body: COMMANDS }
-    );
-    console.log("Slash commands registered globally.");
+    await registerDiscordCommands(rest, client.user.id);
   } catch (error) {
     console.error("Slash command registration failed:", error);
   }
@@ -3127,17 +3158,7 @@ client.on("interactionCreate", async interaction => {
 
       const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_BOT_TOKEN);
 
-      if (DEV_GUILD_ID) {
-        await rest.put(
-          Routes.applicationGuildCommands(client.user.id, DEV_GUILD_ID),
-          { body: COMMANDS }
-        );
-      }
-
-      await rest.put(
-        Routes.applicationCommands(client.user.id),
-        { body: COMMANDS }
-      );
+      await registerDiscordCommands(rest, client.user.id);
 
       saveRuntimeState();
 
