@@ -6,19 +6,19 @@ test("parses a SenZ-style Riftborn rotation message", () => {
   const event = parseRiftChange({
     text:
       "The Rift shifted — Riftborn is now active!\n\n" +
-      "Riftborn is Active!\n" +
-      "Changed: 6:00 AM (25 minutes ago) Next Change: 9:00 AM (in 3 hours) " +
-      "Join Game: Click Here\n\n" +
-      "Possible Pets\n" +
-      "Rift Eye 45% $11K/s\n" +
-      "Voidmaw 36% $50K/s\n" +
-      "Ventinal 15% $585K/s\n" +
-      "Wendigo 4% $15M/s\n" +
-      "World Eater 0.5% $500M/s",
+      "<:riftborn:1546007395166322688> **Riftborn is Active!**\n" +
+      "<:Spawn_Emoji:1544768409349263502> **Changed:** 9:00 AM (7 minutes ago) " +
+      "<:epic:1484180762914717778> **Next Change:** 12:00 PM (in 3 hours) " +
+      "<:Roblox:1545747766649684068> **Join Game:** " +
+      "[Click Here](https://www.roblox.com/games/start?placeId=107778070777162\\&gameId=test)\n\n" +
+      "**🐾 Possible Pets**\n" +
+      "<:RiftEye:1546007486832840735> **Rift Eye** — 🎲 45% 💰 $11K/s\n" +
+      "<:Voidmaw:1546007490926354502> **Voidmaw** — 🎲 36% 💰 $50K/s\n" +
+      "<:Vential:1546007488648839178> **Vential** — 🎲 15% 💰 $585K/s\n" +
+      "<:Wendigo:1546007493078155384> **Wendigo** — 🎲 4% 💰 $15M/s\n" +
+      "<:WorldEater:1546007494755754137> **World Eater** — 🎲 0.5% 💰 $500M/s",
     fields: [],
-    linkUrls: [
-      "https://www.roblox.com/games/start?placeId=107778070777162&gameId=test"
-    ],
+    linkUrls: [],
     createdTimestamp: Date.parse("2026-09-26T03:00:00.000Z"),
     messageUrl: "https://discord.com/channels/test"
   });
