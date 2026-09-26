@@ -34,6 +34,14 @@ import {
   experimentEventKey,
   parseExperimentAlert
 } from "./experiment-tracker.js";
+import {
+  chooseBestUpdate,
+  discoveryFingerprint,
+  extractDiscoveryEvents,
+  extractRelevantLinks,
+  extractSupportedEggsFromDiscovery,
+  extractUpdateSnapshot
+} from "./discovery.js";
 
 const app = express();
 
@@ -269,18 +277,74 @@ const STATE_FILE = path.resolve(
   "data/runtime-state.json"
 );
 
-const AUTO_DISCOVERY_URLS = [
-  "https://robloxstealanegg.wiki/",
-  "https://eggwatcher.com/guides/how-the-live-feed-works"
+const AUTO_DISCOVERY_SOURCES = [
+  {
+    key: "official-roblox",
+    name: "Official Roblox Game",
+    url: "https://www.roblox.com/games/107778070777162/Steal-An-Egg",
+    rank: 10,
+    parseUpdates: false,
+    parseEggs: false,
+    parseEvents: true,
+    followLinks: false
+  },
+  {
+    key: "roblox-wiki",
+    name: "Roblox Steal An Egg Wiki",
+    url: "https://robloxstealanegg.wiki/",
+    rank: 8,
+    parseUpdates: true,
+    parseEggs: true,
+    parseEvents: true,
+    followLinks: true
+  },
+  {
+    key: "eggipedia",
+    name: "Eggipedia Updates",
+    url: "https://eggipedia.com/updates",
+    rank: 8,
+    parseUpdates: true,
+    parseEggs: true,
+    parseEvents: true,
+    followLinks: true
+  },
+  {
+    key: "event-hub",
+    name: "Steal An Egg Event Hub",
+    url: "https://stealanegg.store/events",
+    rank: 7,
+    parseUpdates: false,
+    parseEggs: false,
+    parseEvents: true,
+    followLinks: true
+  },
+  {
+    key: "eggwatch-guide",
+    name: "EggWatch Live Feed Guide",
+    url: "https://eggwatcher.com/guides/how-the-live-feed-works",
+    rank: 6,
+    parseUpdates: true,
+    parseEggs: true,
+    parseEvents: true,
+    followLinks: false
+  }
 ];
+
+const AUTO_DISCOVERY_LINK_LIMIT = 3;
+const AUTO_DISCOVERY_POLL_MS = Math.max(
+  45_000,
+  Number(process.env.AUTO_DISCOVERY_POLL_SECONDS || 90) * 1000
+);
 
 let autoDiscoveryTimer = null;
 let imageWarmupInFlight = false;
 let autoDiscoveryLastFingerprint = "";
 let autoDiscoveredCount = 0;
-let lastUpdateFingerprint = "";
+let lastUpdateFingerprint = null;
 let lastUpdateCheckAt = null;
 let lastUpdateTitle = null;
+let autoDiscoverySourceHealth = new Map();
+let autoDiscoveryLastSummary = null;
 const spawnHistory = [];
 const gameEventHistory = [];
 const riftHistory = [];
@@ -871,7 +935,6 @@ function slugify(value) {
 const imageFallbackCache = new Map();
 const petPageCache = new Map();
 const petPngBufferCache = new Map();
-const petStatsCache = new Map();
 const IMAGE_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const IMAGE_NEGATIVE_CACHE_TTL_MS = 5 * 60 * 1000;
 const PET_PAGE_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
@@ -1042,65 +1105,6 @@ async function resolvePetImageSource(petName) {
 
   imageFallbackCache.set("pet:" + key, { url: null, at: Date.now() });
   return null;
-}
-
-function parseGameStatsFromPetPage(body) {
-  const html = String(body || "");
-  const text = html
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  const incomeMatch =
-    text.match(/(?:Base\s+(?:income|earnings?)|(?:Money|Income)\s*\/\s*s)\s*[:\-]?\s*\$?([0-9.,]+\s*(?:[KMBT])?)\s*\/s/i) ||
-    text.match(/\$([0-9.,]+\s*(?:[KMBT])?)\s*\/s/i);
-
-  const speedMatch = text.match(/(?:you need|requires?|minimum(?: gate)?[:\s]+)([0-9.,]+\s*[KMBT])\s*Speed/i);
-
-  return {
-    income: incomeMatch ? "$" + incomeMatch[1].replace(/\s+/g, "") + "/s" : null,
-    speed: speedMatch ? speedMatch[1].replace(/\s+/g, "") : null
-  };
-}
-
-async function fetchPetGameStats(petName) {
-  const entry = findCatalogPet(petName);
-  if (!entry) return { income: null, speed: null };
-
-  const key = normalizeFeedKey(entry.petName);
-  const staticIncome = typeof entry.baseIncome === "string" && entry.baseIncome.trim()
-    ? entry.baseIncome.trim()
-    : null;
-
-  const cached = petStatsCache.get(key);
-  if (cached && Date.now() - cached.at < PET_PAGE_CACHE_TTL_MS) {
-    return {
-      ...cached.stats,
-      income: staticIncome || cached.stats.income || null
-    };
-  }
-
-  // Use the verified catalog value first. The page scrape is only a fallback
-  // for newly discovered/uncatalogued values, so formatting changes on the wiki
-  // cannot randomly break the alert income field.
-  if (staticIncome) {
-    const stats = { income: staticIncome, speed: null };
-    petStatsCache.set(key, { stats, at: Date.now() });
-    return stats;
-  }
-
-  const page = await fetchPetPage(entry.petName);
-  const scraped = parseGameStatsFromPetPage(page?.body || "");
-  const stats = {
-    income: scraped.income || null,
-    speed: scraped.speed || null
-  };
-  petStatsCache.set(key, { stats, at: Date.now() });
-  return stats;
 }
 
 function publicPetImageUrl(petName) {
@@ -2010,272 +2014,157 @@ function decodeHtmlText(value) {
     .trim();
 }
 
-function extractSupportedEggsFromGuide(html) {
-  const text = decodeHtmlText(
-    String(html || "")
-      .replace(/<script[\s\S]*?<\/script>/gi, " ")
-      .replace(/<style[\s\S]*?<\/style>/gi, " ")
-      .replace(/<[^>]+>/g, "\n")
-  );
-
-  const lines = text
-    .split(/\n+/)
-    .map(line => line.replace(/^[*\-•]\s*/, "").trim())
-    .filter(Boolean);
-
-  const found = [];
-  let rarity = "";
-
-  for (const rawLine of lines) {
-    const line = decodeHtmlText(rawLine);
-
-    if (/^Secret$/i.test(line)) {
-      rarity = "Secret";
-      continue;
-    }
-    if (/^Eternal$/i.test(line)) {
-      rarity = "Eternal";
-      continue;
-    }
-    if (/^Divine$/i.test(line)) {
-      rarity = "Divine";
-      continue;
-    }
-    if (!rarity) continue;
-
-    const match = line.match(
-      /^(.+?)\s+(Jungle|Snow|Volcano|Abyss Ocean|Prehistoric|Cosmic|Cherry Blossom|Titan Temple|Angels and Demons|Area not listed)$/i
-    );
-
-    if (!match) continue;
-
-    const name = match[1].replace(/\s+Egg$/i, "").trim();
-    if (!name) continue;
-
-    found.push({
-      eggName: name + " Egg",
-      rarity,
-      area: match[2]
-    });
-  }
-
-  return found;
+function updateDiscoverySourceHealth(source, patch = {}) {
+  autoDiscoverySourceHealth.set(source.key, {
+    key: source.key,
+    name: source.name,
+    url: source.url,
+    status: "UNKNOWN",
+    checkedAt: null,
+    httpStatus: null,
+    updateFound: false,
+    eggCount: 0,
+    eventCount: 0,
+    error: null,
+    ...autoDiscoverySourceHealth.get(source.key),
+    ...patch
+  });
 }
 
-function recordSpawnHistory(event, source = "EggWatch Global Feed") {
-  const timestamp = Date.parse(event?.spawnedAt);
-  const record = {
-    id: event?.sourceEventId || [
-      normalizeFeedKey(event?.rarity),
-      normalizeFeedKey(event?.eggName),
-      normalizeFeedKey(event?.biome),
-      event?.spawnedAt || Date.now()
-    ].join("|"),
-    eggName: event?.eggName || "Unknown Egg",
-    petName: event?.displayName || event?.eggName || "Unknown",
-    rarity: event?.rarity || "Unknown",
-    area: event?.biome || "Unknown",
-    spawnedAt: Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : new Date().toISOString(),
-    detectedAt: new Date().toISOString(),
-    source
-  };
-
-  const same = spawnHistory.find(item => item.id === record.id);
-  if (same) return same;
-
-  spawnHistory.unshift(record);
-  if (spawnHistory.length > MAX_HISTORY) spawnHistory.length = MAX_HISTORY;
-
-  recordLastSeen(event);
-  scheduleStateSave();
-  return record;
-}
-
-function recordGameEvent(event) {
-  const key = [
-    event.type || "event",
-    normalizeFeedKey(event.title),
-    event.date || "",
-    normalizeFeedKey(event.source)
-  ].join("|");
-
-  if (gameEventHistory.some(item => item.key === key)) return null;
-
-  const record = {
-    key,
-    type: event.type || "event",
-    title: String(event.title || "Game Event").slice(0, 200),
-    description: String(event.description || "").slice(0, 800),
-    date: event.date || null,
-    source: event.source || "Game Update Discovery",
-    detectedAt: new Date().toISOString()
-  };
-
-  gameEventHistory.unshift(record);
-  if (gameEventHistory.length > MAX_EVENT_HISTORY) {
-    gameEventHistory.length = MAX_EVENT_HISTORY;
-  }
-
-  scheduleStateSave();
-  return record;
-}
-
-function extractLatestUpdateFromHomepage(html) {
-  const rawHtml = String(html || "");
-
-  const text = decodeHtmlText(
-    rawHtml
-      .replace(/<script[\s\S]*?<\/script>/gi, " ")
-      .replace(/<style[\s\S]*?<\/style>/gi, " ")
-      .replace(/<[^>]+>/g, "\n")
-  );
-
-  const lines = text.split("\n").map(decodeHtmlText).filter(Boolean);
-  const index = lines.findIndex(line => /^(latest update|game update)$/i.test(line));
-
-  if (index === -1) return null;
-
-  const windowLines = lines.slice(index, index + 15);
-  const title = windowLines.find((line, offset) =>
-    offset > 0 &&
-    !/^(latest update|game update|admin abuse)$/i.test(line) &&
-    /(?:update|darkness|event|egg|angels|demons|rifts?)/i.test(line)
-  ) || windowLines[1] || null;
-
-  if (!title) return null;
-
-  let updateUrl = null;
-
-  for (const match of rawHtml.matchAll(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
-    const anchorText = decodeHtmlText(match[2]);
-    if (
-      normalizeFeedKey(anchorText).includes(normalizeFeedKey(title)) ||
-      (/\bupdate\b/i.test(title) && /\bupdate\b/i.test(anchorText))
-    ) {
-      try {
-        updateUrl = new URL(match[1], "https://robloxstealanegg.wiki/").href;
-      } catch {
-        updateUrl = null;
-      }
-      if (updateUrl) break;
-    }
-  }
-
-  return {
-    title: title.slice(0, 200),
-    description: windowLines.slice(1, 7).join(" ").slice(0, 800),
-    source: "robloxstealanegg.wiki",
-    url: updateUrl
-  };
-}
-
-function extractEventMentions(html) {
-  const text = decodeHtmlText(
-    String(html || "")
-      .replace(/<script[\s\S]*?<\/script>/gi, " ")
-      .replace(/<style[\s\S]*?<\/style>/gi, " ")
-      .replace(/<[^>]+>/g, "\n")
-  );
-
-  const patterns = [
-    { type: "limited_event", re: /\bDr\.?\s*Scramble\b[^\n]{0,180}/i },
-    { type: "limited_event", re: /\bAdmin Abuse\b[^\n]{0,180}/i },
-    { type: "limited_event", re: /\bAngels?\s*(?:vs|and)\s*Demons?\b[^\n]{0,180}/i },
-    { type: "game_update", re: /\bUpdate\s*#?\d+\b[^\n]{0,180}/i }
-  ];
-
-  const found = [];
-
-  for (const pattern of patterns) {
-    const match = text.match(pattern.re);
-    if (match?.[0]) {
-      found.push({
-        type: pattern.type,
-        title: match[0].trim().slice(0, 200),
-        description: match[0].trim().slice(0, 800),
-        source: "robloxstealanegg.wiki"
-      });
-    }
-  }
-
-  return found;
-}
-
-async function sendGameUpdateAlert(update, newEggs = []) {
-  if (!EVENT_ALERTS_ENABLED || !CHANNEL_ID || !update?.title) return;
-
-  try {
-    const channel = await getAlertChannel();
-
-    const eggText = newEggs.length
-      ? "\n\n🥚 New rare eggs: **" +
-        newEggs.slice(0, 12).map(item =>
-          item.petName || item.eggName.replace(/\s+Egg$/i, "")
-        ).join(", ") +
-        (newEggs.length > 12 ? " +" + (newEggs.length - 12) + " more" : "") +
-        "**"
-      : "";
-
-    const embed = new EmbedBuilder()
-      .setColor(0x3b82f6)
-      .setTitle("🆕 Game Update Detected")
-      .setDescription(
-        "**" + String(update.title).slice(0, 180) + "**\n" +
-        String(update.description || "A new Steal An Egg update was detected.").slice(0, 700) +
-        eggText
-      )
-      .addFields(
-        { name: "🎮 Game", value: "Steal An Egg", inline: true },
-        { name: "📡 Source", value: String(update.source || "Auto Discovery"), inline: true },
-        { name: "🕒 Detected", value: "<t:" + Math.floor(Date.now() / 1000) + ":R>", inline: true }
-      )
-      .setFooter({ text: "Steal An Egg • Update Monitor" })
-      .setTimestamp();
-
-    await channel.send({
-      content: "🆕 **Steal An Egg update detected!**",
-      embeds: [embed],
-      allowedMentions: { parse: [] }
-    });
-  } catch (error) {
-    monitorErrors++;
-    console.warn("Game update alert failed:", error?.message || error);
-  }
+function discoverySummary() {
+  return [...autoDiscoverySourceHealth.values()].map(item => ({
+    name: item.name,
+    status: item.status,
+    checkedAt: item.checkedAt,
+    updateFound: item.updateFound,
+    eggCount: item.eggCount,
+    eventCount: item.eventCount,
+    error: item.error
+  }));
 }
 
 async function scanForGameUpdates() {
   if (!AUTO_DISCOVERY_ENABLED) return;
 
   lastUpdateCheckAt = new Date().toISOString();
+
+  const sourceRanks = {};
+  const updateCandidates = [];
   const supportedEggs = [];
   const detectedEvents = [];
-  let homepageUpdate = null;
+  const visitedUrls = new Set();
+  const linkQueue = [];
+  let successfulSources = 0;
 
-  for (const url of AUTO_DISCOVERY_URLS) {
+  for (const source of AUTO_DISCOVERY_SOURCES) {
+    sourceRanks[source.name] = source.rank;
+    updateDiscoverySourceHealth(source);
+
     try {
-      const { response, body } = await fetchLiveFeed(url);
+      const { response, body } = await fetchLiveFeed(source.url);
+      visitedUrls.add(source.url);
+
+      if (!response.ok) {
+        updateDiscoverySourceHealth(source, {
+          status: "HTTP_ERROR",
+          checkedAt: new Date().toISOString(),
+          httpStatus: response.status,
+          error: "HTTP " + response.status
+        });
+        continue;
+      }
+
+      successfulSources++;
+
+      const sourceUpdate = source.parseUpdates
+        ? extractUpdateSnapshot(body, source.name)
+        : null;
+      const sourceEggs = source.parseEggs
+        ? extractSupportedEggsFromDiscovery(body)
+        : [];
+      const sourceEvents = source.parseEvents
+        ? extractDiscoveryEvents(body, source.name)
+        : [];
+
+      if (sourceUpdate) updateCandidates.push(sourceUpdate);
+      supportedEggs.push(...sourceEggs);
+      detectedEvents.push(...sourceEvents);
+
+      if (source.followLinks) {
+        linkQueue.push(
+          ...extractRelevantLinks(body, source.url, AUTO_DISCOVERY_LINK_LIMIT)
+            .map(item => ({ ...item, sourceName: source.name }))
+        );
+      }
+
+      updateDiscoverySourceHealth(source, {
+        status: "ACTIVE",
+        checkedAt: new Date().toISOString(),
+        httpStatus: response.status,
+        updateFound: Boolean(sourceUpdate),
+        eggCount: sourceEggs.length,
+        eventCount: sourceEvents.length,
+        error: null
+      });
+    } catch (error) {
+      updateDiscoverySourceHealth(source, {
+        status: "ERROR",
+        checkedAt: new Date().toISOString(),
+        error: String(error?.message || error).slice(0, 200)
+      });
+      console.warn("Auto discovery fetch failed:", source.url, error?.message || error);
+    }
+  }
+
+  // Follow only the most relevant update/event links, then merge their facts.
+  const rankedLinks = [...linkQueue]
+    .sort((a, b) => b.score - a.score)
+    .filter(item => {
+      if (visitedUrls.has(item.url)) return false;
+      visitedUrls.add(item.url);
+      return true;
+    })
+    .slice(0, AUTO_DISCOVERY_LINK_LIMIT);
+
+  for (const link of rankedLinks) {
+    try {
+      const { response, body } = await fetchLiveFeed(link.url);
       if (!response.ok) continue;
 
-      if (url === "https://robloxstealanegg.wiki/") {
-        homepageUpdate = extractLatestUpdateFromHomepage(body);
+      const pageSource = link.sourceName + " • linked";
+      const pageUpdate = extractUpdateSnapshot(body, pageSource);
+      if (pageUpdate) {
+        pageUpdate.url = link.url;
+        updateCandidates.push(pageUpdate);
       }
 
-      if (url.includes("how-the-live-feed-works")) {
-        supportedEggs.push(...extractSupportedEggsFromGuide(body));
-      }
-
-      detectedEvents.push(...extractEventMentions(body));
+      supportedEggs.push(...extractSupportedEggsFromDiscovery(body));
+      detectedEvents.push(...extractDiscoveryEvents(body, pageSource));
     } catch (error) {
-      console.warn("Auto discovery fetch failed:", url, error?.message || error);
+      console.warn("Auto discovery linked-page fetch failed:", link.url, error?.message || error);
     }
+  }
+
+  const uniqueEggs = new Map();
+  for (const item of supportedEggs) {
+    if (!item?.eggName || !item?.rarity) continue;
+
+    const key = String(item.rarity).toLowerCase() + "|" +
+      normalizeFeedKey(item.eggName);
+
+    if (!uniqueEggs.has(key)) uniqueEggs.set(key, item);
   }
 
   let added = 0;
   const newlyAdded = [];
 
-  for (const item of supportedEggs) {
+  for (const item of uniqueEggs.values()) {
     const before = findCatalogEgg(item.eggName);
-    const entry = ensureCatalogEgg(item.eggName, item.rarity, item.area || "Unknown");
+    const entry = ensureCatalogEgg(
+      item.eggName,
+      item.rarity,
+      item.area || "Unknown"
+    );
 
     if (entry && !before) {
       added++;
@@ -2309,8 +2198,73 @@ async function scanForGameUpdates() {
     }, 0);
   }
 
-  if (newlyAdded.length && lastUpdateFingerprint) {
-    recordGameEvent({
+  const bestUpdate = chooseBestUpdate(updateCandidates, sourceRanks);
+  const nextUpdateFingerprint = discoveryFingerprint(bestUpdate);
+
+  if (bestUpdate?.title && nextUpdateFingerprint) {
+    const previousFingerprint = lastUpdateFingerprint;
+
+    if (!previousFingerprint) {
+      // First successful scan establishes a baseline without sending a noisy startup alert.
+      lastUpdateFingerprint = nextUpdateFingerprint;
+      lastUpdateTitle = bestUpdate.title;
+
+      recordGameEvent({
+        type: "game_update",
+        title: bestUpdate.title,
+        description: bestUpdate.description,
+        date: bestUpdate.date,
+        source: bestUpdate.source
+      });
+
+      console.log(
+        "Auto discovery primed:",
+        bestUpdate.title,
+        "source=" + bestUpdate.source,
+        "fingerprint=" + nextUpdateFingerprint
+      );
+    } else if (nextUpdateFingerprint !== previousFingerprint) {
+      lastUpdateFingerprint = nextUpdateFingerprint;
+      lastUpdateTitle = bestUpdate.title;
+
+      const eventRecord = recordGameEvent({
+        type: "game_update",
+        title: bestUpdate.title,
+        description: bestUpdate.description,
+        date: bestUpdate.date,
+        source: bestUpdate.source
+      });
+
+      if (eventRecord) {
+        await sendGameUpdateAlert(
+          {
+            title: bestUpdate.title,
+            description: bestUpdate.description,
+            source: bestUpdate.source,
+            url: bestUpdate.url || null
+          },
+          newlyAdded
+        );
+
+        console.log(
+          "New game update detected:",
+          bestUpdate.title,
+          "source=" + bestUpdate.source,
+          "fingerprint=" + nextUpdateFingerprint
+        );
+      }
+    }
+  }
+
+  // Only use a catalog-change alert when the update itself did not already
+  // produce the same notification, preventing noisy duplicate announcements.
+  if (
+    newlyAdded.length &&
+    lastUpdateFingerprint &&
+    nextUpdateFingerprint === lastUpdateFingerprint &&
+    !bestUpdate?.title?.toLowerCase().includes("new rare eggs")
+  ) {
+    const catalogEvent = recordGameEvent({
       type: "catalog_change",
       title: "New rare eggs discovered",
       description:
@@ -2319,76 +2273,61 @@ async function scanForGameUpdates() {
         ).join(", ").slice(0, 800),
       source: "Auto Catalog Sync"
     });
-  }
 
-  if (homepageUpdate?.title) {
-    const updateFingerprint = normalizeFeedKey(
-      homepageUpdate.title + "|" + (homepageUpdate.url || "")
-    );
-
-    if (!lastUpdateFingerprint) {
-      lastUpdateFingerprint = updateFingerprint;
-      lastUpdateTitle = homepageUpdate.title;
-
-      recordGameEvent({
-        type: "game_update",
-        title: homepageUpdate.title,
-        description: homepageUpdate.description,
-        source: homepageUpdate.source
-      });
-
-      console.log("Game update discovery primed:", homepageUpdate.title);
-    } else if (updateFingerprint !== lastUpdateFingerprint) {
-      lastUpdateFingerprint = updateFingerprint;
-      lastUpdateTitle = homepageUpdate.title;
-
-      const eventRecord = recordGameEvent({
-        type: "game_update",
-        title: homepageUpdate.title,
-        description: homepageUpdate.description,
-        source: homepageUpdate.source
-      });
-
-      if (eventRecord) {
-        await sendGameUpdateAlert(homepageUpdate, newlyAdded);
-        console.log("New game update detected:", homepageUpdate.title);
-      }
+    if (catalogEvent && successfulSources > 0) {
+      await sendGameUpdateAlert(
+        {
+          title: "New rare eggs discovered",
+          description: "The automatic catalog monitor found new Secret, Eternal, or Divine spawn entries.",
+          source: "Auto Catalog Sync"
+        },
+        newlyAdded
+      );
     }
-  }
-
-  if (newlyAdded.length && lastUpdateFingerprint) {
-    await sendGameUpdateAlert(
-      {
-        title: "New rare eggs added to the game catalog",
-        description: "The Steal An Egg rare-egg catalog changed.",
-        source: "Auto Catalog Sync"
-      },
-      newlyAdded
-    );
   }
 
   for (const event of detectedEvents) {
     recordGameEvent(event);
   }
 
-  const fingerprint = supportedEggs
-    .filter(item => item?.eggName && item?.rarity)
-    .map(item => item.rarity + ":" + item.eggName)
+  const catalogFingerprint = [...uniqueEggs.values()]
+    .map(item => String(item.rarity) + ":" + item.eggName)
     .sort()
     .join("|");
 
-  if (fingerprint && fingerprint !== autoDiscoveryLastFingerprint) {
-    autoDiscoveryLastFingerprint = fingerprint;
-    console.log(
-      "Auto catalogue sync:",
-      supportedEggs.filter(item => item?.eggName && item?.rarity).length,
-      "supported rare eggs; new=" + added
-    );
+  if (catalogFingerprint && catalogFingerprint !== autoDiscoveryLastFingerprint) {
+    autoDiscoveryLastFingerprint = catalogFingerprint;
   }
+
+  autoDiscoveryLastSummary = {
+    checkedAt: new Date().toISOString(),
+    successfulSources,
+    totalSources: AUTO_DISCOVERY_SOURCES.length,
+    updateCandidates: updateCandidates.length,
+    uniqueEggs: uniqueEggs.size,
+    events: detectedEvents.length,
+    newlyAdded: newlyAdded.length
+  };
+
+  scheduleStateSave();
+
+  console.log(
+    "Auto discovery sweep:",
+    successfulSources + "/" + AUTO_DISCOVERY_SOURCES.length,
+    "sources;",
+    "updates=" + updateCandidates.length,
+    "eggs=" + uniqueEggs.size,
+    "new=" + added,
+    "events=" + detectedEvents.length
+  );
 }
 
 function startAutoDiscovery() {
   if (!AUTO_DISCOVERY_ENABLED) return;
+
+  for (const source of AUTO_DISCOVERY_SOURCES) {
+    updateDiscoverySourceHealth(source);
+  }
 
   setTimeout(() => {
     scanForGameUpdates().catch(error => {
@@ -3379,7 +3318,6 @@ function buildAlertEmbed(event, _latencyMs = null, includeImage = true) {
   const eggName = String(event.eggName || "Unknown Egg").trim();
   const petName = String(event.displayName || event.eggName || "Unknown").trim();
   const area = String(event.biome || "Unknown").trim();
-  const baseIncome = event.gameStats?.income || "Not available";
 
   const timestamp = Date.parse(event.spawnedAt);
   const unix = Number.isFinite(timestamp)
@@ -3390,7 +3328,6 @@ function buildAlertEmbed(event, _latencyMs = null, includeImage = true) {
     { name: emoji + " Egg", value: eggName.slice(0, 1024), inline: true },
     { name: "🐾 Pet", value: petName.slice(0, 1024), inline: true },
     { name: "📍 Location", value: area.slice(0, 1024), inline: true },
-    { name: "💰 Base Income", value: baseIncome.slice(0, 1024), inline: true },
     { name: "🕒 Spawned", value: "<t:" + unix + ":R>", inline: true }
   ];
 
@@ -3449,16 +3386,6 @@ async function enrichAlertEvent(event, entryOverride = null) {
   event.eggName = entry.eggName;
   event.displayName = entry.petName || entry.displayName || entry.eggName;
   event.biome = event.biome || entry.biome || "Unknown";
-
-  try {
-    event.gameStats = await fetchPetGameStats(entry.petName);
-  } catch (error) {
-    event.gameStats = { income: null, speed: null };
-    console.warn(
-      "Pet game stats lookup failed for " + entry.petName + ":",
-      error?.message || error
-    );
-  }
 
   const imageKey = normalizeFeedKey(entry.petName);
   const cachedPng = petPngBufferCache.get(imageKey);
@@ -3999,6 +3926,8 @@ app.get("/health", (_req, res) => {
     autoDiscoveryEnabled: AUTO_DISCOVERY_ENABLED,
     autoDiscoveredCount,
     lastUpdateCheckAt,
+    autoDiscoverySources: discoverySummary(),
+    autoDiscoverySummary: autoDiscoveryLastSummary,
     lastUpdateTitle,
     spawnHistoryCount: spawnHistory.length,
     gameEventHistoryCount: gameEventHistory.length,
@@ -4188,6 +4117,7 @@ setInterval(() => {
     "detected=" + detectedCount,
     "alerts=" + alertCount,
     "errors=" + monitorErrors,
+    "autoDiscovery=" + (AUTO_DISCOVERY_ENABLED ? "active" : "disabled") + ":" + [...autoDiscoverySourceHealth.values()].filter(item => item.status === "ACTIVE").length + "/" + AUTO_DISCOVERY_SOURCES.length,
     "avgLatencyMs=" + (latencySamples
       ? Math.round(totalLatencyMs / latencySamples)
       : "N/A"),
@@ -4543,8 +4473,6 @@ client.on("interactionCreate", async interaction => {
 
       const imageUrl = await resolveImageUrl(entry.eggName);
       const imageBuffer = await getPetPngBuffer(entry.petName);
-      const stats = await fetchPetGameStats(entry.petName);
-
       const testEvent = {
         live: true,
         eggName: entry.eggName,
@@ -4553,8 +4481,7 @@ client.on("interactionCreate", async interaction => {
         biome: entry.biome,
         spawnedAt: new Date().toISOString(),
         imageUrl,
-        imageBuffer,
-        gameStats: stats
+        imageBuffer
       };
 
       const embed = buildAlertEmbed(testEvent, null, true);
