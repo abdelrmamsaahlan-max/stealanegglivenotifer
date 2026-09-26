@@ -2751,9 +2751,10 @@ async function pollLiveFeed() {
         }
       } else {
         liveFeedErrors++;
-        console.error(
-          "Live feed endpoint failed:",
-          result.reason?.message || result.reason || "unknown error"
+        recordMonitorError(
+          "source",
+          result.reason,
+          "Live feed endpoint failed"
         );
       }
     }
@@ -3173,7 +3174,11 @@ async function runAutoDiscoverySweep() {
         checkedAt: new Date().toISOString(),
         error: String(error?.message || error).slice(0, 200)
       });
-      console.warn("Auto discovery source failed:", source.key, error?.message || error);
+      recordMonitorError(
+        "discovery",
+        error,
+        "Auto discovery source failed: " + source.key
+      );
     }
   }
 
@@ -3209,7 +3214,11 @@ async function runAutoDiscoverySweep() {
       );
       detectedEvents.push(...extractDiscoveryEvents(body, pageSource));
     } catch (error) {
-      console.warn("Auto discovery linked-page fetch failed for source:", link.sourceName, error?.message || error);
+      recordMonitorError(
+        "discovery",
+        error,
+        "Auto discovery linked-page fetch failed for source: " + link.sourceName
+      );
     }
   }
 
@@ -5440,7 +5449,11 @@ async function sendAlert(event, latencyMs = null) {
           console.log("Post-send PNG attached:", entry.petName);
         })
         .catch(error => {
-          console.warn("Post-send PNG attach failed:", error?.message || error);
+          recordMonitorError(
+            "image",
+            error,
+            "Post-send PNG attach failed"
+          );
         });
     }
   }
@@ -5830,8 +5843,7 @@ app.post("/api/discovery/scan", async (req, res) => {
       summary: autoDiscoveryLastSummary
     });
   } catch (error) {
-    monitorErrors++;
-    console.error("Manual discovery scan failed:", error);
+    recordMonitorError("discovery", error, "Manual discovery scan failed");
     return res.status(500).json({
       error: "discovery_scan_failed",
       detail: "scan_failed"
@@ -6005,6 +6017,12 @@ setInterval(() => {
   cleanupAdminCommandUsage();
 }, 60_000);
 
+setInterval(() => {
+  runSystemWatchdog().catch(error => {
+    recordMonitorError("other", error, "Watchdog interval failed");
+  });
+}, WATCHDOG_INTERVAL_MS);
+
 startLiveFeedPoller();
 startAutoDiscovery();
 
@@ -6056,6 +6074,7 @@ setInterval(() => {
       : "N/A"),
     "queue=" + alertQueue.length + "/" + ALERT_QUEUE_MAX,
     "workers=" + alertQueueActive + "/" + ALERT_QUEUE_WORKERS,
+    "watchdog=" + (watchdogLastAction || "monitoring"),
     "rift=" + (RIFT_ALERTS_ENABLED
       ? (riftState.currentBannerName || "waiting")
       : "disabled")
@@ -6185,58 +6204,42 @@ client.on("interactionCreate", async interaction => {
 
     if (interaction.commandName === "bot-status") {
       const uptimeSeconds = Math.floor(process.uptime());
-      const roleStatus = {};
-      for (const rarity of ["secret", "eternal", "divine"]) {
-        roleStatus[rarity] = await resolveAlertRoleId(rarity);
-      }
       const days = Math.floor(uptimeSeconds / 86400);
       const hours = Math.floor((uptimeSeconds % 86400) / 3600);
       const minutes = Math.floor((uptimeSeconds % 3600) / 60);
       const ping = Math.max(0, Math.round(client.ws.ping));
+      const activeFeed = [...liveFeedEndpointHealth.values()]
+        .filter(item => item.status === "ACTIVE").length;
+      const discoveryActive = [...autoDiscoverySourceHealth.values()]
+        .filter(item => item.status === "ACTIVE").length;
+      const sources = [...liveFeedEndpointHealth.values()]
+        .map(item => item.endpoint + ":" + item.status)
+        .join(" • ") || "none";
 
       const status = [
-        "🤖 **Bot:** " + (client.isReady() ? "ONLINE" : "NOT READY"),
-        "⚡ **Discord latency:** " + ping + "ms",
-        "⏱️ **Uptime:** " + days + "d " + hours + "h " + minutes + "m",
-        "📡 **Live monitor:** " + (MONITOR_ENABLED ? "ENABLED" : "DISABLED"),
-        "🎯 **Rarities:** " + [...RARITIES].join(", "),
-        "📥 **Source channels:** " + (SOURCE_CHANNEL_IDS.size ? SOURCE_CHANNEL_IDS.size + " configured" : "ALL"),
-        "📤 **Alert channel:** " + (CHANNEL_ID ? "CONFIGURED" : "NOT CONFIGURED"),
-        "🕒 **Last Seen channel:** " + (LAST_SEEN_CHANNEL_ID ? "CONFIGURED" : "NOT CONFIGURED"),
-        "🔔 **Role ping:** " + ALERT_MENTION_MODE.toUpperCase(),
-        "📡 **Discord source:** " + sourceHealth(),
-        "🌐 **Live feed:** " + liveFeedHealth(),
-        "🖼️ **Character PNG:** " + (SOURCE_IMAGE_ALPHA_ONLY ? "ENABLED" : "NORMALIZE"),
-        "🔄 **Auto catalog:** " + (AUTO_DISCOVERY_ENABLED ? "ENABLED" : "DISABLED") + " (" + autoDiscoveredCount + " new)",
-        "🎮 **Event alerts:** " + (EVENT_ALERTS_ENABLED ? "ON" : "OFF"),
-        "🧪 **Experiment tracker:** " + (EVENT_ALERTS_ENABLED ? "ON" : "OFF"),
-        "⏭️ **Next Experiment:** " +
-          (experimentState.nextExperimentAt
-            ? "<t:" + Math.floor(experimentState.nextExperimentAt / 1000) + ":R>"
-            : "WAITING"),
-        "🧪 **Experiment emojis:** " +
-          experimentCustomEmojiCache.size + "/" +
-          EXPERIMENT_EMOJI_TEMPLATES.length,
-        "🟣 **Rift tracker:** " + (RIFT_ALERTS_ENABLED ? "ON" : "OFF"),
-        "🌀 **Current Rift:** " + (riftState.currentBannerName || "WAITING"),
-        "⏭️ **Rift next change:** " + (riftState.nextChangeLabel || "Unknown"),
-        "🧩 **Rift source filter:** " + (RIFT_SOURCE_BOT_IDS.size ? "BOT FILTER" : "ALL BOTS"),
-        "🆕 **Last update:** " + (lastUpdateTitle || "Unknown"),
-        "🔎 **Discovery sources:** " + [...autoDiscoverySourceHealth.values()].filter(item => item.status === "ACTIVE").length + "/" + AUTO_DISCOVERY_SOURCES.length + " active",
-        "🥚 **Alerts sent:** " + alertCount,
-        "🔎 **Eggs detected:** " + detectedCount,
-        "⚡ **Average alert latency:** " + (latencySamples
-          ? Math.round(totalLatencyMs / latencySamples) + "ms"
-          : "N/A"),
-        "🛠️ **Errors:** " + monitorErrors,
-        "💾 **Cache entries:** " + seen.size,
-        "🧾 **Spawn history:** " + spawnHistory.length,
-        "🎮 **Game events:** " + gameEventHistory.length,
-        "🥚 **Catalog entries:** " + eggImageCatalog.length,
-        "🟣 **Secret role:** " + (roleStatus.secret ? "READY" : "MISSING"),
-        "🟠 **Eternal role:** " + (roleStatus.eternal ? "READY" : "MISSING"),
-        "🔴 **Divine role:** " + (roleStatus.divine ? "READY" : "MISSING"),
-        "🩺 **Detailed diagnostics:** /health-check"
+        "🤖 **Bot:** " + (client.isReady() ? "🟢 Online" : "🔴 Offline"),
+        "🌐 **Live Feed:** " + liveFeedHealth() + " • " + activeFeed + "/" + LIVE_FEED_URLS.length,
+        "🔌 **Sources:** " + sources,
+        "🥚 **Alerts:** " + alertCount + " • queue " + alertQueue.length + "/" + ALERT_QUEUE_MAX,
+        "⚡ **Latency:** " + (latencySamples ? Math.round(totalLatencyMs / latencySamples) + "ms avg" : "N/A") +
+          " • Discord " + ping + "ms",
+        "🕒 **Last Seen:** " +
+          (LAST_SEEN_CHANNEL_ID
+            ? (lastSeenMessagesReady ? "🟢 Ready" : "🟡 Starting")
+            : "⚪ Off"),
+        "🔎 **Discovery:** " +
+          (AUTO_DISCOVERY_ENABLED
+            ? discoveryActive + "/" + AUTO_DISCOVERY_SOURCES.length + " active"
+            : "⚪ Off"),
+        "🖼️ **PNG cache:** " + petPngBufferCache.size,
+        "🧪 **Experiment:** " + (EVENT_ALERTS_ENABLED ? "🟢 On" : "⚪ Off") +
+          " • 🟣 **Rift:** " + (RIFT_ALERTS_ENABLED ? "🟢 On" : "⚪ Off"),
+        "💾 **State:** " + STATE_PERSISTENCE_MODE +
+          (DURABLE_VOLUME_CONFIGURED ? " • durable" : " • no volume detected"),
+        "🔧 **Watchdog:** " + (watchdogLastAction || "monitoring") +
+          " • recoveries " + watchdogRecoveryCount,
+        "🛡️ **Errors:** " + monitorErrors,
+        "⏱️ **Uptime:** " + days + "d " + hours + "h " + minutes + "m"
       ].join("\n");
 
       return await interaction.reply({
