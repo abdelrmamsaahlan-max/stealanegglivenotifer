@@ -51,17 +51,6 @@ function mergeStructuredRowsIntoState(state, result) {
       : []
   );
 
-  const existingRiftKeys = new Set(
-    Array.isArray(next.riftHistory)
-      ? next.riftHistory.map(item => [
-          item?.source || "",
-          item?.sourceEventId || item?.id || "",
-          item?.type || "",
-          item?.bannerKey || item?.bossName || "",
-          item?.createdTimestamp || ""
-        ].join("|"))
-      : []
-  );
 
   for (const row of Array.isArray(result?.events) ? result.events : []) {
     const raw = row?.raw_payload && typeof row.raw_payload === "object"
@@ -98,38 +87,6 @@ function mergeStructuredRowsIntoState(state, result) {
       continue;
     }
 
-    if (String(row?.event_type || "").startsWith("rift_")) {
-      const record = {
-        ...raw,
-        id: raw.id || row.id || null,
-        source: raw.source || row.source || "unknown",
-        sourceEventId: raw.sourceEventId || row.source_event_id || row.id || null,
-        type: raw.type || String(row.event_type).replace(/^rift_/, ""),
-        bannerKey: raw.bannerKey || null,
-        bannerName: raw.bannerName || row.title || null,
-        bossName: raw.bossName || row.title || null,
-        rotationChance: raw.rotationChance || null,
-        changedLabel: raw.changedLabel || row.description || null,
-        nextChangeLabel: raw.nextChangeLabel || null,
-        createdTimestamp: Number(raw.createdTimestamp || Date.parse(row.occurred_at) || Date.now()),
-        confidence: raw.confidence ?? row.confidence ?? null,
-        incidentId: raw.incidentId || row.incident_id || null,
-        eventState: raw.eventState || row.event_state || null
-      };
-      const key = [
-        record.source,
-        record.sourceEventId || record.id || "",
-        record.type,
-        record.bannerKey || record.bossName || "",
-        record.createdTimestamp
-      ].join("|");
-
-      if (!existingRiftKeys.has(key)) {
-        next.riftHistory = [record, ...(Array.isArray(next.riftHistory) ? next.riftHistory : [])];
-        existingRiftKeys.add(key);
-      }
-      continue;
-    }
 
     const record = {
       ...raw,
@@ -161,7 +118,6 @@ function mergeStructuredRowsIntoState(state, result) {
 
   next.spawnHistory = (Array.isArray(next.spawnHistory) ? next.spawnHistory : []).slice(0, 100);
   next.gameEventHistory = (Array.isArray(next.gameEventHistory) ? next.gameEventHistory : []).slice(0, 30);
-  next.riftHistory = (Array.isArray(next.riftHistory) ? next.riftHistory : []).slice(0, 30);
 
   const currentLastSeen = next.lastSeenByRarity && typeof next.lastSeenByRarity === "object"
     ? next.lastSeenByRarity
@@ -334,10 +290,6 @@ export async function persistSpawnRecord(record) {
 
 export async function persistGameEvent(event) {
   return callStorage("game_event", { event });
-}
-
-export async function persistRiftEvent(event) {
-  return callStorage("rift", { event });
 }
 
 export async function persistCatalog(items) {
