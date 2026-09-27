@@ -1,6 +1,6 @@
 const DEFAULT_PLACE_ID = 107778070777162;
 const DEFAULT_MAX_PLAYERS = 1;
-const DEFAULT_MAX_RESULTS = 10;
+const DEFAULT_MAX_RESULTS = 50;
 const DEFAULT_PAGE_SIZE = 100;
 const DEFAULT_MAX_PAGES = 4;
 const DEFAULT_TIMEOUT_MS = 7000;
@@ -112,7 +112,7 @@ async function scanLowPlayerServers({
   joinBaseUrl = ""
 } = {}) {
   const safeMaxPlayers = Math.min(2, Math.max(0, Number(maxPlayers) || 0));
-  const safeMaxResults = Math.min(20, Math.max(1, Number(maxResults) || DEFAULT_MAX_RESULTS));
+  const safeMaxResults = Math.min(50, Math.max(1, Number(maxResults) || DEFAULT_MAX_RESULTS));
   const safePageSize = Math.min(100, Math.max(10, Number(pageSize) || DEFAULT_PAGE_SIZE));
   const safeMaxPages = Math.min(6, Math.max(1, Number(maxPages) || DEFAULT_MAX_PAGES));
 
@@ -170,7 +170,7 @@ async function scanLowPlayerServers({
 
 export async function findLowPlayerServers(options = {}) {
   const maxPlayers = Math.min(2, Math.max(0, Number(options.maxPlayers ?? SERVER_FINDER_MAX_PLAYERS)));
-  const maxResults = Math.min(20, Math.max(1, Number(options.maxResults ?? DEFAULT_MAX_RESULTS)));
+  const maxResults = Math.min(50, Math.max(1, Number(options.maxResults ?? DEFAULT_MAX_RESULTS)));
   const joinBaseUrl = String(options.joinBaseUrl || "").trim();
 
   const cacheKey = [SERVER_FINDER_PLACE_ID, maxPlayers, maxResults, joinBaseUrl].join("|");
