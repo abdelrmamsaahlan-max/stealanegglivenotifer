@@ -248,8 +248,8 @@ const SERVER_FINDER_EMOJI_SPECS = [
   { key: "active", name: "eggfind_active", fallback: "🟡", type: "active", bg: "#f59e0b" },
   { key: "join", name: "eggfind_join", fallback: "🔗", type: "join", bg: "#5865f2" },
   { key: "back", name: "eggfind_back", fallback: "◀️", type: "back", bg: "#4b5563", create: true },
-  { key: "next", name: "eggfind_next", fallback: "▶️", type: "next", bg: "#4b5563", create: false },
-  { key: "refresh", name: "eggfind_refresh", fallback: "🔄", type: "refresh", bg: "#5865f2", create: false }
+  { key: "next", name: "eggfind_next", fallback: "▶️", type: "next", bg: "#4b5563", create: true },
+  { key: "refresh", name: "eggfind_refresh", fallback: "🔄", type: "refresh", bg: "#5865f2", create: true }
 ];
 
 function getServerFinderEmoji(key) {
@@ -572,6 +572,9 @@ function detectRevengeEventSignal(messageData) {
 async function publishRevengeEventUpdate(reason, signalType = null) {
   const phase = getRevengeEventPhase();
 
+  // Never publish outside the official LIVE event window.
+  if (phase !== "LIVE") return false;
+
   if (reason === "source-signal") {
     const fingerprint = String(signalType || "signal");
     const now = Date.now();
@@ -668,9 +671,10 @@ async function checkRevengeEventTracker() {
     const previous = revengeEventLastPhase;
     revengeEventLastPhase = phase;
 
-    // On first boot, announce only when the event is currently live.
-    // This avoids replaying an old upcoming/ended state after a restart.
-    if (!previous && phase !== "LIVE") return;
+    // Publish only when entering the LIVE phase. UPCOMING and ENDED transitions
+    // are recorded internally but never posted to the public alert channel.
+    if (phase !== "LIVE") return;
+    if (previous === "LIVE") return;
 
     await publishRevengeEventUpdate("official-phase");
   }
@@ -6234,8 +6238,10 @@ async function processSpawnMessage(message) {
 
   const revengeSignal = detectRevengeEventSignal(messageData);
   if (revengeSignal) {
+    // A source signal can trigger a phase check, but the phase gate above
+    // ensures it can never create repeated public announcements.
     safeRun(
-      publishRevengeEventUpdate("source-signal", revengeSignal.type),
+      checkRevengeEventTracker(),
       "Revenge event signal"
     );
   }
