@@ -12,7 +12,7 @@ COPY src ./src
 COPY data ./data
 COPY test ./test
 
-# Fail the image build when parser, Rift logic, or index.js syntax regresses.
+# Fail the image build when parser or index.js syntax regresses.
 RUN npm test
 
 EXPOSE 3000
