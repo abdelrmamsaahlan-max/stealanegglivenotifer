@@ -345,7 +345,7 @@ async function ensureServerFinderCustomEmojis() {
       }
     }
 
-    const creatableCount = SERVER_FINDER_EMOJI_SPECS.filter(spec => spec.create !== false).length;
+    const creatableCount = SERVER_FINDER_EMOJI_SPECS.filter(spec => spec.create === true).length;
     console.log(
       "Server Finder custom emojis ready:",
       serverFinderEmojiCache.size + "/" + creatableCount +
@@ -7567,7 +7567,7 @@ client.on("interactionCreate", async interaction => {
       petPngBufferCache.clear();
       imageFallbackCache.clear();
       resolvedRoleCache.clear();
-      eventRoleCache.clear();
+      resolvedRoleCache.clear();
 
       if (CHANNEL_ID) {
         await getAlertChannel();
@@ -7734,7 +7734,7 @@ client.on("shardReconnecting", shardId => {
   lastSeenContentFingerprints.clear();
   lastSeenMessagesInitInFlight = null;
   resolvedRoleCache.clear();
-  eventRoleCache.clear();
+  resolvedRoleCache.clear();
   console.warn("Discord shard reconnecting:", shardId);
 });
 
@@ -7757,7 +7757,7 @@ client.on("shardDisconnect", (event, shardId) => {
   lastSeenContentFingerprints.clear();
   lastSeenMessagesInitInFlight = null;
   resolvedRoleCache.clear();
-  eventRoleCache.clear();
+  resolvedRoleCache.clear();
   console.warn("Discord shard disconnected:", shardId, event?.code || "unknown");
 });
 
