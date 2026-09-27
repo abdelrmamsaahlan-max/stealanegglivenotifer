@@ -664,6 +664,60 @@ async function publishRevengeEventUpdate(reason, signalType = null) {
   }
 }
 
+async function cleanupRevengeEventMessages() {
+  if (!CHANNEL_ID) return 0;
+
+  const channel = await getAlertChannel();
+  if (!channel || typeof channel.messages?.fetch !== "function") return 0;
+
+  try {
+    const messages = await channel.messages.fetch({ limit: 100 });
+    const botUserId = client.user?.id || "";
+
+    const matches = [...messages.values()].filter(message => {
+      if (botUserId && message.author?.id !== botUserId) return false;
+
+      return message.embeds?.some(embed =>
+        String(embed?.title || "").toUpperCase().includes("DR. SCRAMBLE’S REVENGE") ||
+        String(embed?.url || "") === REVENGE_EVENT.sourceUrl
+      );
+    });
+
+    if (!matches.length) return 0;
+
+    const phase = getRevengeEventPhase();
+    const keep = phase === "LIVE" ? matches[0] : null;
+    let removed = 0;
+
+    for (const message of matches) {
+      if (keep && message.id === keep.id) continue;
+
+      try {
+        await message.delete();
+        removed++;
+      } catch (error) {
+        console.warn(
+          "Revenge event message cleanup failed for " + message.id + ":",
+          error?.message || error
+        );
+      }
+    }
+
+    if (removed) {
+      console.log(
+        "Revenge event message cleanup:",
+        "removed=" + removed,
+        "phase=" + phase
+      );
+    }
+
+    return removed;
+  } catch (error) {
+    console.warn("Revenge event message cleanup scan failed:", error?.message || error);
+    return 0;
+  }
+}
+
 async function checkRevengeEventTracker() {
   const phase = getRevengeEventPhase();
 
@@ -671,13 +725,20 @@ async function checkRevengeEventTracker() {
     const previous = revengeEventLastPhase;
     revengeEventLastPhase = phase;
 
-    // Publish only when entering the LIVE phase. UPCOMING and ENDED transitions
-    // are recorded internally but never posted to the public alert channel.
-    if (phase !== "LIVE") return;
-    if (previous === "LIVE") return;
+    // Never publish source-message signals. Only a real transition into the
+    // official LIVE window may produce the public event announcement.
+    if (phase !== "LIVE" || previous === "LIVE") {
+      await cleanupRevengeEventMessages();
+      return;
+    }
 
+    await cleanupRevengeEventMessages();
     await publishRevengeEventUpdate("official-phase");
+    return;
   }
+
+  // Keep old/duplicate event announcements cleaned up even after restarts.
+  await cleanupRevengeEventMessages();
 }
 const LAST_SEEN_RARITIES = ["secret", "eternal", "divine"];
 const NON_NEST_SPAWN_EGGS = new Set([
@@ -6236,15 +6297,8 @@ async function processSpawnMessage(message) {
   lastSourceMessageAt = new Date(message.createdTimestamp || Date.now()).toISOString();
   lastSourceMessageId = message.id || null;
 
-  const revengeSignal = detectRevengeEventSignal(messageData);
-  if (revengeSignal) {
-    // A source signal can trigger a phase check, but the phase gate above
-    // ensures it can never create repeated public announcements.
-    safeRun(
-      checkRevengeEventTracker(),
-      "Revenge event signal"
-    );
-  }
+  // Event announcements are intentionally independent from source messages.
+  // Egg-source messages must never cause a Dr. Scramble public announcement.
 
   const event = parseSpawn(messageData, RARITIES);
   if (!event) return;
@@ -6749,7 +6803,7 @@ client.once("clientReady", async () => {
   console.log("Source stale threshold:", SOURCE_STALE_AFTER_MS / 1000 + "s");
   console.log("Memory guard:", MEMORY_SOFT_LIMIT_MB + "MB soft / " + MEMORY_HARD_LIMIT_MB + "MB hard");
   console.log("Auto discovery:", AUTO_DISCOVERY_ENABLED ? "enabled" : "disabled");
-  console.log("Dr. Scramble’s Revenge tracker:", "enabled");
+  console.log("Dr. Scramble’s Revenge tracker:", "live-window only");
 
   if (!revengeEventTrackerTimer) {
     safeRun(checkRevengeEventTracker(), "Revenge event tracker startup");
