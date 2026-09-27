@@ -27,7 +27,8 @@ import {
   persistAlertDelivery,
   persistSourceHealth,
   persistenceStats,
-  cleanupStorage
+  cleanupStorage,
+  maintainCatalog
 } from "./database.js";
 import {
   calculateEvidenceConfidence,
@@ -469,6 +470,24 @@ const AUTO_DISCOVERY_LINK_LIMIT = 3;
 const AUTO_DISCOVERY_POLL_MS = Math.max(
   45_000,
   Number(process.env.AUTO_DISCOVERY_POLL_SECONDS || 90) * 1000
+);
+
+const AUTO_DISCOVERY_MIN_CONFIDENCE = Math.min(
+  99,
+  Math.max(1, Number(process.env.AUTO_DISCOVERY_MIN_CONFIDENCE || 55))
+);
+
+const AUTO_DISCOVERY_CHANGE_CONFIDENCE = Math.min(
+  99,
+  Math.max(
+    AUTO_DISCOVERY_MIN_CONFIDENCE,
+    Number(process.env.AUTO_DISCOVERY_CHANGE_CONFIDENCE || 60)
+  )
+);
+
+const CATALOG_MAINTENANCE_INTERVAL_MS = Math.max(
+  15 * 60_000,
+  Number(process.env.CATALOG_MAINTENANCE_INTERVAL_HOURS || 6) * 60 * 60_000
 );
 
 let autoDiscoveryTimer = null;
@@ -1302,7 +1321,12 @@ function normalizeRarityName(value) {
   return key ? key[0].toUpperCase() + key.slice(1) : "";
 }
 
-function buildDynamicCatalogEntry(eggName, rarity, area = "Unknown") {
+function buildDynamicCatalogEntry(
+  eggName,
+  rarity,
+  area = "Unknown",
+  confidence = 0
+) {
   const cleanEgg = String(eggName || "").replace(/\s+/g, " ").trim();
   const cleanRarity = normalizeRarityName(rarity);
   if (!cleanEgg || !["Secret", "Eternal", "Divine"].includes(cleanRarity)) return null;
@@ -1321,11 +1345,19 @@ function buildDynamicCatalogEntry(eggName, rarity, area = "Unknown") {
     active: true,
     discoveredAt: new Date().toISOString(),
     source: "Auto Discovery",
+    confidence: Number(confidence || 0),
+    lastConfirmedAt: new Date().toISOString(),
+    status: "active",
     _runtimeOnlyKey: normalized
   };
 }
 
-function ensureCatalogEgg(eggName, rarity, area = "Unknown") {
+function ensureCatalogEgg(
+  eggName,
+  rarity,
+  area = "Unknown",
+  confidence = AUTO_DISCOVERY_MIN_CONFIDENCE
+) {
   const eggKey = normalizeFeedKey(eggName);
   const areaKey = normalizeFeedKey(area);
 
@@ -1400,6 +1432,14 @@ function ensureCatalogEgg(eggName, rarity, area = "Unknown") {
         existing.biome = String(area).trim();
       }
 
+      existing.confidence = Math.max(
+        Number(existing.confidence || 0),
+        Number(confidence || 0)
+      );
+      existing.lastConfirmedAt = new Date().toISOString();
+      existing.status = "active";
+      existing.active = true;
+
       persistCatalog([existing]).catch(error => {
         recordMonitorError("storage", error, "Supabase catalog persistence failed");
       });
@@ -1410,7 +1450,12 @@ function ensureCatalogEgg(eggName, rarity, area = "Unknown") {
 
   if (!AUTO_DISCOVERY_ENABLED) return null;
 
-  const dynamic = buildDynamicCatalogEntry(eggName, rarity, area);
+  const dynamic = buildDynamicCatalogEntry(
+    eggName,
+    rarity,
+    area,
+    confidence
+  );
   if (!dynamic) return null;
 
   eggImageCatalog.push(dynamic);
@@ -4279,11 +4324,12 @@ async function runAutoDiscoverySweep() {
     }
     const before = existing;
     const entry =
-      Number(item.confidence || 0) >= 55
+      Number(item.confidence || 0) >= AUTO_DISCOVERY_MIN_CONFIDENCE
         ? ensureCatalogEgg(
             item.eggName,
             item.rarity,
-            item.area || "Unknown"
+            item.area || "Unknown",
+            item.confidence
           )
         : before;
 
@@ -4339,10 +4385,10 @@ async function runAutoDiscoverySweep() {
   );
 
   const changedWithConfidence = catalogChanges.changed.filter(item =>
-    Number(item.after?.confidence || 0) >= 60
+    Number(item.after?.confidence || 0) >= AUTO_DISCOVERY_CHANGE_CONFIDENCE
   );
   const highConfidenceAdded = catalogChanges.added.filter(item =>
-    Number(item.confidence || 0) >= 55
+    Number(item.confidence || 0) >= AUTO_DISCOVERY_MIN_CONFIDENCE
   );
 
   const confidence = calculateEvidenceConfidence(
@@ -4537,6 +4583,18 @@ function startAutoDiscovery() {
   for (const source of AUTO_DISCOVERY_SOURCES) {
     updateDiscoverySourceHealth(source);
   }
+
+  setTimeout(() => {
+    maintainCatalog().catch(error => {
+      console.warn("Initial catalog maintenance failed:", error?.message || error);
+    });
+  }, 15_000);
+
+  setInterval(() => {
+    maintainCatalog().catch(error => {
+      console.warn("Scheduled catalog maintenance failed:", error?.message || error);
+    });
+  }, CATALOG_MAINTENANCE_INTERVAL_MS);
 
   setTimeout(() => {
     scanForGameUpdates().catch(error => {
@@ -6949,11 +7007,19 @@ client.on("interactionCreate", async interaction => {
     } else if (interaction.customId === "serverfind:refresh") {
       try {
         const publicBaseUrl = String(process.env.PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "");
+        const previousServerIds = state.servers.map(
+          server => String(server?.jobId || "").trim()
+        ).filter(Boolean);
+
         const result = await findLowPlayerServers({
           maxPlayers: state.maxPlayers,
           maxResults: SERVER_FINDER_MAX_PAGES * SERVER_FINDER_PAGE_SIZE,
-          joinBaseUrl: publicBaseUrl
+          joinBaseUrl: publicBaseUrl,
+          excludeJobIds: previousServerIds,
+          forceFresh: true,
+          deepScan: true
         });
+
         state.servers = result.servers;
         state.pagesScanned = result.pagesScanned;
         state.page = Math.min(
