@@ -732,25 +732,9 @@ async function cleanupRevengeEventMessages() {
 }
 
 async function checkRevengeEventTracker() {
-  const phase = getRevengeEventPhase();
-
-  if (phase !== revengeEventLastPhase) {
-    const previous = revengeEventLastPhase;
-    revengeEventLastPhase = phase;
-
-    // Never publish source-message signals. Only a real transition into the
-    // official LIVE window may produce the public event announcement.
-    if (phase !== "LIVE" || previous === "LIVE") {
-      await cleanupRevengeEventMessages();
-      return;
-    }
-
-    await cleanupRevengeEventMessages();
-    await publishRevengeEventUpdate("official-phase");
-    return;
-  }
-
-  // Keep old/duplicate event announcements cleaned up even after restarts.
+  // Dr. Scramble’s Revenge announcements are disabled.
+  // Keep cleanup active so any old/duplicate announcement is removed.
+  revengeEventLastPhase = getRevengeEventPhase();
   await cleanupRevengeEventMessages();
 }
 const LAST_SEEN_RARITIES = ["secret", "eternal", "divine"];
