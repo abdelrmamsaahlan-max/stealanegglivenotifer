@@ -5903,9 +5903,10 @@ function buildAlertEmbed(event, _latencyMs = null, includeImage = true) {
 function buildActionRow(event) {
   const buttons = [
     new ButtonBuilder()
-      .setLabel("Join Game")
-      .setStyle(ButtonStyle.Link)
-      .setURL(event.joinUrl || STEAL_AN_EGG_GAME_URL)
+      .setCustomId("serverfind:open")
+      .setLabel("Server Finder")
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji(getServerFinderEmoji("search"))
   ];
 
   if (event.messageUrl) {
@@ -6964,11 +6965,173 @@ setInterval(() => {
   );
 }, 60_000);
 
+async function openServerFinderSession(interaction, requestedMax = null) {
+  const userId = String(interaction.user?.id || "");
+  const now = Date.now();
+  const lastUsed = Number(serverFinderUserCooldowns.get(userId) || 0);
+
+  if (lastUsed && now - lastUsed < SERVER_FINDER_COOLDOWN_MS) {
+    const retryAfter = Math.ceil(
+      (SERVER_FINDER_COOLDOWN_MS - (now - lastUsed)) / 1000
+    );
+    return await interaction.reply({
+      content: "⏳ Server Finder is cooling down. Try again in **" + retryAfter + "s**.",
+      flags: MessageFlags.Ephemeral
+    });
+  }
+
+  serverFinderUserCooldowns.set(userId, now);
+
+  for (const [id, timestamp] of serverFinderUserCooldowns) {
+    if (now - timestamp > SERVER_FINDER_COOLDOWN_MS * 6) {
+      serverFinderUserCooldowns.delete(id);
+    }
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const maxPlayers = Number.isInteger(requestedMax)
+    ? Math.min(2, Math.max(0, requestedMax))
+    : SERVER_FINDER_MAX_PLAYERS;
+
+  try {
+    await ensureServerFinderCustomEmojis();
+
+    const publicBaseUrl = String(process.env.PUBLIC_BASE_URL || "")
+      .trim()
+      .replace(/\/+$/, "");
+
+    const result = await findLowPlayerServers({
+      maxPlayers,
+      maxResults: SERVER_FINDER_MAX_PAGES * SERVER_FINDER_PAGE_SIZE,
+      joinBaseUrl: publicBaseUrl,
+      forceFresh: true
+    });
+
+    const state = {
+      servers: result.servers,
+      maxPlayers,
+      page: 0,
+      pagesScanned: result.pagesScanned,
+      createdAt: now
+    };
+
+    for (const [messageId, saved] of serverFinderMessageStates) {
+      if (now - saved.createdAt > 10 * 60_000) {
+        serverFinderMessageStates.delete(messageId);
+      }
+    }
+
+    const buildFinderPayload = currentState => {
+      const currentPage = Math.min(
+        Math.max(0, currentState.page),
+        Math.max(
+          0,
+          Math.ceil(currentState.servers.length / SERVER_FINDER_PAGE_SIZE) - 1
+        )
+      );
+
+      currentState.page = currentPage;
+
+      const total = currentState.servers.length;
+      const pages = Math.max(1, Math.ceil(total / SERVER_FINDER_PAGE_SIZE));
+      const pageServers = currentState.servers.slice(
+        currentPage * SERVER_FINDER_PAGE_SIZE,
+        (currentPage + 1) * SERVER_FINDER_PAGE_SIZE
+      );
+
+      const embed = new EmbedBuilder()
+        .setColor(0x5865f2)
+        .setTitle(getServerFinderEmoji("title") + "  Steal An Egg • Server Finder")
+        .setDescription([
+          getServerFinderEmoji("search") + " **Low-population public servers** for quick server hopping.",
+          "",
+          getServerFinderEmoji("players") + " Showing **0–" + currentState.maxPlayers + " players**",
+          "📄 Page **" + (currentPage + 1) + " / " + pages + "** • " + total + " servers found",
+          "🛰️ Scanned **" + currentState.pagesScanned + "** Roblox server pages"
+        ].join("\n"))
+        .setFooter({
+          text: "Player counts are live snapshots • Steal An Egg"
+        })
+        .setTimestamp();
+
+      for (let i = 0; i < pageServers.length; i++) {
+        const server = pageServers[i];
+        const number = currentPage * SERVER_FINDER_PAGE_SIZE + i + 1;
+        const playerIcon = server.playing === 0
+          ? getServerFinderEmoji("empty")
+          : getServerFinderEmoji("active");
+
+        embed.addFields({
+          name:
+            playerIcon + "  #" + number + " • " +
+            server.playing + "/" + server.maxPlayers + " players",
+          value:
+            "🆔 Server: " + server.jobId.slice(0, 10) + "…\n" +
+            getServerFinderEmoji("join") +
+            " [**Join this server**](" + server.joinUrl + ")",
+          inline: true
+        });
+      }
+
+      const controls = new ActionRowBuilder()
+        .addComponents(
+          new ButtonBuilder()
+            .setCustomId("serverfind:prev")
+            .setLabel("Back")
+            .setEmoji(getServerFinderEmoji("back"))
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(currentPage === 0),
+          new ButtonBuilder()
+            .setCustomId("serverfind:refresh")
+            .setLabel("Refresh")
+            .setEmoji(getServerFinderEmoji("refresh"))
+            .setStyle(ButtonStyle.Primary),
+          new ButtonBuilder()
+            .setCustomId("serverfind:next")
+            .setLabel("Next")
+            .setEmoji(getServerFinderEmoji("next"))
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(currentPage >= pages - 1)
+        );
+
+      return {
+        embeds: [embed],
+        components: [controls]
+      };
+    };
+
+    const payload = buildFinderPayload(state);
+    const message = await interaction.editReply(payload);
+
+    serverFinderMessageStates.set(message.id, {
+      ...state,
+      buildFinderPayload
+    });
+  } catch (error) {
+    console.error("Server finder session failed:", error);
+    return await interaction.editReply({
+      content:
+        "❌ **Server Finder is temporarily unavailable.** Roblox server data could not be fetched right now.",
+      embeds: [],
+      components: []
+    });
+  }
+}
+
 client.on("interactionCreate", async interaction => {
   if (interaction.isButton()) {
     if (!interaction.customId.startsWith("serverfind:")) return;
 
+    if (interaction.customId === "serverfind:open") {
+      return await openServerFinderSession(
+        interaction,
+        SERVER_FINDER_MAX_PLAYERS
+      );
+    }
+
     const state = serverFinderMessageStates.get(interaction.message?.id);
+
     if (!state) {
       return await interaction.reply({
         content: "⚠️ This Server Finder session expired. Run **/server-find** again.",
@@ -6988,10 +7151,13 @@ client.on("interactionCreate", async interaction => {
       state.page = Math.min(totalPages - 1, state.page + 1);
     } else if (interaction.customId === "serverfind:refresh") {
       try {
-        const publicBaseUrl = String(process.env.PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "");
-        const previousServerIds = state.servers.map(
-          server => String(server?.jobId || "").trim()
-        ).filter(Boolean);
+        const publicBaseUrl = String(process.env.PUBLIC_BASE_URL || "")
+          .trim()
+          .replace(/\/+$/, "");
+
+        const previousServerIds = state.servers
+          .map(server => String(server?.jobId || "").trim())
+          .filter(Boolean);
 
         const result = await findLowPlayerServers({
           maxPlayers: state.maxPlayers,
@@ -7006,22 +7172,24 @@ client.on("interactionCreate", async interaction => {
         state.pagesScanned = result.pagesScanned;
         state.page = Math.min(
           state.page,
-          Math.max(0, Math.ceil(state.servers.length / SERVER_FINDER_PAGE_SIZE) - 1)
+          Math.max(
+            0,
+            Math.ceil(state.servers.length / SERVER_FINDER_PAGE_SIZE) - 1
+          )
         );
         state.createdAt = Date.now();
       } catch (error) {
         console.error("Server finder refresh failed:", error);
         return await interaction.editReply({
-          content: "❌ **Refresh failed.** Roblox server data could not be fetched right now.",
+          content:
+            "❌ **Refresh failed.** Roblox server data could not be fetched right now.",
           embeds: [],
           components: []
         });
       }
     }
 
-    return await interaction.editReply(
-      state.buildFinderPayload(state)
-    );
+    return await interaction.editReply(state.buildFinderPayload(state));
   }
 
   if (!interaction.isChatInputCommand()) return;
@@ -7096,149 +7264,8 @@ client.on("interactionCreate", async interaction => {
 
 
     if (interaction.commandName === "server-find") {
-      const userId = String(interaction.user?.id || "");
-      const now = Date.now();
-      const lastUsed = Number(serverFinderUserCooldowns.get(userId) || 0);
-
-      if (lastUsed && now - lastUsed < SERVER_FINDER_COOLDOWN_MS) {
-        const retryAfter = Math.ceil((SERVER_FINDER_COOLDOWN_MS - (now - lastUsed)) / 1000);
-        return await interaction.reply({
-          content: "⏳ Server Finder is cooling down. Try again in **" + retryAfter + "s**.",
-          flags: MessageFlags.Ephemeral
-        });
-      }
-
-      serverFinderUserCooldowns.set(userId, now);
-      for (const [id, timestamp] of serverFinderUserCooldowns) {
-        if (now - timestamp > SERVER_FINDER_COOLDOWN_MS * 6) {
-          serverFinderUserCooldowns.delete(id);
-        }
-      }
-
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
       const requestedMax = interaction.options.getInteger("max");
-      const maxPlayers = Number.isInteger(requestedMax)
-        ? Math.min(2, Math.max(0, requestedMax))
-        : SERVER_FINDER_MAX_PLAYERS;
-
-      try {
-        await ensureServerFinderCustomEmojis();
-
-        const publicBaseUrl = String(process.env.PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "");
-        const result = await findLowPlayerServers({
-          maxPlayers,
-          maxResults: SERVER_FINDER_MAX_PAGES * SERVER_FINDER_PAGE_SIZE,
-          joinBaseUrl: publicBaseUrl
-        });
-
-        const totalPages = Math.max(
-          1,
-          Math.ceil(result.servers.length / SERVER_FINDER_PAGE_SIZE)
-        );
-
-        const state = {
-          servers: result.servers,
-          maxPlayers,
-          page: 0,
-          pagesScanned: result.pagesScanned,
-          createdAt: now
-        };
-
-        for (const [messageId, saved] of serverFinderMessageStates) {
-          if (now - saved.createdAt > 10 * 60_000) {
-            serverFinderMessageStates.delete(messageId);
-          }
-        }
-
-        const buildFinderPayload = currentState => {
-          const currentPage = Math.min(
-            Math.max(0, currentState.page),
-            Math.max(0, Math.ceil(currentState.servers.length / SERVER_FINDER_PAGE_SIZE) - 1)
-          );
-          currentState.page = currentPage;
-
-          const total = currentState.servers.length;
-          const pages = Math.max(1, Math.ceil(total / SERVER_FINDER_PAGE_SIZE));
-          const pageServers = currentState.servers.slice(
-            currentPage * SERVER_FINDER_PAGE_SIZE,
-            (currentPage + 1) * SERVER_FINDER_PAGE_SIZE
-          );
-
-          const embed = new EmbedBuilder()
-            .setColor(0x5865f2)
-            .setTitle(getServerFinderEmoji("title") + "  Steal An Egg • Server Finder")
-            .setDescription([
-              getServerFinderEmoji("search") + " **Low-population public servers** for quick server hopping.",
-              "",
-              getServerFinderEmoji("players") + " Showing **0–" + currentState.maxPlayers + " players**",
-              "📄 Page **" + (currentPage + 1) + " / " + pages + "** • " + total + " servers found",
-              "🛰️ Scanned **" + currentState.pagesScanned + "** Roblox server pages"
-            ].join("\n"))
-            .setFooter({
-              text: "Player counts are live snapshots • Steal An Egg"
-            })
-            .setTimestamp();
-
-          for (let i = 0; i < pageServers.length; i++) {
-            const server = pageServers[i];
-            const number = currentPage * SERVER_FINDER_PAGE_SIZE + i + 1;
-            const playerIcon = server.playing === 0
-              ? getServerFinderEmoji("empty")
-              : getServerFinderEmoji("active");
-
-            embed.addFields({
-              name: playerIcon + "  #" + number + " • " + server.playing + "/" + server.maxPlayers + " players",
-              value:
-                "🆔 Server: `" + server.jobId.slice(0, 10) + "…`\n" +
-                getServerFinderEmoji("join") + " [**Join this server**](" + server.joinUrl + ")",
-              inline: true
-            });
-          }
-
-          const controls = new ActionRowBuilder()
-            .addComponents(
-              new ButtonBuilder()
-                .setCustomId("serverfind:prev")
-                .setLabel("Back")
-                 .setEmoji(getServerFinderEmoji("back"))
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(currentPage === 0),
-              new ButtonBuilder()
-                .setCustomId("serverfind:refresh")
-                .setLabel("Refresh")
-                 .setEmoji(getServerFinderEmoji("refresh"))
-                .setStyle(ButtonStyle.Primary),
-              new ButtonBuilder()
-                .setCustomId("serverfind:next")
-                .setLabel("Next")
-                 .setEmoji(getServerFinderEmoji("next"))
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(currentPage >= pages - 1)
-            );
-
-          return {
-            embeds: [embed],
-            components: [controls]
-          };
-        };
-
-        const payload = buildFinderPayload(state);
-        const message = await interaction.editReply(payload);
-        serverFinderMessageStates.set(message.id, {
-          ...state,
-          buildFinderPayload
-        });
-
-        return;
-      } catch (error) {
-        console.error("Server finder command failed:", error);
-        return await interaction.editReply({
-          content: "❌ **Server Finder is temporarily unavailable.** Roblox server data could not be fetched right now.",
-          embeds: [],
-          components: []
-        });
-      }
+      return await openServerFinderSession(interaction, requestedMax);
     }
 
     if (interaction.commandName === "alerts-pause") {
