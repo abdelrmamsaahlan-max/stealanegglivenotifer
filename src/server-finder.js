@@ -2,10 +2,10 @@ const DEFAULT_PLACE_ID = 107778070777162;
 const DEFAULT_MAX_PLAYERS = 1;
 const DEFAULT_MAX_RESULTS = 50;
 const DEFAULT_PAGE_SIZE = 100;
-const DEFAULT_MAX_PAGES = 4;
-const DEFAULT_DEEP_MAX_PAGES = 8;
-const DEFAULT_TIMEOUT_MS = 7000;
-const DEFAULT_CACHE_TTL_MS = 5000;
+const DEFAULT_MAX_PAGES = 1;
+const DEFAULT_DEEP_MAX_PAGES = 3;
+const DEFAULT_TIMEOUT_MS = 5000;
+const DEFAULT_CACHE_TTL_MS = 15000;
 
 export const SERVER_FINDER_PLACE_ID =
   Number(process.env.SERVER_FINDER_PLACE_ID || DEFAULT_PLACE_ID);
@@ -292,14 +292,33 @@ export async function findLowPlayerServers(options = {}) {
   if (existingFlight) return existingFlight;
 
   const operation = (async () => {
-    const fresh = await scanLowPlayerServers({
-      ...options,
-      maxPlayers,
-      maxResults,
-      maxPages,
-      excludeJobIds,
-      joinBaseUrl
-    });
+    let fresh;
+    try {
+      fresh = await scanLowPlayerServers({
+        ...options,
+        maxPlayers,
+        maxResults,
+        maxPages,
+        excludeJobIds,
+        joinBaseUrl
+      });
+    } catch (error) {
+      const stale = cache.get(cacheKey);
+      if (
+        !forceFresh &&
+        excludeJobIds.size === 0 &&
+        stale?.value &&
+        Array.isArray(stale.value.servers) &&
+        stale.value.servers.length
+      ) {
+        return {
+          ...stale.value,
+          freshScan: false,
+          stale: true
+        };
+      }
+      throw error;
+    }
 
     let servers = fresh.servers;
     let pagesScanned = fresh.pagesScanned;
