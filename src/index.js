@@ -247,9 +247,9 @@ const SERVER_FINDER_EMOJI_SPECS = [
   { key: "empty", name: "eggfind_empty", fallback: "🟢", type: "empty", bg: "#22c55e" },
   { key: "active", name: "eggfind_active", fallback: "🟡", type: "active", bg: "#f59e0b" },
   { key: "join", name: "eggfind_join", fallback: "🔗", type: "join", bg: "#5865f2" },
-  { key: "back", name: "eggfind_back", fallback: "◀️", type: "back", bg: "#4b5563" },
-  { key: "next", name: "eggfind_next", fallback: "▶️", type: "next", bg: "#4b5563" },
-  { key: "refresh", name: "eggfind_refresh", fallback: "🔄", type: "refresh", bg: "#5865f2" }
+  { key: "back", name: "eggfind_back", fallback: "◀️", type: "back", bg: "#4b5563", create: true },
+  { key: "next", name: "eggfind_next", fallback: "▶️", type: "next", bg: "#4b5563", create: false },
+  { key: "refresh", name: "eggfind_refresh", fallback: "🔄", type: "refresh", bg: "#5865f2", create: false }
 ];
 
 function getServerFinderEmoji(key) {
@@ -312,6 +312,10 @@ async function ensureServerFinderCustomEmojis() {
         continue;
       }
 
+      if (spec.create === false) {
+        continue;
+      }
+
       try {
         const buffer = await sharp(
           Buffer.from(buildServerFinderEmojiSvg(spec.type, spec.bg))
@@ -336,9 +340,11 @@ async function ensureServerFinderCustomEmojis() {
       }
     }
 
+    const creatableCount = SERVER_FINDER_EMOJI_SPECS.filter(spec => spec.create !== false).length;
     console.log(
       "Server Finder custom emojis ready:",
-      serverFinderEmojiCache.size + "/" + SERVER_FINDER_EMOJI_SPECS.length
+      serverFinderEmojiCache.size + "/" + creatableCount +
+      " (next/refresh use Unicode fallback unless matching server emojis already exist)"
     );
     return true;
   } catch (error) {
