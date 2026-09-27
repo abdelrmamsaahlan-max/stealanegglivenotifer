@@ -236,6 +236,9 @@ const INGEST_GLOBAL_PER_SECOND =
 const SERVER_FINDER_COOLDOWN_MS = 10_000;
 const serverFinderUserCooldowns = new Map();
 
+const MAX_HISTORY = 100;
+const MAX_EVENT_HISTORY = 30;
+
 const ALERT_QUEUE_MAX =
   Math.max(20, Number(process.env.ALERT_QUEUE_MAX || 100));
 
@@ -5590,13 +5593,6 @@ async function ensureAlertRoles() {
     }
   }
 
-  for (const type of ["rift", "experiment"]) {
-    try {
-      await resolveEventAlertRoleId(alertChannel.guild, type);
-    } catch (error) {
-      console.warn("Event role setup failed for " + type + ":", error?.message || error);
-    }
-  }
 }
 
 async function validateAlertRoles() {
