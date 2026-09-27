@@ -6186,7 +6186,7 @@ app.get("/health", (_req, res) => {
     lastUpdateCheckAt,
     autoDiscoverySources: discoverySummary(),
     autoDiscoverySummary: autoDiscoveryLastSummary,
-    lastUpdateTitle
+    lastUpdateTitle,
     spawnHistoryCount: spawnHistory.length,
     gameEventHistoryCount: gameEventHistory.length,
     memoryRssMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
