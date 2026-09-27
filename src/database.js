@@ -391,9 +391,6 @@ export async function cleanupStorage(retentionDays = 30) {
   return callStorage("cleanup", { retentionDays: days });
 }
 
-export async function maintainCatalog() {
-  return callStorage("catalog_maintenance", {});
-}
 
 export async function hydrateRuntimeStateFile() {
   if (!persistenceEnabled()) return false;
