@@ -27,8 +27,7 @@ import {
   persistAlertDelivery,
   persistSourceHealth,
   persistenceStats,
-  cleanupStorage,
-  maintainCatalog
+  cleanupStorage
 } from "./database.js";
 import {
   calculateEvidenceConfidence,
@@ -483,11 +482,6 @@ const AUTO_DISCOVERY_CHANGE_CONFIDENCE = Math.min(
     AUTO_DISCOVERY_MIN_CONFIDENCE,
     Number(process.env.AUTO_DISCOVERY_CHANGE_CONFIDENCE || 60)
   )
-);
-
-const CATALOG_MAINTENANCE_INTERVAL_MS = Math.max(
-  15 * 60_000,
-  Number(process.env.CATALOG_MAINTENANCE_INTERVAL_HOURS || 6) * 60 * 60_000
 );
 
 let autoDiscoveryTimer = null;
@@ -4583,18 +4577,6 @@ function startAutoDiscovery() {
   for (const source of AUTO_DISCOVERY_SOURCES) {
     updateDiscoverySourceHealth(source);
   }
-
-  setTimeout(() => {
-    maintainCatalog().catch(error => {
-      console.warn("Initial catalog maintenance failed:", error?.message || error);
-    });
-  }, 15_000);
-
-  setInterval(() => {
-    maintainCatalog().catch(error => {
-      console.warn("Scheduled catalog maintenance failed:", error?.message || error);
-    });
-  }, CATALOG_MAINTENANCE_INTERVAL_MS);
 
   setTimeout(() => {
     scanForGameUpdates().catch(error => {
