@@ -7443,18 +7443,16 @@ client.on("interactionCreate", async interaction => {
           .trim()
           .replace(/\/+$/, "");
 
-        const previousServerIds = state.servers
-          .map(server => String(server?.jobId || "").trim())
-          .filter(Boolean);
-
         try {
+          // Deliberately do not pass user-specific exclusions here. The finder
+          // module can then single-flight one fresh Roblox scan for all users
+          // refreshing at the same time instead of multiplying upstream load.
           const result = await findLowPlayerServers({
             maxPlayers: state.maxPlayers,
             maxResults: SERVER_FINDER_MAX_RESULTS,
             maxPages: SERVER_FINDER_MAX_PAGES + 1,
             pageSize: 100,
             joinBaseUrl: publicBaseUrl,
-            excludeJobIds: previousServerIds,
             forceFresh: true
           });
 
