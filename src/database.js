@@ -51,31 +51,46 @@ function mergeStructuredRowsIntoState(state, result) {
       : []
   );
 
-        sourceEventId: raw.sourceEventId || row.source_event_id || row.id || null,
-        rarity: raw.rarity || row.rarity || "Unknown",
-        eggName: raw.eggName || row.egg_name || "Unknown Egg",
-        petName: raw.petName || row.title || row.egg_name || "Unknown",
-        area: raw.area || row.area || "Unknown",
-        spawnedAt: raw.spawnedAt || row.occurred_at || row.created_at || new Date().toISOString(),
-        detectedAt: raw.detectedAt || row.first_seen_at || row.created_at || new Date().toISOString(),
-        confidence: raw.confidence ?? row.confidence ?? null,
-        incidentId: raw.incidentId || row.incident_id || null,
-        eventState: raw.eventState || row.event_state || null
-      };
+  for (const row of Array.isArray(result?.spawns) ? result.spawns : []) {
+    const raw = row?.raw_payload && typeof row.raw_payload === "object"
+      ? row.raw_payload
+      : {};
 
-      const key = [
-        record.source,
-        record.sourceEventId || record.id || "",
-        record.spawnedAt || ""
-      ].join("|");
+    const record = {
+      ...raw,
+      id: raw.id || row.id || null,
+      source: raw.source || row.source || "Live Feed",
+      sourceEventId: raw.sourceEventId || row.source_event_id || row.id || null,
+      rarity: raw.rarity || row.rarity || "Unknown",
+      eggName: raw.eggName || row.egg_name || "Unknown Egg",
+      petName: raw.petName || row.title || row.egg_name || "Unknown",
+      area: raw.area || row.area || "Unknown",
+      spawnedAt: raw.spawnedAt || row.occurred_at || row.created_at || new Date().toISOString(),
+      detectedAt: raw.detectedAt || row.first_seen_at || row.created_at || new Date().toISOString(),
+      confidence: raw.confidence ?? row.confidence ?? null,
+      incidentId: raw.incidentId || row.incident_id || null,
+      eventState: raw.eventState || row.event_state || null
+    };
 
-      if (!existingSpawnKeys.has(key)) {
-        next.spawnHistory = [record, ...(Array.isArray(next.spawnHistory) ? next.spawnHistory : [])];
-        existingSpawnKeys.add(key);
-      }
-      continue;
+    const key = [
+      record.source,
+      record.sourceEventId || record.id || "",
+      record.spawnedAt || ""
+    ].join("|");
+
+    if (!existingSpawnKeys.has(key)) {
+      next.spawnHistory = [
+        record,
+        ...(Array.isArray(next.spawnHistory) ? next.spawnHistory : [])
+      ];
+      existingSpawnKeys.add(key);
     }
+  }
 
+  for (const row of Array.isArray(result?.events) ? result.events : []) {
+    const raw = row?.raw_payload && typeof row.raw_payload === "object"
+      ? row.raw_payload
+      : {};
 
     const record = {
       ...raw,
@@ -89,7 +104,9 @@ function mergeStructuredRowsIntoState(state, result) {
       confidence: raw.confidence ?? row.confidence ?? null,
       incidentId: raw.incidentId || row.incident_id || null,
       eventState: raw.eventState || row.event_state || null,
-      evidence: Array.isArray(raw.evidence) ? raw.evidence : (Array.isArray(row.evidence) ? row.evidence : [])
+      evidence: Array.isArray(raw.evidence)
+        ? raw.evidence
+        : (Array.isArray(row.evidence) ? row.evidence : [])
     };
 
     const key = [
@@ -100,45 +117,90 @@ function mergeStructuredRowsIntoState(state, result) {
     ].join("|");
 
     if (!existingEventKeys.has(key)) {
-      next.gameEventHistory = [record, ...(Array.isArray(next.gameEventHistory) ? next.gameEventHistory : [])];
+      next.gameEventHistory = [
+        record,
+        ...(Array.isArray(next.gameEventHistory) ? next.gameEventHistory : [])
+      ];
       existingEventKeys.add(key);
     }
   }
 
-  next.spawnHistory = (Array.isArray(next.spawnHistory) ? next.spawnHistory : []).slice(0, 100);
-  next.gameEventHistory = (Array.isArray(next.gameEventHistory) ? next.gameEventHistory : []).slice(0, 30);
+  next.spawnHistory = (
+    Array.isArray(next.spawnHistory) ? next.spawnHistory : []
+  ).slice(0, 100);
 
-  const currentLastSeen = next.lastSeenByRarity && typeof next.lastSeenByRarity === "object"
-    ? next.lastSeenByRarity
-    : {};
+  next.gameEventHistory = (
+    Array.isArray(next.gameEventHistory) ? next.gameEventHistory : []
+  ).slice(0, 30);
+
+  const currentLastSeen =
+    next.lastSeenByRarity && typeof next.lastSeenByRarity === "object"
+      ? next.lastSeenByRarity
+      : {};
 
   for (const row of Array.isArray(result?.lastSeen) ? result.lastSeen : []) {
     const rarity = String(row?.rarity || "").toLowerCase();
     if (!["secret", "eternal", "divine"].includes(rarity)) continue;
+
     currentLastSeen[rarity] = currentLastSeen[rarity] || {};
 
     const raw = row?.raw_payload && typeof row.raw_payload === "object"
       ? row.raw_payload
       : {};
 
-    currentLastSeen[rarity][String(row.identity_key || raw.identityKey || row.egg_name || "").toLowerCase()] = {
+    currentLastSeen[rarity][
+      String(
+        row.identity_key ||
+        raw.identityKey ||
+        row.egg_name ||
+        ""
+      ).toLowerCase()
+    ] = {
       eggName: row.egg_name || raw.eggName || "Unknown Egg",
       petName: raw.petName || row.egg_name || "Unknown",
       area: row.area || raw.area || "Unknown",
-      spawnedAt: raw.spawnedAt || row.last_seen_at || row.first_seen_at || new Date().toISOString(),
-      detectedAt: raw.detectedAt || row.first_seen_at || row.last_seen_at || new Date().toISOString()
+      spawnedAt:
+        raw.spawnedAt ||
+        row.last_seen_at ||
+        row.first_seen_at ||
+        new Date().toISOString(),
+      detectedAt:
+        raw.detectedAt ||
+        row.first_seen_at ||
+        row.last_seen_at ||
+        new Date().toISOString()
     };
   }
+
   next.lastSeenByRarity = currentLastSeen;
 
-  const existingCatalog = Array.isArray(next.dynamicEggs) ? next.dynamicEggs : [];
-  const seenCatalog = new Set(existingCatalog.map(item => String(item?.eggName || "").toLowerCase()));
+  const existingCatalog = Array.isArray(next.dynamicEggs)
+    ? next.dynamicEggs
+    : [];
+
+  const seenCatalog = new Set(
+    existingCatalog.map(item =>
+      String(item?.eggName || "").toLowerCase()
+    )
+  );
+
   for (const row of Array.isArray(result?.catalog) ? result.catalog : []) {
-    if (row?.source !== "Auto Discovery" || !row?.egg_name || seenCatalog.has(String(row.egg_name).toLowerCase())) continue;
+    const eggName = String(row?.egg_name || "").trim();
+
+    if (
+      row?.source !== "Auto Discovery" ||
+      !eggName ||
+      seenCatalog.has(eggName.toLowerCase())
+    ) {
+      continue;
+    }
+
     existingCatalog.push({
-      eggName: row.egg_name,
-      displayName: row.display_name || row.egg_name,
-      petName: row.pet_name || String(row.egg_name).replace(/\s+Egg$/i, ""),
+      eggName,
+      displayName: row.display_name || eggName,
+      petName:
+        row.pet_name ||
+        eggName.replace(/\s+Egg$/i, ""),
       rarity: row.rarity,
       biome: row.biome || "Unknown",
       aliases: Array.isArray(row.aliases) ? row.aliases : [],
@@ -147,36 +209,53 @@ function mergeStructuredRowsIntoState(state, result) {
       sourcePage: row.source_page || null,
       discoveredAt: row.discovered_at || null
     });
-    seenCatalog.add(String(row.egg_name).toLowerCase());
+
+    seenCatalog.add(eggName.toLowerCase());
   }
+
   next.dynamicEggs = existingCatalog.slice(0, 50);
 
-  // Rehydrate recent delivery claims from Supabase as a second line of
-  // defense against duplicate Discord alerts after process restarts.
-  const delivered = next.deliveredAlertKeys && typeof next.deliveredAlertKeys === "object"
-    ? next.deliveredAlertKeys
-    : {};
+  const delivered =
+    next.deliveredAlertKeys &&
+    typeof next.deliveredAlertKeys === "object"
+      ? next.deliveredAlertKeys
+      : {};
+
   const dedupMs = Math.max(
     120_000,
     Number(process.env.ALERT_DELIVERY_DEDUP_SECONDS || 900) * 1000
   );
+
   const nowMs = Date.now();
+
   for (const row of Array.isArray(result?.deliveries) ? result.deliveries : []) {
     if (String(row?.status || "").toLowerCase() !== "sent") continue;
+
     const key = String(row?.delivery_key || "").trim();
     if (!key) continue;
-    const sentAt = Date.parse(row?.sent_at || row?.created_at || "");
+
+    const sentAt = Date.parse(
+      row?.sent_at ||
+      row?.created_at ||
+      ""
+    );
+
     if (!Number.isFinite(sentAt)) continue;
+
     const expiresAt = sentAt + dedupMs;
+
     if (expiresAt > nowMs) {
-      delivered[key] = Math.max(Number(delivered[key] || 0), expiresAt);
+      delivered[key] = Math.max(
+        Number(delivered[key] || 0),
+        expiresAt
+      );
     }
   }
+
   next.deliveredAlertKeys = delivered;
 
   return next;
 }
-
 
 export function persistenceEnabled() {
   return ENABLED && Boolean(STORAGE_URL && STORAGE_SECRET);
