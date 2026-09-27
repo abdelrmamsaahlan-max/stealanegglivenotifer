@@ -454,6 +454,12 @@ const SERVER_FINDER_MAX_COOLDOWN_ENTRIES =
 const RELIABILITY_EVIDENCE_TTL_MS =
   Math.max(5 * 60_000, Number(process.env.RELIABILITY_EVIDENCE_TTL_SECONDS || 1800) * 1000);
 
+const MAX_DEDUP_KEYS =
+  Math.max(10_000, Math.min(1_000_000, Number(process.env.MAX_DEDUP_KEYS || 250_000)));
+
+const MAX_RELIABILITY_KEYS =
+  Math.max(10_000, Math.min(250_000, Number(process.env.MAX_RELIABILITY_KEYS || 50_000)));
+
 const HTTP_MAX_CONCURRENT =
   Math.max(50, Math.min(2000, Number(process.env.HTTP_MAX_CONCURRENT || 250)));
 
@@ -5144,6 +5150,26 @@ function cleanupCaches(now = Date.now()) {
     if (now - timestamp > SEEN_TTL_MS) alertedMessageIds.delete(key);
   }
 
+  if (seen.size > MAX_DEDUP_KEYS) {
+    const removeCount = Math.max(1, Math.ceil(MAX_DEDUP_KEYS * 0.10));
+    const iterator = seen.keys();
+    for (let i = 0; i < removeCount; i++) {
+      const key = iterator.next().value;
+      if (key === undefined) break;
+      seen.delete(key);
+    }
+  }
+
+  if (alertedMessageIds.size > MAX_DEDUP_KEYS) {
+    const removeCount = Math.max(1, Math.ceil(MAX_DEDUP_KEYS * 0.10));
+    const iterator = alertedMessageIds.keys();
+    for (let i = 0; i < removeCount; i++) {
+      const key = iterator.next().value;
+      if (key === undefined) break;
+      alertedMessageIds.delete(key);
+    }
+  }
+
   for (const [key, expiresAt] of deliveredAlertKeys) {
     if (Number(expiresAt || 0) <= now) deliveredAlertKeys.delete(key);
   }
@@ -5154,6 +5180,27 @@ function cleanupCaches(now = Date.now()) {
 
     if (fresh.length) reliabilityOccurrences.set(key, fresh.slice(-30));
     else reliabilityOccurrences.delete(key);
+  }
+
+  if (reliabilityEvidence.size > MAX_RELIABILITY_KEYS) {
+    const removeCount = Math.max(1, Math.ceil(MAX_RELIABILITY_KEYS * 0.10));
+    const iterator = reliabilityEvidence.keys();
+    for (let i = 0; i < removeCount; i++) {
+      const key = iterator.next().value;
+      if (key === undefined) break;
+      reliabilityEvidence.delete(key);
+      reliabilityIncidents.delete(key);
+    }
+  }
+
+  if (reliabilityIncidents.size > MAX_RELIABILITY_KEYS) {
+    const removeCount = Math.max(1, Math.ceil(MAX_RELIABILITY_KEYS * 0.10));
+    const iterator = reliabilityIncidents.keys();
+    for (let i = 0; i < removeCount; i++) {
+      const key = iterator.next().value;
+      if (key === undefined) break;
+      reliabilityIncidents.delete(key);
+    }
   }
 
   for (const [key, evidence] of reliabilityEvidence) {
