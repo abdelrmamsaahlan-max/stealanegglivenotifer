@@ -23,37 +23,12 @@ import {
   persistRuntimeState,
   persistSpawnRecord,
   persistGameEvent,
-  persistRiftEvent,
   persistCatalog,
   persistAlertDelivery,
   persistSourceHealth,
   persistenceStats,
   cleanupStorage
 } from "./database.js";
-import {
-  buildRiftActionRow,
-  buildRiftAlertEmbed,
-  getRiftData,
-  parseRiftChange,
-  riftBannerChoices
-} from "./rift-tracker.js";
-import {
-  EXPERIMENT_ACTIVE_AREAS,
-  EXPERIMENT_ACTIVE_MINUTES,
-  EXPERIMENT_CYCLE_MINUTES,
-  buildExperimentActionRow,
-  buildExperimentAlertEmbed,
-  experimentEventKey,
-  parseExperimentAlert
-} from "./experiment-tracker.js";
-import {
-  SCRAMBLE_ACTIVE_MINUTES,
-  SCRAMBLE_CYCLE_MINUTES,
-  buildScrambleActionRow,
-  buildScrambleBossEmbed,
-  parseScrambleBoss,
-  scrambleEventKey
-} from "./scramble-boss-tracker.js";
 import {
   calculateEvidenceConfidence,
   chooseBestUpdate,
@@ -114,7 +89,7 @@ const DEV_GUILD_ID = process.env.DISCORD_DEV_GUILD_ID || "";
 const COMMANDS = [
   new SlashCommandBuilder()
     .setName("bot-status")
-    .setDescription("View live feed, alerts, Rift, images, roles, memory, uptime, and source status."),
+    .setDescription("View live feed, alerts, images, roles, memory, uptime, and source status."),
   new SlashCommandBuilder()
     .setName("egg-test")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
@@ -138,34 +113,6 @@ const COMMANDS = [
         .setRequired(true)
     ),
 
-
-
-
-  new SlashCommandBuilder()
-    .setName("rift")
-    .setDescription("Show the current Rift banner, change times, rotation chance, and possible pets."),
-  new SlashCommandBuilder()
-    .setName("experiment-test")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .setDescription("Admin: send a sample Dr. Scramble experiment alert with the live-style countdown."),
-  new SlashCommandBuilder()
-    .setName("scramble")
-    .setDescription("Show the current Dr. Scramble boss cycle and live tracker state."),
-  new SlashCommandBuilder()
-    .setName("scramble-test")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .setDescription("Admin: send a sample Dr. Scramble boss alert.") ,
-  new SlashCommandBuilder()
-    .setName("rift-test")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .setDescription("Admin: send a sample Rift alert to test the Rift embed and Join Game button.")
-    .addStringOption(option =>
-      option
-        .setName("banner")
-        .setDescription("Rift banner to test: Riftborn, Riftbeasts, or Shattered Rift.")
-        .setRequired(false)
-        .addChoices(...riftBannerChoices())
-    ),
 
   new SlashCommandBuilder()
     .setName("role-test")
@@ -203,9 +150,6 @@ const COMMANDS = [
 
 const ADMIN_COMMANDS = new Set([
   "egg-test",
-  "rift-test",
-  "experiment-test",
-  "scramble-test",
   "role-test",
   "bot-reload",
   "alerts-pause",
@@ -313,39 +257,6 @@ const LIVE_FEED_STALE_AFTER_MS =
 const AUTO_DISCOVERY_ENABLED =
   (process.env.AUTO_DISCOVERY_ENABLED || "true").toLowerCase() === "true";
 
-const EVENT_ALERTS_ENABLED =
-  (process.env.EVENT_ALERTS_ENABLED || "true").toLowerCase() === "true";
-
-const RIFT_ALERTS_ENABLED =
-  (process.env.RIFT_ALERTS_ENABLED || "true").toLowerCase() === "true";
-
-const RIFT_BOSS_ALERTS_ENABLED =
-  (process.env.RIFT_BOSS_ALERTS_ENABLED || "true").toLowerCase() === "true";
-
-const RIFT_SOURCE_CHANNEL_IDS = new Set(
-  (process.env.RIFT_SOURCE_CHANNEL_IDS || "")
-    .split(",")
-    .map(value => value.trim())
-    .filter(Boolean)
-);
-
-const RIFT_SOURCE_BOT_IDS = new Set(
-  (process.env.RIFT_SOURCE_BOT_IDS || "")
-    .split(",")
-    .map(value => value.trim())
-    .filter(Boolean)
-);
-
-const RIFT_ALERT_MENTION_MODE = ["none", "role", "here"].includes(
-  String(process.env.RIFT_ALERT_MENTION_MODE || "role").toLowerCase()
-)
-  ? String(process.env.RIFT_ALERT_MENTION_MODE || "role").toLowerCase()
-  : "role";
-
-const RIFT_ALERT_ROLE_ID = process.env.RIFT_ALERT_ROLE_ID || "";
-const RIFT_DEDUP_TTL_MS =
-  Math.max(30, Number(process.env.RIFT_DEDUP_SECONDS || 10800)) * 1000;
-
 const MEMORY_SOFT_LIMIT_MB =
   Math.max(128, Number(process.env.MEMORY_SOFT_LIMIT_MB || 350));
 
@@ -441,83 +352,6 @@ const PUBLIC_DISCOVERY_SOURCE_LABEL = "Auto Discovery";
 const MAX_DISCOVERY_CHANGELOG = 50;
 const spawnHistory = [];
 const gameEventHistory = [];
-const announcedDiscoveryEventKeys = new Map();
-const riftHistory = [];
-const MAX_HISTORY = 100;
-const MAX_EVENT_HISTORY = 30;
-const MAX_RIFT_HISTORY = 30;
-
-let riftState = {
-  currentBannerKey: null,
-  currentBannerName: null,
-  rotationChance: null,
-  changedLabel: null,
-  nextChangeLabel: null,
-  lastChangedAt: null,
-  lastObservedAt: null,
-  lastJoinUrl: null,
-  lastSourceMessageUrl: null,
-  lastBossAt: null,
-  lastBossMessageUrl: null
-};
-
-const seenRiftAlerts = new Map();
-
-const experimentState = {
-  lastAppearedAt: null,
-  nextExperimentAt: null,
-  lastSourceMessageId: null,
-  lastSourceName: null,
-  lastAlertMessageId: null
-};
-
-const seenExperimentAlerts = new Map();
-const seenScrambleAlerts = new Map();
-const scrambleState = {
-  lastAppearedAt: null,
-  nextBossAt: null,
-  lastSourceMessageId: null,
-  lastSourceName: null,
-  lastAlertMessageId: null,
-  lastTier: null,
-  lastSamples: null
-};
-const experimentCustomEmojiCache = new Map();
-const experimentCustomEmojiSetupState = {
-  ready: false,
-  running: false,
-  lastError: null
-};
-
-const EXPERIMENT_EMOJI_TEMPLATES = [
-  {
-    key: "scramble",
-    sourceName: "Scramble_Experiment",
-    sourceId: "1550937506013253724",
-    animated: false,
-    localName: "experiment_scramble"
-  },
-  {
-    key: "roblox",
-    sourceName: "Roblox",
-    sourceId: "1545747766649684068",
-    animated: false,
-    localName: "experiment_roblox"
-  },
-  {
-    key: "loading",
-    sourceName: "loading",
-    sourceId: "1484180832498487407",
-    animated: true,
-    localName: "experiment_loading"
-  }
-];
-
-const EXPERIMENT_ROLE_NAME = "「・EXPERIMENT EVENT」";
-const RIFT_EVENT_ROLE_NAME = "「・RIFT EVENT」";
-const EVENT_ROLE_CACHE_TTL_MS = 5 * 60 * 1000;
-const eventRoleCache = new Map();
-
 const LAST_SEEN_RARITIES = ["secret", "eternal", "divine"];
 const NON_NEST_SPAWN_EGGS = new Set([
   "bomboclat crocolat egg",
@@ -658,72 +492,6 @@ function loadRuntimeState() {
       );
     }
 
-    if (Array.isArray(state.riftHistory)) {
-      riftHistory.push(...state.riftHistory.slice(0, MAX_RIFT_HISTORY));
-    }
-
-    if (state.riftState && typeof state.riftState === "object") {
-      riftState = { ...riftState, ...state.riftState };
-    }
-
-    if (state.scrambleState && typeof state.scrambleState === "object") {
-      scrambleState.lastAppearedAt = Number.isFinite(Number(state.scrambleState.lastAppearedAt))
-        ? Number(state.scrambleState.lastAppearedAt)
-        : null;
-      scrambleState.nextBossAt = Number.isFinite(Number(state.scrambleState.nextBossAt))
-        ? Number(state.scrambleState.nextBossAt)
-        : null;
-      scrambleState.lastSourceMessageId = typeof state.scrambleState.lastSourceMessageId === "string"
-        ? state.scrambleState.lastSourceMessageId
-        : null;
-      scrambleState.lastSourceName = typeof state.scrambleState.lastSourceName === "string"
-        ? state.scrambleState.lastSourceName
-        : null;
-      scrambleState.lastAlertMessageId = typeof state.scrambleState.lastAlertMessageId === "string"
-        ? state.scrambleState.lastAlertMessageId
-        : null;
-      scrambleState.lastTier = Number.isFinite(Number(state.scrambleState.lastTier))
-        ? Number(state.scrambleState.lastTier)
-        : null;
-      scrambleState.lastSamples = Number.isFinite(Number(state.scrambleState.lastSamples))
-        ? Number(state.scrambleState.lastSamples)
-        : null;
-    }
-
-    if (state.seenScrambleAlerts && typeof state.seenScrambleAlerts === "object") {
-      for (const [key, value] of Object.entries(state.seenScrambleAlerts)) {
-        if (key && Number.isFinite(Number(value)) && Number(value) > Date.now() - 15 * 60 * 1000) {
-          seenScrambleAlerts.set(key, Number(value));
-        }
-      }
-    }
-
-    if (state.experimentState && typeof state.experimentState === "object") {
-      experimentState.lastAppearedAt = Number.isFinite(Number(state.experimentState.lastAppearedAt))
-        ? Number(state.experimentState.lastAppearedAt)
-        : null;
-      experimentState.nextExperimentAt = Number.isFinite(Number(state.experimentState.nextExperimentAt))
-        ? Number(state.experimentState.nextExperimentAt)
-        : null;
-      experimentState.lastSourceMessageId = typeof state.experimentState.lastSourceMessageId === "string"
-        ? state.experimentState.lastSourceMessageId
-        : null;
-      experimentState.lastSourceName = typeof state.experimentState.lastSourceName === "string"
-        ? state.experimentState.lastSourceName
-        : null;
-      experimentState.lastAlertMessageId = typeof state.experimentState.lastAlertMessageId === "string"
-        ? state.experimentState.lastAlertMessageId
-        : null;
-    }
-
-    if (typeof state.alertPipelineSelfTestAt === "string") {
-      alertPipelineSelfTestAt = state.alertPipelineSelfTestAt;
-    }
-
-    if (state.alertPipelineSelfTestResult && typeof state.alertPipelineSelfTestResult === "object") {
-      alertPipelineSelfTestResult = state.alertPipelineSelfTestResult;
-    }
-
     if (state.lastSeenMessageIds && typeof state.lastSeenMessageIds === "object") {
       for (const rarity of LAST_SEEN_RARITIES) {
         if (typeof state.lastSeenMessageIds[rarity] === "string") {
@@ -803,22 +571,6 @@ function loadRuntimeState() {
       }
     }
 
-    if (state.seenRiftAlerts && typeof state.seenRiftAlerts === "object") {
-      for (const [key, value] of Object.entries(state.seenRiftAlerts)) {
-        if (key && Number.isFinite(Number(value)) && Number(value) > Date.now()) {
-          seenRiftAlerts.set(key, Number(value));
-        }
-      }
-    }
-
-    if (state.seenExperimentAlerts && typeof state.seenExperimentAlerts === "object") {
-      for (const [key, value] of Object.entries(state.seenExperimentAlerts)) {
-        if (key && Number.isFinite(Number(value))) {
-          seenExperimentAlerts.set(key, Number(value));
-        }
-      }
-    }
-
     if (state.reliability && typeof state.reliability === "object") {
       for (const [key, values] of Object.entries(state.reliability.evidence || {})) {
         if (key && Array.isArray(values)) reliabilityEvidence.set(key, values.slice(0, 8));
@@ -842,14 +594,6 @@ function loadRuntimeState() {
 
     if (typeof state.lastUpdateTitle === "string") {
       lastUpdateTitle = state.lastUpdateTitle;
-    }
-
-    if (state.announcedDiscoveryEvents && typeof state.announcedDiscoveryEvents === "object") {
-      for (const [key, value] of Object.entries(state.announcedDiscoveryEvents)) {
-        if (key && Number.isFinite(Number(value))) {
-          announcedDiscoveryEventKeys.set(key, Number(value));
-        }
-      }
     }
 
     if (state.discoveryState && typeof state.discoveryState === "object") {
@@ -914,7 +658,7 @@ function saveRuntimeState() {
     fs.mkdirSync(stateDir, { recursive: true });
 
     const payload = {
-      version: 6,
+      version: 7,
       savedAt: new Date().toISOString(),
       alertsPaused,
       lastUpdateFingerprint,
@@ -926,10 +670,6 @@ function saveRuntimeState() {
         scanSequence: discoveryScanSequence,
         sourceHealth: discoverySummary()
       },
-      announcedDiscoveryEvents: Object.fromEntries(
-        [...announcedDiscoveryEventKeys.entries()]
-          .slice(0, 100)
-      ),
       deliveredAlertKeys: Object.fromEntries(
         [...deliveredAlertKeys.entries()]
           .filter(([, expiresAt]) => Number(expiresAt) > Date.now())
@@ -942,16 +682,6 @@ function saveRuntimeState() {
       alertedMessageIds: Object.fromEntries(
         [...alertedMessageIds.entries()]
           .slice(-500)
-      ),
-      seenRiftAlerts: Object.fromEntries(
-        [...seenRiftAlerts.entries()]
-          .filter(([, seenAt]) => Number(seenAt) > Date.now() - RIFT_DEDUP_TTL_MS)
-          .slice(0, 300)
-          .map(([key, seenAt]) => [key, seenAt])
-      ),
-      seenExperimentAlerts: Object.fromEntries(
-        [...seenExperimentAlerts.entries()]
-          .slice(-300)
       ),
       alertPipelineSelfTestAt,
       alertPipelineSelfTestResult,
@@ -981,14 +711,6 @@ function saveRuntimeState() {
       ops: snapshotOpsState(),
       spawnHistory: spawnHistory.slice(0, MAX_HISTORY),
       gameEventHistory: gameEventHistory.slice(0, MAX_EVENT_HISTORY),
-      riftState,
-      experimentState,
-      scrambleState,
-      seenScrambleAlerts: Object.fromEntries(
-        [...seenScrambleAlerts.entries()]
-          .slice(-300)
-      ),
-      riftHistory: riftHistory.slice(0, MAX_RIFT_HISTORY),
       lastSeenMessageIds,
       lastSeenByRarity: Object.fromEntries(
         LAST_SEEN_RARITIES.map(rarity => [
@@ -1903,14 +1625,8 @@ function evaluateEventReliability(event, options = {}) {
   event.eventState = transitionEventState({
     occurredAt,
     now,
-    cycleMs:
-      event?.type === "scramble_boss"
-        ? SCRAMBLE_CYCLE_MINUTES * 60_000
-        : 30 * 60_000,
-    activeMs:
-      event?.type === "scramble_boss"
-        ? SCRAMBLE_ACTIVE_MINUTES * 60_000
-        : 5 * 60_000
+    cycleMs: 30 * 60_000,
+    activeMs: 5 * 60_000
   });
 
   if (effectiveConfidence < MIN_ALERT_CONFIDENCE) {
@@ -3998,149 +3714,7 @@ async function sendGameUpdateAlert(_update, _newEggs = [], _changes = null) {
   return;
 }
 
-async function sendDiscoveredEventAlert(event) {
-  if (!EVENT_ALERTS_ENABLED || !CHANNEL_ID || !event?.title) return false;
 
-  const reliability = evaluateEventReliability({
-    ...event,
-    source: PUBLIC_DISCOVERY_SOURCE_LABEL,
-    type: event?.type || "official_event"
-  }, {
-    parser: "discovery-event",
-    parserConfidence: 0.78
-  });
-
-  if (!reliability.ok) {
-    console.warn("Discovered event suppressed:", reliability.reason);
-    return false;
-  }
-
-  event.incidentId = reliability.incidentId;
-  event.confidence = reliability.confidence;
-  event.evidence = reliability.evidence;
-  event.verificationCount = reliability.verificationCount;
-  event.eventState = reliability.eventState;
-
-  const channel = await getAlertChannel();
-  if (!channel) return false;
-
-  const combined = [
-    event.title,
-    event.description,
-    event.type
-  ].join(" ");
-
-  const isScrambleRevenge =
-    /dr\.?\s*scramble['’]s\s+revenge/i.test(combined);
-
-  const title = isScrambleRevenge
-    ? "🧪 DR. SCRAMBLE'S REVENGE"
-    : "🚨 NEW STEAL AN EGG EVENT";
-
-  const description = isScrambleRevenge
-    ? "Dr. Scramble is back for the FINAL SHOWDOWN. He has built something MUCH bigger. ⚙️👀"
-    : String(event.description || "A new Steal An Egg event was detected.")
-        .slice(0, 900);
-
-  const embed = new EmbedBuilder()
-    .setTitle(title)
-    .setDescription(description)
-    .addFields(
-      {
-        name: "Event",
-        value: String(event.title).slice(0, 500),
-        inline: false
-      },
-      {
-        name: "Detected by",
-        value: PUBLIC_DISCOVERY_SOURCE_LABEL,
-        inline: true
-      },
-      {
-        name: "Date",
-        value: String(event.date || "Unknown"),
-        inline: true
-      },
-      {
-        name: "Confidence",
-        value: Math.round(Number(event.confidence || 0) * 100) + "%",
-        inline: true
-      }
-    )
-    .setFooter({ text: "Powered by FSMM • Steal An Egg" })
-    .setTimestamp(new Date());
-
-  if (event.url) {
-    embed.setURL(String(event.url).slice(0, 1000));
-  }
-
-  try {
-    await sendDiscordPayload(channel, {
-      content: isScrambleRevenge
-        ? "🧪 **Dr. Scramble's Revenge is here.**"
-        : "🚨 **A new Steal An Egg event was detected.**",
-      embeds: [embed],
-      allowedMentions: { parse: [] }
-    });
-
-    console.log(
-      "Discovered event alert sent:",
-      event.type,
-      event.title
-    );
-    return true;
-  } catch (error) {
-    recordMonitorError(
-      "discord",
-      error,
-      "Discovered event alert failed: " + event.title
-    );
-    return false;
-  }
-}
-
-function discoveryEventAnnouncementKey(event) {
-  return [
-    String(event?.type || "event").trim().toLowerCase(),
-    normalizeFeedKey(event?.title),
-    String(event?.date || "").trim()
-  ].join("|");
-}
-
-function isTodayUtc(dateText) {
-  if (!dateText) return false;
-  return String(dateText).trim() === new Date().toISOString().slice(0, 10);
-}
-
-function shouldAnnounceDiscoveredEvent(event, existedBefore) {
-  const key = discoveryEventAnnouncementKey(event);
-  if (!key || announcedDiscoveryEventKeys.has(key)) return false;
-
-  const type = String(event?.type || "").toLowerCase();
-
-  // Discovery pages contain many historical events. Public alerts are limited
-  // to the explicit current Dr. Scramble finale so old page content cannot spam.
-  if (type !== "official_event") return false;
-
-  const combined = [
-    event?.title,
-    event?.description
-  ].join(" ");
-
-  const isRevenge =
-    /dr\.?\s*scramble['’]s\s+revenge/i.test(combined) ||
-    (
-      /dr\.?\s*scramble/i.test(combined) &&
-      /(?:final\s+showdown|much\s+bigger|targets?\s+Ben)/i.test(combined)
-    );
-
-  if (!isRevenge) return false;
-
-  if (!existedBefore) return true;
-
-  return isTodayUtc(event?.date) ||
-    /dr\.?\s*scramble['’]s\s+revenge/i.test(combined);
-}
 async function scanForGameUpdates() {
   if (!AUTO_DISCOVERY_ENABLED || autoDiscoveryInFlight) return null;
   autoDiscoveryInFlight = true;
@@ -4525,34 +4099,7 @@ async function runAutoDiscoverySweep() {
   }
 
   for (const event of detectedEvents) {
-    const eventKey = discoveryEventAnnouncementKey(event);
-    const existedBefore = gameEventHistory.some(
-      item => item.key === eventKey
-    );
-
     recordGameEvent(event);
-
-    if (
-      event.type !== "generic_event_hint" &&
-      shouldAnnounceDiscoveredEvent(event, existedBefore)
-    ) {
-      const sent = await sendDiscoveredEventAlert(event);
-
-      if (sent) {
-        announcedDiscoveryEventKeys.set(eventKey, Date.now());
-
-        if (announcedDiscoveryEventKeys.size > 100) {
-          const oldestKey = [...announcedDiscoveryEventKeys.entries()]
-            .sort((a, b) => a[1] - b[1])[0]?.[0];
-
-          if (oldestKey) {
-            announcedDiscoveryEventKeys.delete(oldestKey);
-          }
-        }
-
-        scheduleStateSave();
-      }
-    }
   }
 
   const catalogFingerprint = [...uniqueEggs.values()]
@@ -4595,83 +4142,6 @@ async function runAutoDiscoverySweep() {
   );
 }
 
-
-function buildScheduledExperimentEvent(triggerAt = Date.now()) {
-  const appearedAt = Number(triggerAt);
-  return {
-    type: "experiment",
-    experimentName: "Dr. Scramble Experiment",
-    title: "A Forbidden Experiment Has Appeared",
-    appearedAt,
-    nextExperimentAt: appearedAt + EXPERIMENT_CYCLE_MINUTES * 60_000,
-    cycleMinutes: EXPERIMENT_CYCLE_MINUTES,
-    activeMinutes: EXPERIMENT_ACTIVE_MINUTES,
-    activeAreas: EXPERIMENT_ACTIVE_AREAS,
-    joinUrl: STEAL_AN_EGG_GAME_URL,
-    messageUrl: null,
-    sourceMessageId: "scheduled-" + appearedAt,
-    sourceName: "Scheduled Experiment Timer",
-    customEmojis: []
-  };
-}
-
-function startExperimentScheduler() {
-  if (!EVENT_ALERTS_ENABLED || !CHANNEL_ID) {
-    console.log("Experiment scheduler: disabled.");
-    return;
-  }
-
-  const cycleMs = EXPERIMENT_CYCLE_MINUTES * 60_000;
-  let lastScheduledAt = 0;
-
-  const run = async scheduledAt => {
-    if (!scheduledAt || scheduledAt <= lastScheduledAt) return;
-    lastScheduledAt = scheduledAt;
-
-    const event = buildScheduledExperimentEvent(scheduledAt);
-
-    try {
-      const sent = await sendExperimentAlert(event);
-      if (sent) {
-        console.log(
-          "Scheduled Experiment alert sent:",
-          "appearedAt=" + new Date(scheduledAt).toISOString()
-        );
-      }
-    } catch (error) {
-      monitorErrors++;
-      console.warn(
-        "Scheduled Experiment alert failed:",
-        error?.message || error
-      );
-      lastScheduledAt = scheduledAt - cycleMs;
-    }
-  };
-
-  const now = Date.now();
-  const nextBoundary = Math.ceil((now + 1) / cycleMs) * cycleMs;
-  const initialDelay = Math.max(1000, nextBoundary - now);
-
-  console.log(
-    "Experiment scheduler enabled:",
-    "next=" + new Date(nextBoundary).toISOString(),
-    "interval=" + EXPERIMENT_CYCLE_MINUTES + "m"
-  );
-
-  experimentScheduleTimer = setTimeout(() => {
-    run(nextBoundary).catch(error => {
-      monitorErrors++;
-      console.warn("Scheduled Experiment timer failed:", error?.message || error);
-    });
-
-    experimentScheduleTimer = setInterval(() => {
-      run(Date.now()).catch(error => {
-        monitorErrors++;
-        console.warn("Scheduled Experiment interval failed:", error?.message || error);
-      });
-    }, cycleMs);
-  }, initialDelay);
-}
 
 function startAutoDiscovery() {
   if (!AUTO_DISCOVERY_ENABLED) return;
@@ -4718,189 +4188,6 @@ function getRarityEmoji(rarity) {
   return ALERT_EMOJIS[String(rarity || "").toLowerCase()] || "🥚";
 }
 
-function getExperimentEmoji(key) {
-  return experimentCustomEmojiCache.get(key)?.toString() ||
-    (key === "roblox" ? "🎮" : key === "loading" ? "⏳" : "🧪");
-}
-
-async function resolveEventAlertRoleId(guild, type) {
-  if (!guild) return "";
-
-  const typeKey = type === "rift" ? "rift" : "experiment";
-  const roleName = typeKey === "rift"
-    ? RIFT_EVENT_ROLE_NAME
-    : EXPERIMENT_ROLE_NAME;
-
-  const cached = eventRoleCache.get(typeKey);
-  if (cached && Date.now() - cached.at < EVENT_ROLE_CACHE_TTL_MS) {
-    return cached.id;
-  }
-
-  try {
-    const roles = await guild.roles.fetch();
-    let role = roles.find(candidate =>
-      normalizeFeedKey(candidate?.name || "") === normalizeFeedKey(roleName) &&
-      candidate.editable
-    );
-
-    if (role) {
-      if (role.permissions.bitfield !== 0n || !role.mentionable || role.hoist) {
-        await role.edit({
-          permissions: [],
-          mentionable: true,
-          hoist: false,
-          reason: "Steal An Egg event alert role • mention-only • zero permissions"
-        });
-        role = await guild.roles.fetch(role.id);
-      }
-
-      eventRoleCache.set(typeKey, { id: role.id, at: Date.now() });
-      console.log("Event alert role ready:", typeKey, role.name, role.id);
-      return role.id;
-    }
-
-    if (!guild.members.me?.permissions?.has(PermissionFlagsBits.ManageRoles)) {
-      console.warn("Cannot create event alert role; Manage Roles permission is missing:", typeKey);
-      eventRoleCache.set(typeKey, { id: "", at: Date.now() });
-      return "";
-    }
-
-    role = await guild.roles.create({
-      name: roleName,
-      colors: { primaryColor: typeKey === "rift" ? 0x8b5cf6 : 0xec4899 },
-      permissions: [],
-      mentionable: true,
-      hoist: false,
-      reason: "Steal An Egg event alert role • mention-only • zero permissions"
-    });
-
-    eventRoleCache.set(typeKey, { id: role.id, at: Date.now() });
-    console.log("Created event alert role:", typeKey, role.name, role.id);
-    return role.id;
-  } catch (error) {
-    console.warn("Event alert role setup failed for " + typeKey + ":", error?.message || error);
-    eventRoleCache.set(typeKey, { id: "", at: Date.now() });
-    return "";
-  }
-}
-
-async function resolveExperimentRoleId(guild) {
-  return resolveEventAlertRoleId(guild, "experiment");
-}
-
-async function resolveRiftRoleId(guild) {
-  return resolveEventAlertRoleId(guild, "rift");
-}
-
-async function ensureExperimentCustomEmoji(guild, template, sourceEmoji = null) {
-  if (!guild || !template) return null;
-
-  const cached = experimentCustomEmojiCache.get(template.key);
-  if (cached) return cached;
-
-  try {
-    const existingById = sourceEmoji?.id
-      ? guild.emojis.cache.get(sourceEmoji.id)
-      : guild.emojis.cache.get(template.sourceId);
-
-    if (existingById) {
-      experimentCustomEmojiCache.set(template.key, existingById);
-      return existingById;
-    }
-
-    const existingByName = guild.emojis.cache.find(
-      emoji => emoji.name === template.localName
-    );
-    if (existingByName) {
-      experimentCustomEmojiCache.set(template.key, existingByName);
-      return existingByName;
-    }
-
-    const extension = template.animated ? "gif" : "png";
-    const sourceUrl =
-      "https://cdn.discordapp.com/emojis/" +
-      (sourceEmoji?.id || template.sourceId) +
-      "." + extension + "?size=128";
-
-    const input = await fetchRemoteImageBufferForEmoji(sourceUrl);
-    if (!input) return null;
-
-    let output = input;
-
-    if (!template.animated) {
-      output = await sharp(input, { failOn: "none" })
-        .ensureAlpha()
-        .resize({
-          width: 128,
-          height: 128,
-          fit: "contain",
-          background: { r: 0, g: 0, b: 0, alpha: 0 }
-        })
-        .png({ compressionLevel: 9 })
-        .toBuffer();
-    }
-
-    if (output.length > 256 * 1024) return null;
-
-    const created = await guild.emojis.create({
-      attachment: output,
-      name: template.localName,
-      reason: "Steal An Egg Dr. Scramble experiment alert emoji"
-    });
-
-    experimentCustomEmojiCache.set(template.key, created);
-    console.log("Created experiment custom emoji:", template.localName, created.id);
-    return created;
-  } catch (error) {
-    console.warn(
-      "Experiment custom emoji setup failed for " + template.localName + ":",
-      error?.message || error
-    );
-    return null;
-  }
-}
-
-async function ensureExperimentCustomEmojis(sourceEmojis = []) {
-  if (experimentCustomEmojiSetupState.running) {
-    return experimentCustomEmojiSetupState.ready;
-  }
-
-  const guild = await getEggEmojiGuild();
-  if (!guild) {
-    experimentCustomEmojiSetupState.lastError = "No target guild available";
-    return false;
-  }
-
-  experimentCustomEmojiSetupState.running = true;
-
-  try {
-    const sources = Array.isArray(sourceEmojis) ? sourceEmojis : [];
-
-    for (const template of EXPERIMENT_EMOJI_TEMPLATES) {
-      const sourceEmoji = sources.find(item =>
-        normalizeFeedKey(item?.name) === normalizeFeedKey(template.sourceName)
-      );
-      await ensureExperimentCustomEmoji(guild, template, sourceEmoji);
-    }
-
-    experimentCustomEmojiSetupState.ready = true;
-    experimentCustomEmojiSetupState.lastError = null;
-    console.log(
-      "Experiment custom emojis ready:",
-      experimentCustomEmojiCache.size + "/" + EXPERIMENT_EMOJI_TEMPLATES.length
-    );
-    return true;
-  } catch (error) {
-    experimentCustomEmojiSetupState.lastError = error?.message || String(error);
-    console.warn(
-      "Experiment emoji initialization failed:",
-      experimentCustomEmojiSetupState.lastError
-    );
-    return false;
-  } finally {
-    experimentCustomEmojiSetupState.running = false;
-  }
-}
 
 function getEggAlertEmoji(event) {
   const entry =
@@ -5201,54 +4488,6 @@ function runInternalRecoverySelfTests() {
     checks.stateMachine = false;
   }
 
-  try {
-    checks.discoveryGuard =
-      shouldAnnounceDiscoveredEvent({
-        type: "generic_event_hint",
-        title: "Historical Light vs Darkness",
-        description: "archived page content",
-        date: new Date().toISOString()
-      }, false) === false;
-  } catch {
-    checks.discoveryGuard = false;
-  }
-
-  try {
-    const patchNote = parseScrambleBoss({
-      text: "UPDATE 6: Dr. Scramble returns every 30 minutes in his Mecha. 15 new pets. Extinction Egg.",
-      createdTimestamp: now
-    });
-    const liveBoss = parseScrambleBoss({
-      text: "Dr. Scramble has returned in his Mecha! Next boss (in 30 minutes).",
-      createdTimestamp: now
-    });
-    checks.scrambleParser = !patchNote && Boolean(liveBoss);
-  } catch {
-    checks.scrambleParser = false;
-  }
-
-  try {
-    checks.imageOutputContract =
-      isPngBuffer(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
-  } catch {
-    checks.imageOutputContract = false;
-  }
-
-  try {
-    checks.queueIntegrity =
-      Number.isFinite(alertQueueDepth()) &&
-      alertQueueDepth() <= ALERT_QUEUE_MAX;
-  } catch {
-    checks.queueIntegrity = false;
-  }
-
-  try {
-    checks.discordCircuit =
-      ["CLOSED", "OPEN", "HALF_OPEN"].includes(discordCircuit.state);
-  } catch {
-    checks.discordCircuit = false;
-  }
-
   const failed = Object.entries(checks)
     .filter(([, ok]) => !ok)
     .map(([name]) => name);
@@ -5335,18 +4574,6 @@ function scheduleDailySelfCheck() {
 }
 
 function cleanupCaches(now = Date.now()) {
-  for (const [key, timestamp] of seenRiftAlerts) {
-    if (now - timestamp > RIFT_DEDUP_TTL_MS) seenRiftAlerts.delete(key);
-  }
-
-  for (const [key, timestamp] of seenScrambleAlerts) {
-    if (now - timestamp > 15 * 60 * 1000) seenScrambleAlerts.delete(key);
-  }
-
-  for (const [key, timestamp] of seenExperimentAlerts) {
-    if (now - timestamp > 15 * 60 * 1000) seenExperimentAlerts.delete(key);
-  }
-
   for (const [key, timestamp] of seen) {
     if (now - timestamp > SEEN_TTL_MS) seen.delete(key);
   }
@@ -6384,396 +5611,6 @@ async function runAlertPipelineSelfTest() {
   }
 }
 
-function recordRiftHistory(event, test = false) {
-  const record = {
-    type: event.type,
-    bannerKey: event.bannerKey || null,
-    bannerName: event.bannerName || null,
-    rotationChance: event.rotationChance || null,
-    bossName: event.bossName || null,
-    changedLabel: event.changedLabel || null,
-    nextChangeLabel: event.nextChangeLabel || null,
-    createdTimestamp: event.createdTimestamp || Date.now(),
-    joinUrl: event.joinUrl || null,
-    messageUrl: event.messageUrl || null,
-    sourceName: event.sourceName || null,
-    sourceEventId: event.sourceEventId || event.id || null,
-    incidentId: event.incidentId || null,
-    confidence: Number.isFinite(Number(event.confidence)) ? Number(event.confidence) : null,
-    eventState: event.eventState || "DETECTED",
-    evidence: Array.isArray(event.evidence) ? event.evidence.slice(0, 8) : [],
-    verificationCount: Number(event.verificationCount || 0),
-    test
-  };
-
-  riftHistory.unshift(record);
-  if (riftHistory.length > MAX_RIFT_HISTORY) {
-    riftHistory.length = MAX_RIFT_HISTORY;
-  }
-
-  if (test) return;
-
-  const observedAt = new Date().toISOString();
-
-  if (event.type === "banner") {
-    riftState = {
-      ...riftState,
-      currentBannerKey: event.bannerKey || null,
-      currentBannerName: event.bannerName || null,
-      rotationChance: event.rotationChance || null,
-      changedLabel: event.changedLabel || null,
-      nextChangeLabel: event.nextChangeLabel || null,
-      lastChangedAt: Number(event.createdTimestamp || Date.now()),
-      lastObservedAt: observedAt,
-      lastJoinUrl: event.joinUrl || null,
-      lastSourceMessageUrl: event.messageUrl || null
-    };
-  } else if (event.type === "boss") {
-    riftState = {
-      ...riftState,
-      lastBossAt: Number(event.createdTimestamp || Date.now()),
-      lastBossMessageUrl: event.messageUrl || null
-    };
-  }
-
-  persistRiftEvent({
-    ...event,
-    source: event.sourceName || "Discord Source"
-  }).catch(error => {
-    recordMonitorError("storage", error, "Supabase Rift persistence failed");
-  });
-  scheduleStateSave();
-}
-
-async function preparePngImageBuffer(url) {
-  const normalizedUrl = normalizeImageUrl(url);
-  if (!normalizedUrl) return null;
-
-  try {
-    const input = await fetchRemoteImageBufferForEmoji(normalizedUrl);
-    if (!input) return null;
-
-    return await sharp(input, { failOn: "none" })
-      .ensureAlpha()
-      .resize({
-        width: 1400,
-        height: 1400,
-        fit: "inside",
-        withoutEnlargement: true
-      })
-      .png({
-        compressionLevel: 9,
-        adaptiveFiltering: true
-      })
-      .toBuffer();
-  } catch (error) {
-    console.warn("PNG image normalization failed:", error?.message || error);
-    return null;
-  }
-}
-
-async function sendRiftAlert(event, options = {}) {
-  const isTest = options.test === true;
-
-  if (!RIFT_ALERTS_ENABLED || !CHANNEL_ID) return false;
-  if (event?.type === "boss" && !RIFT_BOSS_ALERTS_ENABLED) return false;
-
-  const reliability = evaluateEventReliability({
-    ...event,
-    source: event?.source || event?.sourceName || "Discord Source",
-    type: event?.type === "boss" ? "rift_boss" : "rift"
-  }, {
-    parser: "rift",
-    parserConfidence: 0.86
-  });
-
-  if (!reliability.ok && !isTest) {
-    console.warn("Rift detection suppressed:", reliability.reason);
-    return false;
-  }
-
-  if (reliability.ok) {
-    event.incidentId = reliability.incidentId;
-    event.confidence = reliability.confidence;
-    event.evidence = reliability.evidence;
-    event.verificationCount = reliability.verificationCount;
-    event.eventState = reliability.eventState;
-  }
-
-  const dedupKey = [
-    "rift",
-    event?.type || "unknown",
-    event?.bannerKey || event?.bossName || "unknown",
-    event?.changedLabel || event?.nextChangeLabel || event?.createdTimestamp || "unknown"
-  ].join("|").toLowerCase();
-
-  if (!isTest) {
-    const previous = seenRiftAlerts.get(dedupKey) || 0;
-    if (Date.now() - previous < RIFT_DEDUP_TTL_MS) return false;
-  }
-
-  const channel = await getAlertChannel();
-
-  const coldImageUrl = event?.imageUrl && !event?.imageBuffer
-    ? event.imageUrl
-    : null;
-  if (coldImageUrl) {
-    event.imageUrl = null;
-  }
-
-  const roleId = await resolveRiftRoleId(channel.guild);
-
-  const alertLine =
-    event.type === "banner"
-      ? "The Rift shifted — " + event.bannerName + " is now active!"
-      : "Abyss Overlord is active!";
-
-  const riftPayload = {
-    content: (roleId ? "<@&" + roleId + "> " : "") + alertLine,
-    embeds: [buildRiftAlertEmbed(event)],
-    components: [buildRiftActionRow(event)],
-    allowedMentions: {
-      roles: roleId ? [roleId] : []
-    }
-  };
-
-  if (event?.imageBuffer) {
-    riftPayload.files = [{
-      attachment: event.imageBuffer,
-      name: "rift-event.png",
-      description: "PNG Rift event artwork"
-    }];
-  }
-
-  let message = null;
-
-  try {
-    message = await sendDiscordPayload(channel, riftPayload);
-  } catch (error) {
-    recordMonitorError("discord", error, "Rift alert send failed");
-    throw error;
-  }
-
-  if (!isTest) {
-    seenRiftAlerts.set(dedupKey, Date.now());
-  }
-
-  if (coldImageUrl && message) {
-    preparePngImageBuffer(coldImageUrl)
-      .then(async buffer => {
-        if (!buffer) return;
-
-        await message.edit({
-          embeds: [buildRiftAlertEmbed({
-            ...event,
-            imageBuffer: buffer,
-            imageUrl: null
-          })],
-          files: [{
-            attachment: buffer,
-            name: "rift-event.png",
-            description: "PNG Rift event artwork"
-          }]
-        });
-
-        console.log(
-          "Post-send Rift PNG attached:",
-          event.bannerName || event.bossName || "Rift"
-        );
-      })
-      .catch(error => {
-        recordMonitorError("image", error, "Post-send Rift PNG attach failed");
-      });
-  }
-
-  recordRiftHistory(event, isTest);
-
-  console.log(
-    event.type === "banner" ? "Rift banner alert sent:" : "Rift boss alert sent:",
-    event.bannerName || event.bossName || "Abyss Overlord",
-    "message=" + message.id
-  );
-
-  return true;
-}
-
-function recordScrambleEvent(event) {
-  const now = Date.now();
-  const seenAt = seenScrambleAlerts.get(scrambleEventKey(event)) || 0;
-
-  scrambleState.lastAppearedAt = Number(event.appearedAt || now);
-  scrambleState.nextBossAt = Number(
-    event.nextBossAt || (scrambleState.lastAppearedAt + SCRAMBLE_CYCLE_MINUTES * 60_000)
-  );
-  scrambleState.lastSourceMessageId = event.sourceMessageId || null;
-  scrambleState.lastSourceName = event.sourceName || null;
-  scrambleState.lastTier = Number.isFinite(Number(event.tier)) ? Number(event.tier) : null;
-  scrambleState.lastSamples = Number.isFinite(Number(event.samples)) ? Number(event.samples) : null;
-
-  if (!seenAt || now - seenAt >= 15 * 60 * 1000) {
-    seenScrambleAlerts.set(scrambleEventKey(event), now);
-  }
-
-  persistGameEvent({
-    ...event,
-    type: "scramble_boss",
-    title: event.title || "Dr. Scramble",
-    description: event.sourceText || ""
-  }).catch(error => {
-    recordMonitorError("storage", error, "Supabase Dr. Scramble persistence failed");
-  });
-
-  scheduleStateSave();
-  return now - seenAt >= 15 * 60 * 1000;
-}
-
-async function sendScrambleAlert(event, options = {}) {
-  if (!EVENT_ALERTS_ENABLED || !CHANNEL_ID || !event) return false;
-
-  const isTest = options.test === true;
-
-  const reliability = evaluateEventReliability({
-    ...event,
-    source: event?.source || event?.sourceName || "Discord Source",
-    type: "scramble_boss"
-  }, {
-    parser: "scramble-boss",
-    parserConfidence: 0.90
-  });
-
-  if (!reliability.ok && !isTest) {
-    console.warn("Dr. Scramble detection suppressed:", reliability.reason);
-    return false;
-  }
-
-  if (reliability.ok) {
-    event.incidentId = reliability.incidentId;
-    event.confidence = reliability.confidence;
-    event.evidence = reliability.evidence;
-    event.verificationCount = reliability.verificationCount;
-    event.eventState = reliability.eventState;
-  }
-  const key = scrambleEventKey(event);
-
-  if (!isTest) {
-    const previous = seenScrambleAlerts.get(key) || 0;
-    if (Date.now() - previous < 15 * 60 * 1000) return false;
-  }
-
-  const channel = await getAlertChannel();
-  const payload = {
-    content: "🤖 **DR. SCRAMBLE IS HERE!**",
-    embeds: [buildScrambleBossEmbed(event)],
-    allowedMentions: { parse: [] }
-  };
-
-  const row = buildScrambleActionRow(event);
-  if (row) payload.components = [row];
-
-  try {
-    const message = await sendDiscordPayload(channel, payload);
-    if (!message) return false;
-
-    if (!isTest) {
-      seenScrambleAlerts.set(key, Date.now());
-    }
-
-    scrambleState.lastAlertMessageId = message.id;
-    scheduleStateSave();
-
-    console.log(
-      "Dr. Scramble boss alert sent:",
-      "nextAt=" + new Date(scrambleState.nextBossAt || event.nextBossAt).toISOString(),
-      "message=" + message.id
-    );
-
-    return true;
-  } catch (error) {
-    recordMonitorError("discord", error, "Dr. Scramble alert send failed");
-    return false;
-  }
-}
-
-async function sendExperimentAlert(event, options = {}) {
-  if (!EVENT_ALERTS_ENABLED || !CHANNEL_ID || !event) return false;
-
-  const isTest = options.test === true;
-
-  const reliability = evaluateEventReliability({
-    ...event,
-    source: event?.source || "Discord Source"
-  }, {
-    parser: "experiment",
-    parserConfidence: 0.84
-  });
-
-  if (!reliability.ok && !isTest) {
-    console.warn("Experiment detection suppressed:", reliability.reason);
-    return false;
-  }
-
-  if (reliability.ok) {
-    event.incidentId = reliability.incidentId;
-    event.confidence = reliability.confidence;
-    event.evidence = reliability.evidence;
-    event.verificationCount = reliability.verificationCount;
-    event.eventState = reliability.eventState;
-  }
-  const key = experimentEventKey(event);
-
-  if (!isTest) {
-    const previous = seenExperimentAlerts.get(key) || 0;
-    if (Date.now() - previous < 15 * 60 * 1000) return false;
-  }
-
-  const channel = await getAlertChannel();
-  await ensureExperimentCustomEmojis(event.customEmojis || []);
-
-  const roleId = await resolveExperimentRoleId(channel.guild);
-  const payload = {
-    content:
-      (roleId ? "<@&" + roleId + "> " : "") +
-      "A Forbidden Experiment has appeared!",
-    embeds: [
-      buildExperimentAlertEmbed(event, {
-        scramble: getExperimentEmoji("scramble"),
-        roblox: getExperimentEmoji("roblox"),
-        loading: getExperimentEmoji("loading")
-      })
-    ],
-    allowedMentions: {
-      roles: roleId ? [roleId] : []
-    }
-  };
-
-  const row = buildExperimentActionRow(event);
-  if (row) payload.components = [row];
-
-  const message = await sendDiscordPayload(channel, payload);
-
-  if (!isTest) {
-    seenExperimentAlerts.set(key, Date.now());
-  }
-
-  experimentState.lastAppearedAt = Number(event.appearedAt || Date.now());
-  experimentState.nextExperimentAt = Number(event.nextExperimentAt || (
-    experimentState.lastAppearedAt + EXPERIMENT_CYCLE_MINUTES * 60_000
-  ));
-  experimentState.lastSourceMessageId = event.sourceMessageId || null;
-  experimentState.lastSourceName = event.sourceName || null;
-  experimentState.lastAlertMessageId = message.id;
-
-  if (!isTest) scheduleStateSave();
-
-  console.log(
-    "Experiment alert sent:",
-    event.experimentName || "Dr. Scramble Experiment",
-    "nextAt=" + new Date(experimentState.nextExperimentAt).toISOString(),
-    "message=" + message.id
-  );
-
-  return true;
-}
 
 async function findRecentMatchingAlertMessage(channel, event, entry) {
   if (!channel?.messages?.fetch || !client.user) return null;
@@ -7067,99 +5904,12 @@ async function processSpawnMessage(message) {
 
   const messageData = extractMessageData(message);
 
-  // Event trackers are intentionally independent from the rare-egg source filters.
-  // Rift and Dr. Scramble announcements can come from a different channel/bot than
-  // the live egg feed, and their parsers are already strict enough to reject noise.
-  if (RIFT_ALERTS_ENABLED) {
-    const riftChannelAllowed =
-      !RIFT_SOURCE_CHANNEL_IDS.size || RIFT_SOURCE_CHANNEL_IDS.has(message.channelId);
-    const riftBotAllowed =
-      !RIFT_SOURCE_BOT_IDS.size || RIFT_SOURCE_BOT_IDS.has(message.author?.id);
-
-    if (riftChannelAllowed && riftBotAllowed) {
-      const riftEvent = parseRiftChange(messageData);
-
-      if (riftEvent) {
-        riftEvent.messageUrl = messageData.messageUrl || null;
-        riftEvent.createdTimestamp = messageData.createdTimestamp || Date.now();
-        riftEvent.imageUrl = messageData.imageUrl || null;
-        riftEvent.sourceName =
-          message.author?.tag ||
-          message.author?.username ||
-          "Discord Source";
-
-        console.log(
-          "Rift event detected:",
-          riftEvent.type,
-          riftEvent.bannerName || riftEvent.bossName || "unknown"
-        );
-
-        safeRun(
-          sendRiftAlert(riftEvent),
-          "Rift alert"
-        );
-      }
-    }
-  }
-
-  // Scramble event detection must never be blocked by the live egg-feed filters.
-  const experimentEvent = parseExperimentAlert(messageData);
-  if (experimentEvent) {
-    experimentEvent.sourceMessageId = message.id || null;
-    experimentEvent.sourceName =
-      message.author?.tag ||
-      message.author?.username ||
-      "Discord Source";
-
-    console.log(
-      "Experiment event detected:",
-      experimentEvent.experimentName
-    );
-
-    const key = experimentEventKey(experimentEvent);
-    const seenAt = seenExperimentAlerts.get(key) || 0;
-
-    if (Date.now() - seenAt >= 15 * 60 * 1000) {
-      safeRun(
-        ensureExperimentCustomEmojis(experimentEvent.customEmojis || [])
-          .then(() => sendExperimentAlert(experimentEvent)),
-        "Experiment alert"
-      );
-    }
-  }
-
-  const scrambleEvent = parseScrambleBoss({
-    ...messageData,
-    sourceMessageId: message.id || null,
-    authorId: message.author?.id || null
-  });
-
-  if (scrambleEvent) {
-    scrambleEvent.sourceMessageId = message.id || null;
-    scrambleEvent.sourceName =
-      message.author?.tag ||
-      message.author?.username ||
-      "Discord Source";
-
-    const shouldAlert = recordScrambleEvent(scrambleEvent);
-    if (shouldAlert) {
-      safeRun(sendScrambleAlert(scrambleEvent), "Dr. Scramble alert");
-    }
-  }
-
-  // Rare-egg processing deliberately continues immediately. Event alerts are
-  // isolated in their own async jobs so a slow/failing Doctor Scramble or Rift
-  // send can never block a Secret/Eternal/Divine spawn from being evaluated.
-  // A valid combined Experiment + rare-egg announcement is allowed through
-  // the rare source filter because the same message has already passed the
-  // strict rare-egg parser. Ordinary rare-egg messages remain source-filtered.
-  const combinedExperimentRareCandidate = Boolean(experimentEvent);
   const rareSourceChannelAllowed =
     !SOURCE_CHANNEL_IDS.size || SOURCE_CHANNEL_IDS.has(message.channelId);
   const rareSourceBotAllowed =
     !SOURCE_BOT_IDS.size || SOURCE_BOT_IDS.has(message.author?.id);
 
-  if ((!rareSourceChannelAllowed || !rareSourceBotAllowed) && !combinedExperimentRareCandidate) {
+  if (!rareSourceChannelAllowed || !rareSourceBotAllowed) {
     return;
   }
 
@@ -7295,8 +6045,6 @@ function render(h){
   const live=h.liveFeedHealth||"UNKNOWN";
   const png=String(h.transparentPetImagesReady??0)+"/"+String(h.petImageCatalogSize??0);
   const rel=h.reliability||{};
-  const rift=h.riftStateMachine||"WAITING";
-  const scramble=h.scramble?.currentState||"WAITING";
   const queue=h.alertDelivery?.alertQueueDepth??0;
   const html=[
     card("Bot",h.botReady?"ONLINE":"OFFLINE",h.botReady?"ok":"bad"),
@@ -7305,8 +6053,6 @@ function render(h){
     card("Reliability Tracked",rel.trackedIncidents??0),
     card("Corroborated",rel.corroboratedEvents??0,"ok"),
     card("Anomaly Flags",rel.anomalyFlags??0,rel.anomalyFlags?"warn":"ok"),
-    card("Scramble",scramble),
-    card("Rift",rift),
     card("Transparent Pet PNG",png,png.split("/")[0]===png.split("/")[1]?"ok":"warn"),
     card("Persistence",h.persistence?.enabled?"ENABLED":"OFFLINE",h.persistence?.enabled?"ok":"warn"),
     card("Discord Circuit",h.discordCircuit?.state||"UNKNOWN",h.discordCircuit?.state==="CLOSED"?"ok":"warn")
@@ -7435,36 +6181,12 @@ app.get("/health", (_req, res) => {
     ops: getOpsSummary(),
     alertsPaused,
     recoverySelfTests: recoverySelfTestResult,
-    scramble: {
-      enabled: EVENT_ALERTS_ENABLED,
-      lastAppearedAt: scrambleState.lastAppearedAt,
-      nextBossAt: scrambleState.nextBossAt,
-      currentState: scrambleState.lastAppearedAt
-        ? transitionEventState({
-            occurredAt: scrambleState.lastAppearedAt,
-            now: Date.now(),
-            cycleMs: SCRAMBLE_CYCLE_MINUTES * 60_000,
-            activeMs: SCRAMBLE_ACTIVE_MINUTES * 60_000
-          })
-        : "WAITING",
-      lastTier: scrambleState.lastTier,
-      lastSamples: scrambleState.lastSamples
-    },
-
     autoDiscoveryEnabled: AUTO_DISCOVERY_ENABLED,
     autoDiscoveredCount,
     lastUpdateCheckAt,
     autoDiscoverySources: discoverySummary(),
     autoDiscoverySummary: autoDiscoveryLastSummary,
-    lastUpdateTitle,
-    riftStateMachine: riftState.lastChangedAt
-      ? transitionEventState({
-          occurredAt: riftState.lastChangedAt,
-          now: Date.now(),
-          cycleMs: 30 * 60_000,
-          activeMs: 5 * 60_000
-        })
-      : "WAITING",
+    lastUpdateTitle
     spawnHistoryCount: spawnHistory.length,
     gameEventHistoryCount: gameEventHistory.length,
     memoryRssMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
@@ -7491,7 +6213,6 @@ app.get("/health", (_req, res) => {
       lastAt: lastDailySelfCheckAt,
       result: lastDailySelfCheckResult
     },
-    discoveredEventAlerts: announcedDiscoveryEventKeys.size,
     discordCircuit: {
       state: discordCircuit.state,
       failures: discordCircuit.failures,
@@ -7508,12 +6229,7 @@ app.get("/health", (_req, res) => {
     },
     lastSeenMessagesReady,
     customEggEmojisReady: eggCustomEmojiSetupState.ready,
-    customEggEmojiCount: eggCustomEmojiCache.size,
-    experimentTrackerReady: true,
-    experimentNextAt: experimentState.nextExperimentAt,
-    experimentLastAppearedAt: experimentState.lastAppearedAt,
-    experimentCustomEmojisReady: experimentCustomEmojiSetupState.ready,
-    experimentCustomEmojiCount: experimentCustomEmojiCache.size,
+    customEggEmojiCount: eggCustomEmojiCache.size
     cachedPetImages: [...petPngBufferCache.keys()].length,
     transparentPetImagesReady: eggImageCatalog
       .filter(isPetImageEligibleEntry)
@@ -7604,64 +6320,6 @@ app.post("/api/discovery/scan", async (req, res) => {
   }
 });
 
-app.get("/api/rift", (_req, res) => {
-  const {
-    lastSourceMessageUrl: _sourceMessageUrl,
-    lastBossMessageUrl: _bossMessageUrl,
-    ...publicRiftState
-  } = riftState;
-
-  const publicHistory = riftHistory.slice(0, 20).map(item => {
-    const {
-      messageUrl: _messageUrl,
-      sourceName: _sourceName,
-      ...safeItem
-    } = item;
-
-    return safeItem;
-  });
-
-  res.json({
-    enabled: RIFT_ALERTS_ENABLED,
-    bossAlertsEnabled: RIFT_BOSS_ALERTS_ENABLED,
-    state: publicRiftState,
-    history: publicHistory
-  });
-});
-
-app.get("/api/scramble", (_req, res) => {
-  const nextBossAt = scrambleState.nextBossAt;
-  const remainingMs = nextBossAt
-    ? Math.max(0, Number(nextBossAt) - Date.now())
-    : null;
-
-  res.json({
-    enabled: EVENT_ALERTS_ENABLED,
-    cycleMinutes: SCRAMBLE_CYCLE_MINUTES,
-    activeMinutes: SCRAMBLE_ACTIVE_MINUTES,
-    state: {
-      ...scrambleState,
-      remainingMs
-    }
-  });
-});
-
-app.get("/api/experiment", (_req, res) => {
-  const {
-    lastSourceMessageId: _sourceMessageId,
-    lastSourceName: _sourceName,
-    ...publicExperimentState
-  } = experimentState;
-
-  res.json({
-    enabled: EVENT_ALERTS_ENABLED,
-    cycleMinutes: EXPERIMENT_CYCLE_MINUTES,
-    activeMinutes: EXPERIMENT_ACTIVE_MINUTES,
-    activeAreas: EXPERIMENT_ACTIVE_AREAS,
-    state: publicExperimentState
-  });
-});
-
 app.post("/api/notify-egg", async (req, res) => {
   const key = rateLimitKey(req);
   cleanupCaches();
@@ -7733,9 +6391,6 @@ client.once("clientReady", async () => {
   console.log("Source stale threshold:", SOURCE_STALE_AFTER_MS / 1000 + "s");
   console.log("Memory guard:", MEMORY_SOFT_LIMIT_MB + "MB soft / " + MEMORY_HARD_LIMIT_MB + "MB hard");
   console.log("Auto discovery:", AUTO_DISCOVERY_ENABLED ? "enabled" : "disabled");
-  console.log("Event alerts:", EVENT_ALERTS_ENABLED ? "enabled" : "disabled");
-
-  startExperimentScheduler();
 
   if (CHANNEL_ID) {
     try {
@@ -7753,7 +6408,6 @@ client.once("clientReady", async () => {
   if (CHANNEL_ID || LAST_SEEN_CHANNEL_ID) {
     try {
       await ensureEggCustomEmojis();
-      await ensureExperimentCustomEmojis();
       console.log("Custom alert emojis ready for configured guild.");
     } catch (error) {
       monitorErrors++;
@@ -7845,10 +6499,7 @@ setInterval(() => {
       : "N/A"),
     "queue=" + alertQueueDepth() + "/" + ALERT_QUEUE_MAX,
     "workers=" + alertQueueActive + "/" + ALERT_QUEUE_WORKERS,
-    "watchdog=" + (watchdogLastAction || "monitoring"),
-    "rift=" + (RIFT_ALERTS_ENABLED
-      ? (riftState.currentBannerName || "waiting")
-      : "disabled")
+    "watchdog=" + (watchdogLastAction || "monitoring")
   );
 }, 60_000);
 
@@ -7969,10 +6620,6 @@ client.on("interactionCreate", async interaction => {
             ? discoveryActive + "/" + AUTO_DISCOVERY_SOURCES.length + " active"
             : "⚪ Off"),
         "🖼️ **PNG cache:** " + petPngBufferCache.size,
-        "🧪 **Experiment:** " + (EVENT_ALERTS_ENABLED ? "🟢 On" : "⚪ Off") +
-          " • 🤖 **Dr. Scramble:** " +
-          (EVENT_ALERTS_ENABLED ? "🟢 On" : "⚪ Off") +
-          " • 🟣 **Rift:** " + (RIFT_ALERTS_ENABLED ? "🟢 On" : "⚪ Off"),
         "💾 **State:** " + STATE_PERSISTENCE_MODE +
           (DURABLE_VOLUME_CONFIGURED ? " • durable" : " • no volume detected"),
         "🔧 **Watchdog:** " + (watchdogLastAction || "monitoring") +
@@ -8077,180 +6724,6 @@ client.on("interactionCreate", async interaction => {
     }
 
 
-
-
-
-
-    if (interaction.commandName === "rift") {
-      if (!RIFT_ALERTS_ENABLED) {
-        return await interaction.reply({
-          content: "🟣 Rift tracker is disabled.",
-          flags: MessageFlags.Ephemeral
-        });
-      }
-
-      if (!riftState.currentBannerKey) {
-        return await interaction.reply({
-          content: "📭 No Rift banner has been observed yet.",
-          flags: MessageFlags.Ephemeral
-        });
-      }
-
-      const data = getRiftData(riftState.currentBannerKey);
-      const pets = data?.pets || [];
-
-      const lines = [
-        "🟣 **Current Rift — " + (riftState.currentBannerName || data?.name || "Unknown") + "**",
-        "🕒 Changed: " + (riftState.changedLabel || "Unknown"),
-        "⏭️ Next Change: " + (riftState.nextChangeLabel || "Unknown"),
-        "🎲 Rotation Chance: " +
-          (riftState.rotationChance || data?.rotationChance || "Unknown"),
-        "",
-        "🐾 **Possible Pets**",
-        ...pets.map(pet =>
-          "**" + pet.name + "** — " + pet.chance + " • " + pet.income
-        ),
-        "",
-        "ℹ️ The rotation percentage is the banner rotation share, not a pet hatch chance."
-      ];
-
-      return await interaction.reply({
-        content: lines.join("\n").slice(0, 3900),
-        flags: MessageFlags.Ephemeral
-      });
-    }
-
-    if (interaction.commandName === "rift-test") {
-      if (!RIFT_ALERTS_ENABLED) {
-        return await interaction.reply({
-          content: "🟣 Rift tracker is disabled.",
-          flags: MessageFlags.Ephemeral
-        });
-      }
-
-      const requested = interaction.options.getString("banner") || "riftborn";
-      const data = getRiftData(requested);
-
-      if (!data) {
-        return await interaction.reply({
-          content: "❌ Unknown Rift banner.",
-          flags: MessageFlags.Ephemeral
-        });
-      }
-
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
-      const testEvent = {
-        type: "banner",
-        bannerKey: requested,
-        bannerName: data.name,
-        eggName: data.eggName,
-        rotationChance: data.rotationChance,
-        changedLabel: "Test alert",
-        nextChangeLabel: "Test schedule",
-        possiblePets: data.pets,
-        joinUrl: STEAL_AN_EGG_GAME_URL,
-        createdTimestamp: Date.now(),
-        sourceName: "Manual Test"
-      };
-
-      await sendRiftAlert(testEvent, { test: true });
-
-      return await interaction.editReply({
-        content: "✅ Rift test alert sent for **" + data.name + "**."
-      });
-    }
-
-    if (interaction.commandName === "scramble") {
-      const next = scrambleState.nextBossAt;
-      const last = scrambleState.lastAppearedAt;
-
-      return await interaction.reply({
-        content: [
-          "🤖 **Dr. Scramble Tracker**",
-          "Status: " + (EVENT_ALERTS_ENABLED ? "✅ Enabled" : "🟡 Alerts muted"),
-          "Last Boss: " + (last ? "<t:" + Math.floor(last / 1000) + ":R>" : "Waiting for first detection"),
-          "Next Boss: " + (next ? "<t:" + Math.floor(next / 1000) + ":t> (<t:" + Math.floor(next / 1000) + ":R>)" : "Waiting"),
-          "Cycle: **" + SCRAMBLE_CYCLE_MINUTES + " minutes**",
-          "Active window: **" + SCRAMBLE_ACTIVE_MINUTES + " minutes**",
-          "Tier: " + (scrambleState.lastTier ?? "Not detected"),
-          "Samples: " + (scrambleState.lastSamples ?? "Not detected"),
-          "Tier 100 reward: **OP Eternal**",
-          "Secret drop: **Newest Divine — super rare chance**"
-        ].join("\n"),
-        flags: MessageFlags.Ephemeral
-      });
-    }
-
-    if (interaction.commandName === "scramble-test") {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
-      const now = Date.now();
-      const testEvent = {
-        type: "scramble_boss",
-        eventName: "Dr. Scramble Event — Part 2",
-        title: "Dr. Scramble has returned in his Mecha!",
-        appearedAt: now,
-        nextBossAt: now + SCRAMBLE_CYCLE_MINUTES * 60_000,
-        cycleMinutes: SCRAMBLE_CYCLE_MINUTES,
-        activeMinutes: SCRAMBLE_ACTIVE_MINUTES,
-        tier: 100,
-        samples: 0,
-        reward: "Tier 100 → OP Eternal",
-        secretDrop: "Super rare chance for the newest Divine",
-        joinUrl: STEAL_AN_EGG_GAME_URL,
-        sourceName: interaction.user?.tag || interaction.user?.username || "Manual Test",
-        sourceMessageId: "manual-test"
-      };
-
-      const sent = await sendScrambleAlert(testEvent, { test: true });
-
-      return await interaction.editReply({
-        content: sent
-          ? "✅ Dr. Scramble test alert sent."
-          : "⚠️ Dr. Scramble test alert was not sent."
-      });
-    }
-
-    if (interaction.commandName === "experiment-test") {
-      if (!CHANNEL_ID) {
-        return await interaction.reply({
-          content: "❌ DISCORD_DEFAULT_CHANNEL_ID is not configured.",
-          flags: MessageFlags.Ephemeral
-        });
-      }
-
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
-      const appearedAt = Date.now();
-      const testEvent = parseExperimentAlert({
-        text:
-          "<:Scramble_Experiment:1550937506013253724> " +
-          "A Forbidden Experiment Has Appeared. " +
-          "[Click Here](https://www.roblox.com/games/start?placeId=107778070777162) " +
-          "Next experiment in: (in 30 minutes)",
-        createdTimestamp: appearedAt,
-        messageUrl: null,
-        authorId: interaction.user.id
-      });
-
-      testEvent.appearedAt = appearedAt;
-      testEvent.nextExperimentAt =
-        appearedAt + EXPERIMENT_CYCLE_MINUTES * 60_000;
-      testEvent.sourceMessageId = "manual-test";
-      testEvent.sourceName =
-        interaction.user.tag || interaction.user.username;
-
-      const sent = await sendExperimentAlert(testEvent, { test: true });
-
-      return await interaction.editReply({
-        content: sent
-          ? "✅ Dr. Scramble experiment test alert sent."
-          : "⚠️ Experiment test alert was not sent."
-      });
-    }
-
-
     if (interaction.commandName === "bot-reload") {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
@@ -8276,7 +6749,6 @@ client.on("interactionCreate", async interaction => {
 
       if (CHANNEL_ID || LAST_SEEN_CHANNEL_ID) {
         await ensureEggCustomEmojis();
-        await ensureExperimentCustomEmojis();
       }
 
       if (LAST_SEEN_CHANNEL_ID) {
@@ -8427,8 +6899,6 @@ setTimeout(() => {
 
 client.on("shardReconnecting", shardId => {
   alertChannel = null;
-  experimentCustomEmojiCache.clear();
-  experimentCustomEmojiSetupState.ready = false;
   lastSeenMessagesReady = false;
   lastSeenMessageCache.clear();
   lastSeenContentFingerprints.clear();
@@ -8452,8 +6922,6 @@ client.on("shardReady", shardId => {
 
 client.on("shardDisconnect", (event, shardId) => {
   alertChannel = null;
-  experimentCustomEmojiCache.clear();
-  experimentCustomEmojiSetupState.ready = false;
   lastSeenMessagesReady = false;
   lastSeenMessageCache.clear();
   lastSeenContentFingerprints.clear();
