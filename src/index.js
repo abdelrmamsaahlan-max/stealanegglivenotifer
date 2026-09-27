@@ -238,6 +238,114 @@ const SERVER_FINDER_PAGE_SIZE = 10;
 const SERVER_FINDER_MAX_PAGES = 5;
 const serverFinderUserCooldowns = new Map();
 const serverFinderMessageStates = new Map();
+const serverFinderEmojiCache = new Map();
+
+const SERVER_FINDER_EMOJI_SPECS = [
+  { key: "title", name: "eggfind_egg", fallback: "🥚", type: "egg", bg: "#5865f2" },
+  { key: "search", name: "eggfind_search", fallback: "🔎", type: "search", bg: "#5865f2" },
+  { key: "players", name: "eggfind_players", fallback: "👥", type: "players", bg: "#5865f2" },
+  { key: "empty", name: "eggfind_empty", fallback: "🟢", type: "empty", bg: "#22c55e" },
+  { key: "active", name: "eggfind_active", fallback: "🟡", type: "active", bg: "#f59e0b" },
+  { key: "join", name: "eggfind_join", fallback: "🔗", type: "join", bg: "#5865f2" },
+  { key: "back", name: "eggfind_back", fallback: "◀️", type: "back", bg: "#4b5563" },
+  { key: "next", name: "eggfind_next", fallback: "▶️", type: "next", bg: "#4b5563" },
+  { key: "refresh", name: "eggfind_refresh", fallback: "🔄", type: "refresh", bg: "#5865f2" }
+];
+
+function getServerFinderEmoji(key) {
+  const spec = SERVER_FINDER_EMOJI_SPECS.find(item => item.key === key);
+  if (!spec) return "🥚";
+  return serverFinderEmojiCache.get(key)?.toString() || spec.fallback;
+}
+
+function buildServerFinderEmojiSvg(type, bg) {
+  const base = [
+    '<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">',
+    '<circle cx="64" cy="64" r="58" fill="' + bg + '"/>',
+    '<g fill="none" stroke="#ffffff" stroke-width="9" stroke-linecap="round" stroke-linejoin="round">'
+  ];
+
+  const shapes = {
+    egg:
+      '<path d="M64 22c-15 0-28 20-28 39 0 22 12 36 28 36s28-14 28-36c0-19-13-39-28-39z" fill="#ffffff" stroke="none"/>' +
+      '<path d="M49 73c6 8 24 8 30 0" stroke="' + bg + '"/>',
+    search:
+      '<circle cx="56" cy="55" r="25"/><path d="M74 74l25 25"/>',
+    players:
+      '<circle cx="47" cy="49" r="12" fill="#ffffff" stroke="none"/>' +
+      '<circle cx="82" cy="53" r="10" fill="#ffffff" stroke="none"/>' +
+      '<path d="M25 91c3-16 14-24 27-24s24 8 27 24"/>' +
+      '<path d="M71 91c2-11 9-18 19-18 8 0 14 5 17 14"/>',
+    empty:
+      '<rect x="29" y="38" width="70" height="52" rx="7"/>' +
+      '<path d="M43 54h8M60 54h8M77 54h8M43 73h8M60 73h8M77 73h8"/>',
+    active:
+      '<rect x="29" y="38" width="70" height="52" rx="7"/>' +
+      '<circle cx="64" cy="64" r="12" fill="#ffffff" stroke="none"/>',
+    join:
+      '<path d="M28 64h48"/><path d="M58 43l21 21-21 21"/><path d="M91 43v42"/>',
+    back:
+      '<path d="M78 32L46 64l32 32"/><path d="M48 64h35"/>',
+    next:
+      '<path d="M50 32l32 32-32 32"/><path d="M45 64h35"/>',
+    refresh:
+      '<path d="M92 52A31 31 0 1 0 95 76"/><path d="M94 34v20H74"/>'
+  };
+
+  base.push(shapes[type] || shapes.egg);
+  base.push("</g></svg>");
+  return base.join("");
+}
+
+async function ensureServerFinderCustomEmojis() {
+  const guild = await getEggEmojiGuild();
+  if (!guild) return false;
+
+  try {
+    const existing = await guild.emojis.fetch();
+
+    for (const spec of SERVER_FINDER_EMOJI_SPECS) {
+      const current = existing.find(emoji => emoji.name === spec.name);
+
+      if (current) {
+        serverFinderEmojiCache.set(spec.key, current);
+        continue;
+      }
+
+      try {
+        const buffer = await sharp(
+          Buffer.from(buildServerFinderEmojiSvg(spec.type, spec.bg))
+        )
+          .png()
+          .resize(128, 128)
+          .toBuffer();
+
+        const created = await guild.emojis.create({
+          attachment: buffer,
+          name: spec.name,
+          reason: "Steal An Egg Server Finder UI emoji"
+        });
+
+        serverFinderEmojiCache.set(spec.key, created);
+        console.log("Created Server Finder custom emoji:", spec.name, created.id);
+      } catch (error) {
+        console.warn(
+          "Server Finder custom emoji creation failed for " + spec.name + ":",
+          error?.message || error
+        );
+      }
+    }
+
+    console.log(
+      "Server Finder custom emojis ready:",
+      serverFinderEmojiCache.size + "/" + SERVER_FINDER_EMOJI_SPECS.length
+    );
+    return true;
+  } catch (error) {
+    console.warn("Server Finder custom emoji setup failed:", error?.message || error);
+    return false;
+  }
+}
 
 const MAX_HISTORY = 100;
 const MAX_EVENT_HISTORY = 30;
@@ -6654,7 +6762,8 @@ client.once("clientReady", async () => {
   if (CHANNEL_ID || LAST_SEEN_CHANNEL_ID) {
     try {
       await ensureEggCustomEmojis();
-      console.log("Custom alert emojis ready for configured guild.");
+      await ensureServerFinderCustomEmojis();
+      console.log("Custom alert and Server Finder emojis ready for configured guild.");
     } catch (error) {
       monitorErrors++;
       console.error("Custom egg emoji initialization failed:", error);
@@ -6900,6 +7009,8 @@ client.on("interactionCreate", async interaction => {
         : SERVER_FINDER_MAX_PLAYERS;
 
       try {
+        await ensureServerFinderCustomEmojis();
+
         const publicBaseUrl = String(process.env.PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "");
         const result = await findLowPlayerServers({
           maxPlayers,
@@ -6942,11 +7053,11 @@ client.on("interactionCreate", async interaction => {
 
           const embed = new EmbedBuilder()
             .setColor(0x5865f2)
-            .setTitle("🥚  Steal An Egg • Server Finder")
+            .setTitle(getServerFinderEmoji("title") + "  Steal An Egg • Server Finder")
             .setDescription([
-              "🔎 **Low-population public servers** for quick server hopping.",
+              getServerFinderEmoji("search") + " **Low-population public servers** for quick server hopping.",
               "",
-              "👥 Showing **0–" + currentState.maxPlayers + " players**",
+              getServerFinderEmoji("players") + " Showing **0–" + currentState.maxPlayers + " players**",
               "📄 Page **" + (currentPage + 1) + " / " + pages + "** • " + total + " servers found",
               "🛰️ Scanned **" + currentState.pagesScanned + "** Roblox server pages"
             ].join("\n"))
@@ -6958,13 +7069,15 @@ client.on("interactionCreate", async interaction => {
           for (let i = 0; i < pageServers.length; i++) {
             const server = pageServers[i];
             const number = currentPage * SERVER_FINDER_PAGE_SIZE + i + 1;
-            const playerIcon = server.playing === 0 ? "🟢" : "🟡";
+            const playerIcon = server.playing === 0
+              ? getServerFinderEmoji("empty")
+              : getServerFinderEmoji("active");
 
             embed.addFields({
               name: playerIcon + "  #" + number + " • " + server.playing + "/" + server.maxPlayers + " players",
               value:
                 "🆔 Server: `" + server.jobId.slice(0, 10) + "…`\n" +
-                "🔗 [**Join this server**](" + server.joinUrl + ")",
+                getServerFinderEmoji("join") + " [**Join this server**](" + server.joinUrl + ")",
               inline: true
             });
           }
@@ -6974,18 +7087,18 @@ client.on("interactionCreate", async interaction => {
               new ButtonBuilder()
                 .setCustomId("serverfind:prev")
                 .setLabel("Back")
-                .setEmoji("◀️")
+                 .setEmoji(getServerFinderEmoji("back"))
                 .setStyle(ButtonStyle.Secondary)
                 .setDisabled(currentPage === 0),
               new ButtonBuilder()
                 .setCustomId("serverfind:refresh")
                 .setLabel("Refresh")
-                .setEmoji("🔄")
+                 .setEmoji(getServerFinderEmoji("refresh"))
                 .setStyle(ButtonStyle.Primary),
               new ButtonBuilder()
                 .setCustomId("serverfind:next")
                 .setLabel("Next")
-                .setEmoji("▶️")
+                 .setEmoji(getServerFinderEmoji("next"))
                 .setStyle(ButtonStyle.Secondary)
                 .setDisabled(currentPage >= pages - 1)
             );
@@ -7189,6 +7302,8 @@ client.on("interactionCreate", async interaction => {
       if (CHANNEL_ID || LAST_SEEN_CHANNEL_ID) {
         await ensureEggCustomEmojis();
       }
+
+      await ensureServerFinderCustomEmojis();
 
       if (LAST_SEEN_CHANNEL_ID) {
         await ensureLastSeenMessages();
