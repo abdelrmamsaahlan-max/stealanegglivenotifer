@@ -6753,21 +6753,36 @@ function dashboardHtml() {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Steal An Egg Tracker</title>
 <style>
-body{font-family:Inter,system-ui,sans-serif;margin:0;padding:28px;background:#0b1020;color:#eef2ff}
-h1{margin:0 0 6px}.sub{opacity:.7;margin-bottom:22px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}
-.card{background:#11182d;border:1px solid #25304e;border-radius:14px;padding:16px}
-.label{opacity:.65;font-size:12px;text-transform:uppercase;letter-spacing:.08em}
-.value{font-size:28px;font-weight:700;margin-top:8px}
-.ok{color:#6ee7b7}.warn{color:#fbbf24}.bad{color:#fb7185}
-#updated{margin-top:18px;opacity:.65;font-size:13px}
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+body{font-family:Inter,ui-sans-serif,system-ui,sans-serif;margin:0;min-height:100vh;background:#090d18;color:#edf2ff}
+main{max-width:1050px;margin:0 auto;padding:32px 18px 44px}
+.hero{display:flex;justify-content:space-between;gap:18px;align-items:flex-end;margin-bottom:24px}
+h1{margin:0 0 7px;font-size:28px;letter-spacing:-.02em}
+.sub{margin:0;color:#9aa6bf;max-width:700px;line-height:1.5}
+.pill{padding:8px 12px;border:1px solid #27324b;border-radius:999px;background:#11182a;font-size:13px;white-space:nowrap}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}
+.card{background:linear-gradient(180deg,#121a2d,#0f1627);border:1px solid #222d45;border-radius:16px;padding:17px;min-height:110px}
+.label{color:#8f9bb3;font-size:11px;text-transform:uppercase;letter-spacing:.1em}
+.value{font-size:25px;font-weight:800;margin-top:10px}
+.meta{color:#7e8ba5;font-size:12px;margin-top:7px}
+.ok{color:#67e8a6}.warn{color:#ffd166}.bad{color:#ff7184}
+#updated{margin-top:16px;color:#72809a;font-size:12px}
+@media(max-width:620px){main{padding-top:22px}.hero{display:block}.pill{display:inline-block;margin-top:14px}}
 </style>
 </head>
 <body>
-<h1>Steal An Egg Tracker</h1>
-<div class="sub">Live system health, reliability, source failover and transparent pet-image readiness.</div>
-<div id="grid" class="grid"></div>
-<div id="updated">Loading…</div>
+<main>
+  <section class="hero">
+    <div>
+      <h1>Steal An Egg Tracker</h1>
+      <p class="sub">Live health, queue pressure, Last Seen readiness and protection status. Public view intentionally excludes private source and storage details.</p>
+    </div>
+    <div id="overall" class="pill">Checking system…</div>
+  </section>
+  <div id="grid" class="grid"></div>
+  <div id="updated">Loading…</div>
+</main>
 <script>
 const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 function card(name,value,cls=""){return '<div class="card"><div class="label">'+esc(name)+'</div><div class="value '+cls+'">'+esc(value)+'</div></div>'}
