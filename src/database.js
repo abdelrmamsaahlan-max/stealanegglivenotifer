@@ -51,17 +51,6 @@ function mergeStructuredRowsIntoState(state, result) {
       : []
   );
 
-
-  for (const row of Array.isArray(result?.events) ? result.events : []) {
-    const raw = row?.raw_payload && typeof row.raw_payload === "object"
-      ? row.raw_payload
-      : {};
-
-    if (row?.event_type === "egg_spawn") {
-      const record = {
-        ...raw,
-        id: raw.id || row.id || null,
-        source: raw.source || row.source || "unknown",
         sourceEventId: raw.sourceEventId || row.source_event_id || row.id || null,
         rarity: raw.rarity || row.rarity || "Unknown",
         eggName: raw.eggName || row.egg_name || "Unknown Egg",
