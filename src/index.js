@@ -56,6 +56,11 @@ import {
   shouldProcessLiveFeedCandidate
 } from "./live-feed-gate.js";
 import {
+  findLowPlayerServers,
+  SERVER_FINDER_PLACE_ID,
+  SERVER_FINDER_MAX_PLAYERS
+} from "./server-finder.js";
+import {
   addDeadLetterAlert,
   buildWeeklyReportText,
   getOpsSummary,
@@ -111,6 +116,17 @@ const COMMANDS = [
         .setName("egg")
         .setDescription("Egg or pet name to search.")
         .setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("server-find")
+    .setDescription("Find low-player public Steal An Egg servers for server hopping.")
+    .addIntegerOption(option =>
+      option
+        .setName("max")
+        .setDescription("Maximum players allowed in each result (default: 1).")
+        .setMinValue(0)
+        .setMaxValue(2)
+        .setRequired(false)
     ),
 
 
@@ -216,6 +232,9 @@ const SEEN_TTL_MS =
 
 const INGEST_GLOBAL_PER_SECOND =
   Math.max(5, Number(process.env.INGEST_GLOBAL_PER_SECOND || 60));
+
+const SERVER_FINDER_COOLDOWN_MS = 10_000;
+const serverFinderUserCooldowns = new Map();
 
 const ALERT_QUEUE_MAX =
   Math.max(20, Number(process.env.ALERT_QUEUE_MAX || 100));
@@ -6459,6 +6478,32 @@ app.get("/api/events", (_req, res) => {
   });
 });
 
+app.get("/join", (req, res) => {
+  const jobId = String(req.query.jobId || "").trim();
+  if (!/^[0-9a-fA-F-]{32,64}$/.test(jobId)) {
+    return res.status(400).type("text").send("Invalid Roblox server id.");
+  }
+
+  const encodedJobId = encodeURIComponent(jobId);
+  const robloxDeepLink = "roblox://experiences/start?placeId=" + SERVER_FINDER_PLACE_ID + "&gameInstanceId=" + encodedJobId;
+  const robloxWebLink = "https://www.roblox.com/games/start?placeId=" + SERVER_FINDER_PLACE_ID + "&gameInstanceId=" + encodedJobId;
+
+  const html = [
+    "<!doctype html><html><head><meta charset=\"utf-8\">",
+    "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">",
+    "<title>Opening Roblox…</title>",
+    "<style>body{font-family:Arial,sans-serif;background:#111827;color:#fff;display:grid;place-items:center;min-height:100vh;margin:0}main{text-align:center;max-width:420px;padding:32px}a{color:#111827;background:#fff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:700;display:inline-block}p{color:#cbd5e1;line-height:1.5}</style>",
+    "</head><body><main><h1>Opening Roblox…</h1><p>Trying to open the selected Steal An Egg server.</p>",
+    "<a href=\"" + robloxDeepLink + "\">Open Roblox</a>",
+    "<p><a href=\"" + robloxWebLink + "\">Use Roblox web fallback</a></p></main>",
+    "<script>setTimeout(function(){window.location.href=" + JSON.stringify(robloxDeepLink) + ";},150);</script>",
+    "</body></html>"
+  ].join("");
+
+  res.set("Cache-Control", "no-store");
+  return res.type("html").send(html);
+});
+
 app.get("/api/discovery", (_req, res) => {
   res.json({
     enabled: AUTO_DISCOVERY_ENABLED,
@@ -6776,6 +6821,94 @@ client.on("interactionCreate", async interaction => {
       });
     }
 
+
+    if (interaction.commandName === "server-find") {
+      const userId = String(interaction.user?.id || "");
+      const now = Date.now();
+      const lastUsed = Number(serverFinderUserCooldowns.get(userId) || 0);
+
+      if (lastUsed && now - lastUsed < SERVER_FINDER_COOLDOWN_MS) {
+        const retryAfter = Math.ceil((SERVER_FINDER_COOLDOWN_MS - (now - lastUsed)) / 1000);
+        return await interaction.reply({
+          content: "⏳ Server Finder is cooling down. Try again in **" + retryAfter + "s**.",
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      serverFinderUserCooldowns.set(userId, now);
+      for (const [id, timestamp] of serverFinderUserCooldowns) {
+        if (now - timestamp > SERVER_FINDER_COOLDOWN_MS * 6) serverFinderUserCooldowns.delete(id);
+      }
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const requestedMax = interaction.options.getInteger("max");
+      const maxPlayers = Number.isInteger(requestedMax)
+        ? Math.min(2, Math.max(0, requestedMax))
+        : SERVER_FINDER_MAX_PLAYERS;
+
+      try {
+        const publicBaseUrl = String(process.env.PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "");
+        const result = await findLowPlayerServers({
+          maxPlayers,
+          maxResults: 10,
+          joinBaseUrl: publicBaseUrl
+        });
+
+        if (!result.servers.length) {
+          return await interaction.editReply({
+            content: [
+              "🥚 **STEAL AN EGG — SERVER FINDER**",
+              "",
+              "No **0–" + maxPlayers + " player** public servers were found in the current scan.",
+              "Try the command again after a few seconds."
+            ].join("\n")
+          });
+        }
+
+        const rows = [];
+        for (let i = 0; i < result.servers.length; i += 5) {
+          const row = new ActionRowBuilder();
+          for (const server of result.servers.slice(i, i + 5)) {
+            row.addComponents(
+              new ButtonBuilder()
+                .setLabel((server.playing || 0) + "/" + server.maxPlayers + " • JOIN")
+                .setStyle(ButtonStyle.Link)
+                .setURL(server.joinUrl)
+            );
+          }
+          rows.push(row);
+        }
+
+        const lines = [
+          "🥚 **STEAL AN EGG — SERVER FINDER**",
+          "",
+          "Found **" + result.servers.length + "** low-player public servers",
+          "Showing **0–" + maxPlayers + " players** • Server size: **7**",
+          ""
+        ];
+
+        result.servers.forEach((server, index) => {
+          lines.push("**" + (index + 1) + ".** " + server.playing + "/" + server.maxPlayers + " players • `" + server.jobId.slice(0, 8) + "…`");
+        });
+
+        lines.push("",
+          "🔄 Scanned " + result.pagesScanned + " server page" + (result.pagesScanned === 1 ? "" : "s") + ".",
+          "⚠️ Player counts are a live snapshot; a server can fill before you join.",
+          "💡 This finds low-population servers only — it does **not** confirm a rare egg is inside a server."
+        );
+
+        return await interaction.editReply({
+          content: lines.join("\n"),
+          components: rows
+        });
+      } catch (error) {
+        console.error("Server finder command failed:", error);
+        return await interaction.editReply({
+          content: "❌ **Server Finder is temporarily unavailable.** Roblox server data could not be fetched right now."
+        });
+      }
+    }
 
     if (interaction.commandName === "alerts-pause") {
       alertsPaused = true;
