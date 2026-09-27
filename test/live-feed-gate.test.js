@@ -110,3 +110,22 @@ test("keeps separate same-egg spawns from the same endpoint", async () => {
   ];
   assert.equal(mergeNearDuplicateFeedCandidates(candidates).length, 2);
 });
+
+
+test("keeps ten distinct simultaneous spawns independent", async () => {
+  const { mergeNearDuplicateFeedCandidates } = await import("../src/live-feed-gate.js");
+  const base = Date.parse("2026-09-27T10:00:00.000Z");
+  const candidates = Array.from({ length: 10 }, (_, index) => ({
+    eventTime: base,
+    index: 0,
+    candidate: {
+      rarity: index % 2 ? "Eternal" : "Divine",
+      eggName: "Egg " + index,
+      biome: index % 3 ? "Cherry Blossom" : "Titan Temple",
+      score: 90,
+      sourceEventId: "spawn-" + index
+    }
+  }));
+
+  assert.equal(mergeNearDuplicateFeedCandidates(candidates).length, 10);
+});
