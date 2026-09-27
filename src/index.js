@@ -2998,7 +2998,6 @@ async function getPetPngBuffer(petName) {
   if (cached && Date.now() - cached.at < PET_PNG_CACHE_TTL_MS) {
     return cached.buffer;
   }
-
   const localPath = path.join(PET_IMAGE_DIR, petSlugForEntry(entry) + ".png");
   try {
     if (fs.existsSync(localPath)) {
@@ -3465,7 +3464,7 @@ function parseLiveFeedHtml(html) {
     rarity: rarity[0].toUpperCase() + rarity.slice(1).toLowerCase(),
     biome: areaMatch?.[1]?.replace(/\s+/g, " ").trim() || "Unknown",
     spawnedAt,
-    imageUrl: pageImageUrl,
+    imageUrl: null,
     score: 1,
     path: "html"
   };
@@ -3659,9 +3658,34 @@ async function pollLiveFeed() {
 
             syncLastSeenFromFeedPayload(payload);
 
-            const candidates = typeof payload === "object" && payload !== null
+            let candidates = typeof payload === "object" && payload !== null
               ? collectEggCandidates(payload)
               : [];
+
+            // Some live-source deployments return a rendered HTML status page
+            // instead of JSON. The HTML parser already exists for this format,
+            // but it must be wired into the live polling path or those spawns
+            // are silently ignored.
+            if (!candidates.length && typeof payload === "string") {
+              try {
+                const htmlCandidate = parseLiveFeedHtml(payload);
+                if (htmlCandidate?.eggName && htmlCandidate?.rarity && htmlCandidate?.spawnedAt) {
+                  candidates = [htmlCandidate];
+                  console.log(
+                    "Live feed HTML fallback recovered:",
+                    htmlCandidate.rarity,
+                    htmlCandidate.eggName,
+                    "area=" + (htmlCandidate.biome || "Unknown")
+                  );
+                }
+              } catch (error) {
+                liveFeedErrors++;
+                console.warn(
+                  "Live feed HTML fallback parser failed:",
+                  error?.message || error
+                );
+              }
+            }
 
             const recovered = updateLiveFeedEndpointHealth(url, {
               status: "ACTIVE",
@@ -3770,6 +3794,14 @@ async function pollLiveFeed() {
         // use a source-independent canonical timestamp bucket so equivalent
         // observations from multiple endpoints collapse to one event.
         const eventSecond = Math.floor(eventTime / 1000);
+        const stableFingerprint = [
+          "stable",
+          rarityKey,
+          normalizeFeedKey(candidate.eggName),
+          normalizeFeedKey(candidate.biome),
+          eventSecond
+        ].join("|");
+
         const fingerprint = sourceEventId
           ? [
               "id",
@@ -3778,24 +3810,27 @@ async function pollLiveFeed() {
               normalizeFeedKey(candidate.eggName),
               normalizeFeedKey(candidate.biome)
             ].join("|")
-          : [
-              "event",
-              rarityKey,
-              normalizeFeedKey(candidate.eggName),
-              normalizeFeedKey(candidate.biome),
-              eventSecond
-            ].join("|");
+          : stableFingerprint;
 
-        const existing = candidateMap.get(fingerprint);
+        // Prefer a source ID when available, but always retain a stable
+        // source-independent identity. Some feeds regenerate IDs while the
+        // underlying spawn is still the same event.
+        const existing = candidateMap.get(stableFingerprint) ||
+          candidateMap.get(fingerprint);
 
         if (!existing || candidate.score > existing.candidate.score) {
-          candidateMap.set(fingerprint, {
+          if (existing && existing.fingerprint !== stableFingerprint) {
+            candidateMap.delete(existing.fingerprint);
+          }
+
+          candidateMap.set(stableFingerprint, {
             candidate,
             eventTime,
             ageMs,
             url: result.url,
             index: result.index,
-            fingerprint
+            fingerprint,
+            stableFingerprint
           });
         }
       }
@@ -3818,14 +3853,27 @@ async function pollLiveFeed() {
     let acceptedThisPoll = 0;
 
     for (const item of candidates) {
-      const { candidate, eventTime, ageMs, url, index, fingerprint } = item;
+      const {
+        candidate,
+        eventTime,
+        ageMs,
+        url,
+        index,
+        fingerprint,
+        stableFingerprint = fingerprint
+      } = item;
 
       liveFeedEventsReceived++;
       liveFeedLastUrl = url;
 
+      const processedFingerprint =
+        liveFeedProcessedEvents.has(stableFingerprint)
+          ? stableFingerprint
+          : fingerprint;
+
       const feedGate = shouldProcessLiveFeedCandidate({
         eventTime,
-        fingerprint,
+        fingerprint: processedFingerprint,
         primed: liveFeedPrimed,
         startupBaselineAt,
         processedEvents: liveFeedProcessedEvents,
@@ -3834,11 +3882,13 @@ async function pollLiveFeed() {
 
       if (!feedGate.process) {
         if (feedGate.reason === "startup_prime") {
+          liveFeedProcessedEvents.set(stableFingerprint, now);
           liveFeedProcessedEvents.set(fingerprint, now);
         }
         continue;
       }
 
+      liveFeedProcessedEvents.set(stableFingerprint, now);
       liveFeedProcessedEvents.set(fingerprint, now);
 
       const event = {
@@ -3905,6 +3955,7 @@ async function pollLiveFeed() {
             "queueDepth=" + alertQueueDepth()
           );
         } else if (queued.full) {
+          liveFeedProcessedEvents.delete(stableFingerprint);
           liveFeedProcessedEvents.delete(fingerprint);
           seen.delete(semanticKey);
           console.warn(
@@ -3915,6 +3966,7 @@ async function pollLiveFeed() {
           console.log("Live feed duplicate suppressed:", semanticKey);
         }
       } catch (error) {
+        liveFeedProcessedEvents.delete(stableFingerprint);
         liveFeedProcessedEvents.delete(fingerprint);
         seen.delete(semanticKey);
         liveFeedErrors++;
@@ -3947,7 +3999,10 @@ async function pollLiveFeed() {
 
       if (!Number.isFinite(previousTime) || newestTime > previousTime) {
         liveFeedLastEventAt = new Date(newestTime).toISOString();
-        liveFeedLastFingerprint = newestCandidate.fingerprint || null;
+        liveFeedLastFingerprint =
+          newestCandidate.stableFingerprint ||
+          newestCandidate.fingerprint ||
+          null;
       }
     }
 
@@ -5998,7 +6053,6 @@ async function runAlertPipelineSelfTest() {
       entry.rarity,
       entry.petName
     );
-
     return alertPipelineSelfTestResult;
   } catch (error) {
     alertPipelineSelfTestAt = new Date().toISOString();
