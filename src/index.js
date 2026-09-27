@@ -75,6 +75,56 @@ import {
 
 const app = express();
 
+app.disable("x-powered-by");
+app.set("trust proxy", 1);
+
+let activeHttpRequests = 0;
+
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader(
+    "Permissions-Policy",
+    "camera=(), microphone=(), geolocation=()"
+  );
+
+  if (req.path === "/dashboard") {
+    res.setHeader(
+      "Content-Security-Policy",
+      "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'"
+    );
+  }
+
+  next();
+});
+
+app.use((req, res, next) => {
+  if (req.path === "/" || req.path === "/health" || req.path === "/join") {
+    return next();
+  }
+
+  if (activeHttpRequests >= HTTP_MAX_CONCURRENT) {
+    res.setHeader("Retry-After", "1");
+    return res.status(503).json({
+      error: "server_busy",
+      retryable: true
+    });
+  }
+
+  activeHttpRequests++;
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    activeHttpRequests = Math.max(0, activeHttpRequests - 1);
+  };
+
+  res.once("finish", release);
+  res.once("close", release);
+  next();
+});
+
 app.use(express.json({
   limit: "32kb",
   verify: (req, _res, buffer) => {
@@ -381,13 +431,22 @@ const MAX_HISTORY = 100;
 const MAX_EVENT_HISTORY = 30;
 
 const ALERT_QUEUE_MAX =
-  Math.max(20, Number(process.env.ALERT_QUEUE_MAX || 100));
+  Math.max(100, Number(process.env.ALERT_QUEUE_MAX || 500));
 
 const ALERT_QUEUE_WORKERS =
-  Math.max(1, Math.min(6, Number(process.env.ALERT_QUEUE_WORKERS || 5)));
+  Math.max(1, Math.min(12, Number(process.env.ALERT_QUEUE_WORKERS || 8)));
 
 const ALERT_QUEUE_RESERVED_LIVE_SLOTS =
-  Math.max(1, Math.min(25, Number(process.env.ALERT_QUEUE_RESERVED_LIVE_SLOTS || 15)));
+  Math.max(10, Math.min(100, Number(process.env.ALERT_QUEUE_RESERVED_LIVE_SLOTS || 50)));
+
+const SOURCE_PROCESS_MAX_CONCURRENCY =
+  Math.max(4, Math.min(64, Number(process.env.SOURCE_PROCESS_MAX_CONCURRENCY || 24)));
+
+const SOURCE_PROCESS_QUEUE_MAX =
+  Math.max(100, Math.min(10000, Number(process.env.SOURCE_PROCESS_QUEUE_MAX || 5000)));
+
+const HTTP_MAX_CONCURRENT =
+  Math.max(50, Math.min(2000, Number(process.env.HTTP_MAX_CONCURRENT || 250)));
 
 const ALERT_RETRY_LIMIT =
   Math.max(0, Math.min(3, Number(process.env.ALERT_RETRY_LIMIT || 2)));
@@ -1534,6 +1593,9 @@ const API_RATE_LIMIT_PER_MINUTE =
 
 const ADMIN_API_RATE_LIMIT_PER_MINUTE =
   Math.max(1, Number(process.env.ADMIN_API_RATE_LIMIT_PER_MINUTE || 6));
+
+const ADMIN_AUTH_FAILURES_PER_MINUTE =
+  Math.max(3, Math.min(60, Number(process.env.ADMIN_AUTH_FAILURES_PER_MINUTE || 10)));
 
 const IMAGE_PROXY_RATE_LIMIT_PER_MINUTE =
   Math.max(1, Number(process.env.IMAGE_PROXY_RATE_LIMIT_PER_MINUTE || 30));
@@ -5143,6 +5205,23 @@ function verifyRequest(req) {
   );
 }
 
+const adminAuthFailures = new Map();
+
+function consumeAdminAuthFailure(key) {
+  const now = Date.now();
+  const recent = (adminAuthFailures.get(key) || [])
+    .filter(timestamp => now - timestamp < 60_000);
+
+  if (recent.length >= ADMIN_AUTH_FAILURES_PER_MINUTE) {
+    adminAuthFailures.set(key, recent);
+    return false;
+  }
+
+  recent.push(now);
+  adminAuthFailures.set(key, recent);
+  return true;
+}
+
 function verifyAdminToken(req) {
   const supplied = String(req.header("x-admin-token") || "");
   if (!ADMIN_API_TOKEN || !supplied) return false;
@@ -5152,6 +5231,38 @@ function verifyAdminToken(req) {
 
   return suppliedBuffer.length === expectedBuffer.length &&
     crypto.timingSafeEqual(suppliedBuffer, expectedBuffer);
+}
+
+function requireAdminApi(req, res) {
+  const key = rateLimitKey(req);
+
+  if (!verifyAdminToken(req)) {
+    if (!consumeAdminAuthFailure(key)) {
+      setRetryAfter(res, 60);
+      res.status(429).json({
+        error: "admin_auth_rate_limited",
+        retryable: true
+      });
+      return false;
+    }
+
+    res.status(401).json({ error: "invalid_admin_token" });
+    return false;
+  }
+
+  adminAuthFailures.delete(key);
+
+  if (!consumeAdminApiRateLimit(key)) {
+    setRetryAfter(res, 60);
+    res.status(429).json({
+      error: "admin_rate_limited",
+      retryable: true
+    });
+    return false;
+  }
+
+  res.setHeader("Cache-Control", "no-store");
+  return true;
 }
 
 function isLiveEvent(value) {
@@ -5527,10 +5638,15 @@ function buildLastSeenEmbed(rarity) {
       String(a.entry.eggName || "").localeCompare(String(b.entry.eggName || ""))
     );
 
-  const lines = [];
+  const lines = [
+    "✅ **Verified sightings:** " + seenEntries.length +
+    " • **Tracked:** " + entries.length
+  ];
   const renderedEggs = new Set();
+  const MAX_RENDERED_SEEN = 12;
+  const MAX_RENDERED_NEVER = 8;
 
-  for (const { entry, record } of seenEntries) {
+  for (const { entry, record } of seenEntries.slice(0, MAX_RENDERED_SEEN)) {
     const timestamp = Date.parse(record.spawnedAt);
     const unix = Number.isFinite(timestamp)
       ? Math.floor(timestamp / 1000)
@@ -5553,10 +5669,18 @@ function buildLastSeenEmbed(rarity) {
     }
   }
 
+  if (seenEntries.length > MAX_RENDERED_SEEN) {
+    lines.push(
+      "",
+      "… and **" + (seenEntries.length - MAX_RENDERED_SEEN) +
+      " more** tracked sightings"
+    );
+  }
+
   if (neverEntries.length) {
     lines.push("", "**Not seen yet**");
 
-    for (const { entry } of neverEntries) {
+    for (const { entry } of neverEntries.slice(0, MAX_RENDERED_NEVER)) {
       const renderedKey = eggIdentityKey(entry.eggName || entry.petName);
       if (renderedEggs.has(renderedKey)) continue;
 
@@ -5567,16 +5691,21 @@ function buildLastSeenEmbed(rarity) {
         "** — Never"
       );
     }
-  }
 
-  if (!lines.length) lines.push("No eggs are configured for this rarity.");
+    if (neverEntries.length > MAX_RENDERED_NEVER) {
+      lines.push(
+        "… and **" + (neverEntries.length - MAX_RENDERED_NEVER) +
+        " more** not seen yet"
+      );
+    }
+  }
 
   return new EmbedBuilder()
     .setColor(lastSeenColor(rarity))
     .setTitle("🕒 " + lastSeenLabel(rarity) + " • Last Seen")
     .setDescription(lines.join("\n").slice(0, 4090))
     .setFooter({
-      text: "Powered by FSMM • Steal An Egg"
+      text: "Auto-updates after verified spawns • Powered by FSMM"
     })
     .setTimestamp();
 }
@@ -5821,7 +5950,24 @@ function recordLastSeen(event) {
       ? event.biome
       : entry?.biome || "Unknown";
 
-  lastSeenByRarity[rarity].set(eggIdentityKey(canonical), {
+  const key = eggIdentityKey(canonical);
+  const incomingSpawnedAt = Date.parse(
+    event?.spawnedAt || ""
+  );
+  const existing = lastSeenByRarity[rarity].get(key);
+  const existingSpawnedAt = Date.parse(existing?.spawnedAt || "");
+
+  // Last Seen must never move backwards when a delayed/duplicate event arrives.
+  if (
+    existing &&
+    Number.isFinite(existingSpawnedAt) &&
+    Number.isFinite(incomingSpawnedAt) &&
+    incomingSpawnedAt <= existingSpawnedAt
+  ) {
+    return;
+  }
+
+  lastSeenByRarity[rarity].set(key, {
     eggName: canonical,
     petName,
     area: eventArea,
@@ -6478,21 +6624,52 @@ function safeRun(promise, context) {
   });
 }
 
+const sourceProcessQueue = [];
+let sourceProcessActive = 0;
+
+function pumpSourceProcessQueue() {
+  while (
+    sourceProcessActive < SOURCE_PROCESS_MAX_CONCURRENCY &&
+    sourceProcessQueue.length
+  ) {
+    const message = sourceProcessQueue.shift();
+    if (!message) continue;
+
+    sourceProcessActive++;
+
+    Promise.resolve(processSpawnMessage(message))
+      .catch(error => {
+        monitorErrors++;
+        console.error("Source message processing failed:", error);
+      })
+      .finally(() => {
+        sourceProcessActive = Math.max(0, sourceProcessActive - 1);
+        pumpSourceProcessQueue();
+      });
+  }
+}
+
+function enqueueSourceProcess(message) {
+  if (!message) return;
+
+  if (sourceProcessQueue.length >= SOURCE_PROCESS_QUEUE_MAX) {
+    console.warn(
+      "Source process queue saturated; dropping oldest unprocessed source message:",
+      message.id || "unknown"
+    );
+    sourceProcessQueue.shift();
+  }
+
+  sourceProcessQueue.push(message);
+  pumpSourceProcessQueue();
+}
+
 client.on("messageCreate", message => {
-  safeRun(processSpawnMessage(message), "messageCreate processing");
+  enqueueSourceProcess(message);
 });
 
-client.on("messageUpdate", async (_oldMessage, newMessage) => {
-  try {
-    if (!newMessage.author || !newMessage.embeds?.length) {
-      await newMessage.fetch().catch(() => newMessage);
-    }
-
-    await processSpawnMessage(newMessage);
-  } catch (error) {
-    monitorErrors++;
-    console.error("messageUpdate processing failed:", error);
-  }
+client.on("messageUpdate", newMessage => {
+  enqueueSourceProcess(newMessage);
 });
 
 app.get("/", (_req, res) => {
@@ -6570,6 +6747,7 @@ app.get("/dashboard", (_req, res) => {
 });
 
 app.get("/api/images/status", (_req, res) => {
+  if (!requireAdminApi(_req, res)) return;
   const items = eggImageCatalog
     .filter(isPetImageEligibleEntry)
     .map(entry => {
@@ -6594,145 +6772,54 @@ app.get("/api/images/status", (_req, res) => {
 
 app.get("/health", (_req, res) => {
   const ready = client.isReady();
+  const discoveryActive = [...autoDiscoverySourceHealth.values()]
+    .filter(item => item.status === "ACTIVE").length;
+
+  res.setHeader("Cache-Control", "no-store");
 
   res.status(ready ? 200 : 503).json({
     ok: ready,
     botReady: ready,
-    sourceMonitorEnabled: MONITOR_ENABLED,
-    apiIngestConfigured: Boolean(SECRET),
-    alertChannelConfigured: Boolean(CHANNEL_ID),
-    alertChannelCached: Boolean(alertChannel),
-    sourceChannelFilterConfigured: SOURCE_CHANNEL_IDS.size > 0,
-    sourceBotFilterConfigured: SOURCE_BOT_IDS.size > 0,
-    sourceHealth: sourceHealth(),
-    lastSourceMessageAt,
-    detectedCount,
+    liveFeedEnabled: LIVE_FEED_ENABLED,
+    liveFeedHealth: liveFeedHealth(),
+    liveFeedConsecutiveFailures,
     alertCount,
-    lastSpawnAt,
-    lastAlertLatencyMs,
     averageAlertLatencyMs: latencySamples
       ? Math.round(totalLatencyMs / latencySamples)
       : null,
-    alertDelivery: {
-      duplicateSuppressed: alertMetrics.duplicateSuppressed,
-      sendFailures: alertMetrics.sendFailures,
-      lastSuccessAt: alertMetrics.lastSuccessAt,
-      lastFailureAt: alertMetrics.lastFailureAt,
-      byRarity: alertMetrics.byRarity,
-      topAreas: [...alertMetrics.byArea.entries()]
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 10)
-        .map(([area, count]) => ({ area, count })),
-      trackedDeliveryKeys: deliveredAlertKeys.size,
-      alertQueueDepth: alertQueueDepth(),
-      alertQueueActive: alertQueueActive,
-      alertQueueMax: ALERT_QUEUE_MAX,
-      alertQueueWorkers: ALERT_QUEUE_WORKERS,
-      alertQueueRejected: alertMetrics.queueRejected,
-      alertQueueRetried: alertMetrics.queueRetried,
-      alertQueueReservedLiveSlots: ALERT_QUEUE_RESERVED_LIVE_SLOTS,
-      alertQueueStaleAfterMs: ALERT_QUEUE_STALE_AFTER_MS,
-      queueStalePromoted: alertMetrics.queueStalePromoted,
-      alertQueueOldestAgeMs: queueOldestAgeMs()
+    duplicateSuppressed: alertMetrics.duplicateSuppressed,
+    queue: {
+      depth: alertQueueDepth(),
+      active: alertQueueActive,
+      workers: ALERT_QUEUE_WORKERS,
+      max: ALERT_QUEUE_MAX
     },
-    ingestGlobalPerSecond: INGEST_GLOBAL_PER_SECOND,
-    monitorErrors,
-    errorMetrics,
-    lastErrorCategory,
-    lastErrorAt,
-    cacheSize: seen.size,
-    recentSpawns: recentSpawns.length,
-    liveFeedEnabled: LIVE_FEED_ENABLED,
-    liveFeedEndpointCount: LIVE_FEED_URLS.length,
-    liveFeedLastPollAt,
-    liveFeedLastEventAt,
-    liveFeedLastSuccessAt,
-    liveFeedHealth: liveFeedHealth(),
-    liveFeedConsecutiveFailures,
-    liveFeedRecoveryCount,
-    liveFeedEndpointHealth: [...liveFeedEndpointHealth.values()],
-    liveFeedFailoverOrder: [...rankSourceHealth(
-      [...liveFeedEndpointHealth.values()]
-    )],
-    liveFeedEventsReceived,
-    liveFeedEventsAccepted,
-    liveFeedErrors,
-    publicPngProxy: Boolean(PUBLIC_BASE_URL),
-    sourceImageAlphaOnly: SOURCE_IMAGE_ALPHA_ONLY,
-    persistence: persistenceStats(),
-    alertPipelineSelfTest: {
-      enabled: ALERT_PIPELINE_SELF_TEST_ONCE,
-      at: alertPipelineSelfTestAt,
-      result: alertPipelineSelfTestResult
+    sourceProcessor: {
+      queued: sourceProcessQueue.length,
+      active: sourceProcessActive,
+      concurrency: SOURCE_PROCESS_MAX_CONCURRENCY,
+      queueMax: SOURCE_PROCESS_QUEUE_MAX
     },
-    reliability: reliabilitySummary(),
-    ops: getOpsSummary(),
-    alertsPaused,
-    recoverySelfTests: recoverySelfTestResult,
-    autoDiscoveryEnabled: AUTO_DISCOVERY_ENABLED,
-    autoDiscoveredCount,
-    lastUpdateCheckAt,
-    autoDiscoverySources: discoverySummary(),
-    autoDiscoverySummary: autoDiscoveryLastSummary,
-    lastUpdateTitle,
-    revengeEvent: getRevengeEventHealth(),
-    spawnHistoryCount: spawnHistory.length,
-    gameEventHistoryCount: gameEventHistory.length,
-    memoryRssMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
-    memorySoftLimitMb: MEMORY_SOFT_LIMIT_MB,
-    memoryHardLimitMb: MEMORY_HARD_LIMIT_MB,
-    statePersistence: {
-      path: STATE_FILE,
-      mode: STATE_PERSISTENCE_MODE,
-      durableVolumeConfigured: DURABLE_VOLUME_CONFIGURED,
-      backupFileEnabled: true,
-      lastSeenFeedRestore: true
-    },
-    watchdog: {
-      enabled: true,
-      intervalMs: WATCHDOG_INTERVAL_MS,
-      lastRunAt: watchdogLastRunAt,
-      lastRecoveryAt: watchdogLastRecoveryAt,
-      recoveryCount: watchdogRecoveryCount,
-      lastAction: watchdogLastAction,
-      inFlight: watchdogInFlight,
-      status: watchdogStatus()
-    },
-    dailySelfCheck: {
-      lastAt: lastDailySelfCheckAt,
-      result: lastDailySelfCheckResult
-    },
-    discordCircuit: {
-      state: discordCircuit.state,
-      failures: discordCircuit.failures,
-      openedAt: discordCircuit.openedAt || null,
-      lastFailureAt: discordCircuit.lastFailureAt,
-      lastSuccessAt: discordCircuit.lastSuccessAt
-    },
-    ops: getOpsSummary(),
-    queueSplit: {
-      live: alertQueueDepth("live"),
-      source: alertQueueDepth("source"),
-      api: alertQueueDepth("api"),
-      total: alertQueueDepth()
-    },
+    persistenceEnabled: persistenceStats().enabled,
+    discordCircuit: discordCircuit.state,
     lastSeenMessagesReady,
-    customEggEmojisReady: eggCustomEmojiSetupState.ready,
-    customEggEmojiCount: eggCustomEmojiCache.size,
-    cachedPetImages: [...petPngBufferCache.keys()].length,
-    transparentPetImagesReady: eggImageCatalog
-      .filter(isPetImageEligibleEntry)
-      .filter(entry => petPngBufferCache.has(normalizeFeedKey(entry.petName)))
-      .length,
-    petImageCatalogSize: eggImageCatalog.filter(isPetImageEligibleEntry).length
+    discovery: {
+      enabled: AUTO_DISCOVERY_ENABLED,
+      active: discoveryActive,
+      total: AUTO_DISCOVERY_SOURCES.length
+    },
+    memoryRssMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+    watchdog: watchdogStatus()
   });
 });
 
 app.get("/api/persistence", (_req, res) => {
+  if (!requireAdminApi(_req, res)) return;
   res.json(persistenceStats());
 });
 
 app.get("/api/history", (_req, res) => {
+  if (!requireAdminApi(_req, res)) return;
   res.json({
     count: spawnHistory.length,
     items: spawnHistory.slice(0, 50)
@@ -6740,6 +6827,7 @@ app.get("/api/history", (_req, res) => {
 });
 
 app.get("/api/events", (_req, res) => {
+  if (!requireAdminApi(_req, res)) return;
   res.json({
     count: gameEventHistory.length,
     lastUpdateTitle,
@@ -6781,6 +6869,7 @@ app.get("/join", (req, res) => {
 });
 
 app.get("/api/discovery", (_req, res) => {
+  if (!requireAdminApi(_req, res)) return;
   res.json({
     enabled: AUTO_DISCOVERY_ENABLED,
     pollMs: AUTO_DISCOVERY_POLL_MS,
@@ -6798,18 +6887,7 @@ app.post("/api/discovery/scan", async (req, res) => {
     return res.status(503).json({ error: "discovery_disabled" });
   }
 
-  if (!verifyAdminToken(req)) {
-    return res.status(401).json({ error: "invalid_admin_token" });
-  }
-
-  const key = rateLimitKey(req);
-  if (!consumeAdminApiRateLimit(key)) {
-    setRetryAfter(res, 60);
-    return res.status(429).json({
-      error: "admin_rate_limited",
-      retryable: true
-    });
-  }
+  if (!requireAdminApi(req, res)) return;
 
   if (autoDiscoveryInFlight) {
     setRetryAfter(res, 5);
@@ -6839,16 +6917,16 @@ app.post("/api/notify-egg", async (req, res) => {
   const key = rateLimitKey(req);
   cleanupCaches();
 
+  if (!verifyRequest(req)) {
+    return res.status(401).json({ error: "invalid_signature" });
+  }
+
   if (!consumeGlobalIngestRate()) {
     setRetryAfter(res, 1);
     return res.status(429).json({
       error: "global_rate_limited",
       retryable: true
     });
-  }
-
-  if (!verifyRequest(req)) {
-    return res.status(401).json({ error: "invalid_signature" });
   }
 
   if (!consumeApiRateLimit(key)) {
@@ -7456,7 +7534,8 @@ client.on("interactionCreate", async interaction => {
           " • failures " + discordCircuit.failures,
         "📦 **Queues:** live " + alertQueueDepth("live") +
           " • source " + alertQueueDepth("source") +
-          " • API " + alertQueueDepth("api"),
+          " • API " + alertQueueDepth("api") +
+          " • ingest " + sourceProcessQueue.length + "/" + SOURCE_PROCESS_QUEUE_MAX,
         "🩺 **Self-check:** " + (lastDailySelfCheckResult?.ok ? "🟢 Healthy" : lastDailySelfCheckAt ? "🟠 Issues found" : "🟡 Pending"),
         "🛡️ **Errors:** " + monitorErrors,
         "⏱️ **Uptime:** " + days + "d " + hours + "h " + minutes + "m"
