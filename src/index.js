@@ -445,6 +445,15 @@ const SOURCE_PROCESS_MAX_CONCURRENCY =
 const SOURCE_PROCESS_QUEUE_MAX =
   Math.max(100, Math.min(10000, Number(process.env.SOURCE_PROCESS_QUEUE_MAX || 5000)));
 
+const SERVER_FINDER_MAX_SESSIONS =
+  Math.max(100, Math.min(50000, Number(process.env.SERVER_FINDER_MAX_SESSIONS || 10000)));
+
+const SERVER_FINDER_MAX_COOLDOWN_ENTRIES =
+  Math.max(1000, Math.min(500000, Number(process.env.SERVER_FINDER_MAX_COOLDOWN_ENTRIES || 100000)));
+
+const RELIABILITY_EVIDENCE_TTL_MS =
+  Math.max(5 * 60_000, Number(process.env.RELIABILITY_EVIDENCE_TTL_SECONDS || 1800) * 1000);
+
 const HTTP_MAX_CONCURRENT =
   Math.max(50, Math.min(2000, Number(process.env.HTTP_MAX_CONCURRENT || 250)));
 
@@ -5135,6 +5144,38 @@ function cleanupCaches(now = Date.now()) {
     if (now - timestamp > SEEN_TTL_MS) alertedMessageIds.delete(key);
   }
 
+  for (const [key, expiresAt] of deliveredAlertKeys) {
+    if (Number(expiresAt || 0) <= now) deliveredAlertKeys.delete(key);
+  }
+
+  for (const [key, timestamps] of reliabilityOccurrences) {
+    const fresh = (Array.isArray(timestamps) ? timestamps : [])
+      .filter(timestamp => now - Number(timestamp) <= 60_000);
+
+    if (fresh.length) reliabilityOccurrences.set(key, fresh.slice(-30));
+    else reliabilityOccurrences.delete(key);
+  }
+
+  for (const [key, evidence] of reliabilityEvidence) {
+    const latest = (Array.isArray(evidence) ? evidence : [])
+      .reduce((max, item) => {
+        const ts = Date.parse(item?.observedAt || "");
+        return Number.isFinite(ts) ? Math.max(max, ts) : max;
+      }, 0);
+
+    if (latest && now - latest > RELIABILITY_EVIDENCE_TTL_MS) {
+      reliabilityEvidence.delete(key);
+      reliabilityIncidents.delete(key);
+    }
+  }
+
+  for (const [key, timestamps] of adminAuthFailures) {
+    const fresh = (Array.isArray(timestamps) ? timestamps : [])
+      .filter(timestamp => now - timestamp < 60_000);
+    if (fresh.length) adminAuthFailures.set(key, fresh);
+    else adminAuthFailures.delete(key);
+  }
+
   for (const store of [apiRate, adminApiRate, imageProxyRate]) {
     for (const [key, timestamps] of store) {
       const fresh = timestamps.filter(timestamp => now - timestamp < 60_000);
@@ -6632,12 +6673,18 @@ function pumpSourceProcessQueue() {
     sourceProcessActive < SOURCE_PROCESS_MAX_CONCURRENCY &&
     sourceProcessQueue.length
   ) {
-    const message = sourceProcessQueue.shift();
-    if (!message) continue;
+    const item = sourceProcessQueue.shift();
+    if (!item) continue;
 
+    const message = item?.message || item;
+    const prepare = item?.prepare;
     sourceProcessActive++;
 
-    Promise.resolve(processSpawnMessage(message))
+    Promise.resolve(
+      typeof prepare === "function"
+        ? prepare().then(prepared => processSpawnMessage(prepared))
+        : processSpawnMessage(message)
+    )
       .catch(error => {
         monitorErrors++;
         console.error("Source message processing failed:", error);
@@ -6669,7 +6716,26 @@ client.on("messageCreate", message => {
 });
 
 client.on("messageUpdate", newMessage => {
-  enqueueSourceProcess(newMessage);
+  const prepareUpdate = async () => {
+    if (!newMessage.author || !newMessage.embeds?.length) {
+      return await newMessage.fetch().catch(() => newMessage);
+    }
+    return newMessage;
+  };
+
+  if (sourceProcessQueue.length >= SOURCE_PROCESS_QUEUE_MAX) {
+    console.warn(
+      "Source update queue saturated; skipping one messageUpdate:",
+      newMessage.id || "unknown"
+    );
+    return;
+  }
+
+  sourceProcessQueue.push({
+    message: newMessage,
+    prepare: prepareUpdate
+  });
+  pumpSourceProcessQueue();
 });
 
 app.get("/", (_req, res) => {
@@ -6706,23 +6772,32 @@ h1{margin:0 0 6px}.sub{opacity:.7;margin-bottom:22px}
 const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 function card(name,value,cls=""){return '<div class="card"><div class="label">'+esc(name)+'</div><div class="value '+cls+'">'+esc(value)+'</div></div>'}
 function render(h){
-  const live=h.liveFeedHealth||"UNKNOWN";
-  const png=String(h.transparentPetImagesReady??0)+"/"+String(h.petImageCatalogSize??0);
-  const rel=h.reliability||{};
-  const queue=h.alertDelivery?.alertQueueDepth??0;
-  const html=[
-    card("Bot",h.botReady?"ONLINE":"OFFLINE",h.botReady?"ok":"bad"),
-    card("Live Feed",live,live==="ACTIVE"?"ok":live==="STALE"?"bad":"warn"),
-    card("Queue",queue,queue>0?"warn":"ok"),
-    card("Reliability Tracked",rel.trackedIncidents??0),
-    card("Corroborated",rel.corroboratedEvents??0,"ok"),
-    card("Anomaly Flags",rel.anomalyFlags??0,rel.anomalyFlags?"warn":"ok"),
-    card("Transparent Pet PNG",png,png.split("/")[0]===png.split("/")[1]?"ok":"warn"),
-    card("Persistence",h.persistence?.enabled?"ENABLED":"OFFLINE",h.persistence?.enabled?"ok":"warn"),
-    card("Discord Circuit",h.discordCircuit?.state||"UNKNOWN",h.discordCircuit?.state==="CLOSED"?"ok":"warn"),
-    card("Revenge Event",h.revengeEvent?.phase||"UNKNOWN",h.revengeEvent?.phase==="LIVE"?"ok":h.revengeEvent?.phase==="ENDED"?"warn":"warn")
+  const ready=Boolean(h.botReady);
+  const live=String(h.liveFeedHealth||"UNKNOWN");
+  const q=h.queue||{};
+  const sp=h.sourceProcessor||{};
+  const http=h.http||{};
+  const discovery=h.discovery||{};
+  const memory=Number(h.memoryRssMb??0);
+  const latency=h.averageAlertLatencyMs==null?"N/A":h.averageAlertLatencyMs+" ms";
+  const healthState=h.discordCircuit==="CLOSED"?"Protected":"Recovering";
+  document.getElementById("overall").textContent=ready?"SYSTEM ONLINE":"STARTING";
+  document.getElementById("overall").className="pill "+(ready?"ok":"warn");
+  const card=(name,value,meta="",cls="")=>"<article class=\"card\"><div class=\"label\">"+esc(name)+"</div><div class=\"value "+cls+"\">"+esc(value)+"</div><div class=\"meta\">"+esc(meta)+"</div></article>";
+  document.getElementById("grid").innerHTML=[
+    card("Bot",ready?"ONLINE":"STARTING","Discord connection",ready?"ok":"warn"),
+    card("Live Feed",live,String(h.liveFeedConsecutiveFailures||0)+" consecutive failures",live==="ACTIVE"?"ok":live==="STALE"?"bad":"warn"),
+    card("Alert Queue",(q.depth??0)+"/"+(q.max??0),"active "+(q.active??0)+"/"+(q.workers??0),(q.depth??0)===0?"ok":"warn"),
+    card("Source Processor",(sp.queued??0)+" queued",(sp.active??0)+"/"+(sp.concurrency??0)+" active",(sp.queued??0)===0?"ok":"warn"),
+    card("HTTP Load",(http.activeRequests??0)+"/"+(http.maxConcurrent??0),"bounded concurrency"),
+    card("Last Seen",h.lastSeenMessagesReady?"READY":"STARTING","persistent boards",h.lastSeenMessagesReady?"ok":"warn"),
+    card("Duplicates Blocked",h.duplicateSuppressed||0,"delivery dedup counter"),
+    card("Alert Latency",latency,"average observed"),
+    card("Discovery",(discovery.active??0)+"/"+(discovery.total??0),"sources active",discovery.enabled?"ok":"warn"),
+    card("Persistence",h.persistenceEnabled?"ENABLED":"OFFLINE","durable tracker state",h.persistenceEnabled?"ok":"warn"),
+    card("Discord Guard",healthState,h.discordCircuit||"UNKNOWN",h.discordCircuit==="CLOSED"?"ok":"warn"),
+    card("Memory",Math.round(memory)+" MB","process RSS")
   ].join("");
-  document.getElementById("grid").innerHTML=html;
   document.getElementById("updated").textContent="Updated "+new Date().toLocaleTimeString();
 }
 async function refresh(){
@@ -6793,6 +6868,10 @@ app.get("/health", (_req, res) => {
       active: alertQueueActive,
       workers: ALERT_QUEUE_WORKERS,
       max: ALERT_QUEUE_MAX
+    },
+    http: {
+      activeRequests: activeHttpRequests,
+      maxConcurrent: HTTP_MAX_CONCURRENT
     },
     sourceProcessor: {
       queued: sourceProcessQueue.length,
@@ -7007,24 +7086,18 @@ client.once("clientReady", async () => {
   await rebuildLastSeenFromHistory();
 
   if (CHANNEL_ID || LAST_SEEN_CHANNEL_ID) {
-    try {
-      await ensureEggCustomEmojis();
-      void warmServerFinderEmojis();
-      console.log("Custom alert and Server Finder emojis ready for configured guild.");
-    } catch (error) {
-      monitorErrors++;
-      console.error("Custom egg emoji initialization failed:", error);
-    }
+    void ensureEggCustomEmojis().catch(error => {
+      recordMonitorError("image", error, "Custom egg emoji initialization failed");
+    });
+    void warmServerFinderEmojis();
   }
 
   if (LAST_SEEN_CHANNEL_ID) {
-    try {
-      await ensureLastSeenMessages();
-      console.log("Last Seen tracker ready.");
-    } catch (error) {
-      monitorErrors++;
-      console.error("Last Seen tracker initialization failed:", error);
-    }
+    void ensureLastSeenMessages()
+      .then(ready => console.log("Last Seen tracker warmup:", ready ? "ready" : "waiting"))
+      .catch(error => {
+        recordMonitorError("discord", error, "Last Seen tracker warmup failed");
+      });
   }
 
   scheduleImageWarmup();
@@ -7151,6 +7224,19 @@ async function openServerFinderSession(interaction, requestedMax = null) {
   void warmServerFinderEmojis();
   serverFinderUserCooldowns.set(userId, Date.now());
 
+  if (serverFinderUserCooldowns.size > SERVER_FINDER_MAX_COOLDOWN_ENTRIES) {
+    const removeCount = Math.max(
+      1,
+      Math.ceil(SERVER_FINDER_MAX_COOLDOWN_ENTRIES * 0.10)
+    );
+    const iterator = serverFinderUserCooldowns.keys();
+    for (let i = 0; i < removeCount; i++) {
+      const key = iterator.next().value;
+      if (key === undefined) break;
+      serverFinderUserCooldowns.delete(key);
+    }
+  }
+
   const maxPlayers = Number.isInteger(requestedMax)
     ? Math.min(2, Math.max(0, requestedMax))
     : SERVER_FINDER_MAX_PLAYERS;
@@ -7260,6 +7346,19 @@ async function openServerFinderSession(interaction, requestedMax = null) {
       ...state,
       buildFinderPayload
     });
+
+    if (serverFinderMessageStates.size > SERVER_FINDER_MAX_SESSIONS) {
+      const removeCount = Math.max(
+        1,
+        Math.ceil(SERVER_FINDER_MAX_SESSIONS * 0.10)
+      );
+      const iterator = serverFinderMessageStates.keys();
+      for (let i = 0; i < removeCount; i++) {
+        const key = iterator.next().value;
+        if (key === undefined) break;
+        serverFinderMessageStates.delete(key);
+      }
+    }
   } catch (error) {
     recordMonitorError("discord", error, "Server Finder session failed");
     console.error("Server finder session failed:", error);
@@ -7318,6 +7417,19 @@ client.on("interactionCreate", async interaction => {
 
         await interaction.deferUpdate();
         serverFinderRefreshCooldowns.set(refreshKey, Date.now());
+
+        if (serverFinderRefreshCooldowns.size > SERVER_FINDER_MAX_COOLDOWN_ENTRIES) {
+          const removeCount = Math.max(
+            1,
+            Math.ceil(SERVER_FINDER_MAX_COOLDOWN_ENTRIES * 0.10)
+          );
+          const iterator = serverFinderRefreshCooldowns.keys();
+          for (let i = 0; i < removeCount; i++) {
+            const key = iterator.next().value;
+            if (key === undefined) break;
+            serverFinderRefreshCooldowns.delete(key);
+          }
+        }
 
         try {
           await interaction.editReply({
