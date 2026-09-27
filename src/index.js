@@ -352,6 +352,190 @@ const PUBLIC_DISCOVERY_SOURCE_LABEL = "Auto Discovery";
 const MAX_DISCOVERY_CHANGELOG = 50;
 const spawnHistory = [];
 const gameEventHistory = [];
+
+const REVENGE_EVENT = Object.freeze({
+  id: "6472065313709097739",
+  title: "DR. SCRAMBLE’S REVENGE",
+  sourceUrl: "https://www.roblox.com/events/6472065313709097739",
+  startAt: "2026-09-26T15:00:00.000Z",
+  endAt: "2026-09-27T16:00:00.000Z"
+});
+
+const REVENGE_EVENT_POLL_MS = 30_000;
+const REVENGE_EVENT_SIGNAL_COOLDOWN_MS = 5 * 60_000;
+let revengeEventTrackerTimer = null;
+let revengeEventLastPhase = null;
+let revengeEventLastSignalFingerprint = "";
+let revengeEventLastSignalAt = 0;
+
+function getRevengeEventPhase(now = Date.now()) {
+  const startAt = Date.parse(REVENGE_EVENT.startAt);
+  const endAt = Date.parse(REVENGE_EVENT.endAt);
+
+  if (now < startAt) return "UPCOMING";
+  if (now < endAt) return "LIVE";
+  return "ENDED";
+}
+
+function getRevengeEventHealth() {
+  return {
+    enabled: true,
+    id: REVENGE_EVENT.id,
+    title: REVENGE_EVENT.title,
+    sourceUrl: REVENGE_EVENT.sourceUrl,
+    phase: getRevengeEventPhase(),
+    startAt: REVENGE_EVENT.startAt,
+    endAt: REVENGE_EVENT.endAt,
+    lastObservedPhase: revengeEventLastPhase,
+    lastSignalAt: revengeEventLastSignalAt
+      ? new Date(revengeEventLastSignalAt).toISOString()
+      : null,
+    timerActive: Boolean(revengeEventTrackerTimer)
+  };
+}
+
+function detectRevengeEventSignal(messageData) {
+  const text = [
+    messageData?.text || "",
+    ...(Array.isArray(messageData?.fields)
+      ? messageData.fields.flatMap(field => [field?.name || "", field?.value || ""])
+      : [])
+  ].join("\n");
+
+  const compact = String(text)
+    .replace(/[’‘]/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!compact) return null;
+
+  if (/dr\.?\s*scramble['’]?s\s+revenge/i.test(compact)) {
+    return { type: "event_title" };
+  }
+
+  if (
+    /dr\.?\s*scramble/i.test(compact) &&
+    /final\s+showdown/i.test(compact)
+  ) {
+    return { type: "final_showdown" };
+  }
+
+  if (
+    /dr\.?\s*scramble/i.test(compact) &&
+    /ben\s+needs\s+your\s+help/i.test(compact)
+  ) {
+    return { type: "ben_help" };
+  }
+
+  return null;
+}
+
+async function publishRevengeEventUpdate(reason, signalType = null) {
+  const phase = getRevengeEventPhase();
+
+  if (reason === "source-signal") {
+    const fingerprint = String(signalType || "signal");
+    const now = Date.now();
+
+    if (
+      fingerprint === revengeEventLastSignalFingerprint &&
+      now - revengeEventLastSignalAt < REVENGE_EVENT_SIGNAL_COOLDOWN_MS
+    ) {
+      return false;
+    }
+
+    revengeEventLastSignalFingerprint = fingerprint;
+    revengeEventLastSignalAt = now;
+  }
+
+  if (!CHANNEL_ID) return false;
+
+  const channel = await getAlertChannel();
+  if (!channel) return false;
+  if (!discordCircuitCanSend()) return false;
+
+  const phaseText =
+    phase === "LIVE"
+      ? "The official event window is LIVE."
+      : phase === "UPCOMING"
+        ? "The official event window is scheduled."
+        : "The official event window has ended.";
+
+  const statusEmoji =
+    phase === "LIVE" ? "🟢" : phase === "UPCOMING" ? "🕒" : "🏁";
+
+  const embed = new EmbedBuilder()
+    .setTitle("🧪 " + REVENGE_EVENT.title)
+    .setDescription(statusEmoji + " " + phaseText)
+    .addFields(
+      {
+        name: "Status",
+        value: phase,
+        inline: true
+      },
+      {
+        name: "Event Window",
+        value: "<t:" + Math.floor(Date.parse(REVENGE_EVENT.startAt) / 1000) +
+          ":F> → <t:" + Math.floor(Date.parse(REVENGE_EVENT.endAt) / 1000) + ":F>",
+        inline: false
+      }
+    )
+    .setURL(REVENGE_EVENT.sourceUrl)
+    .setTimestamp();
+
+  if (reason === "source-signal") {
+    embed.addFields({
+      name: "Live Signal",
+      value: "A matching event signal was detected from the configured source.",
+      inline: false
+    });
+  }
+
+  try {
+    await sendDiscordPayload(channel, { embeds: [embed] });
+
+    persistGameEvent({
+      type: "official_event",
+      title: REVENGE_EVENT.title,
+      description:
+        reason === "source-signal"
+          ? "Live event signal detected."
+          : phaseText,
+      date: new Date().toISOString(),
+      source: PUBLIC_DISCOVERY_SOURCE_LABEL,
+      sourceEventId: REVENGE_EVENT.id,
+      eventState: phase,
+      confidence: reason === "source-signal" ? 0.9 : 1,
+      evidence: [{
+        source: reason === "source-signal" ? "Discord Source" : "Official Roblox Event",
+        type: reason
+      }]
+    }).catch(error => {
+      recordMonitorError("storage", error, "Revenge event state persistence failed");
+    });
+
+    scheduleStateSave();
+    return true;
+  } catch (error) {
+    recordMonitorError("discord", error, "Revenge event alert failed");
+    return false;
+  }
+}
+
+async function checkRevengeEventTracker() {
+  const phase = getRevengeEventPhase();
+
+  if (phase !== revengeEventLastPhase) {
+    const previous = revengeEventLastPhase;
+    revengeEventLastPhase = phase;
+
+    // On first boot, announce only when the event is currently live.
+    // This avoids replaying an old upcoming/ended state after a restart.
+    if (!previous && phase !== "LIVE") return;
+
+    await publishRevengeEventUpdate("official-phase");
+  }
+}
 const LAST_SEEN_RARITIES = ["secret", "eternal", "divine"];
 const NON_NEST_SPAWN_EGGS = new Set([
   "bomboclat crocolat egg",
@@ -5916,6 +6100,14 @@ async function processSpawnMessage(message) {
   lastSourceMessageAt = new Date(message.createdTimestamp || Date.now()).toISOString();
   lastSourceMessageId = message.id || null;
 
+  const revengeSignal = detectRevengeEventSignal(messageData);
+  if (revengeSignal) {
+    safeRun(
+      publishRevengeEventUpdate("source-signal", revengeSignal.type),
+      "Revenge event signal"
+    );
+  }
+
   const event = parseSpawn(messageData, RARITIES);
   if (!event) return;
 
@@ -6055,7 +6247,8 @@ function render(h){
     card("Anomaly Flags",rel.anomalyFlags??0,rel.anomalyFlags?"warn":"ok"),
     card("Transparent Pet PNG",png,png.split("/")[0]===png.split("/")[1]?"ok":"warn"),
     card("Persistence",h.persistence?.enabled?"ENABLED":"OFFLINE",h.persistence?.enabled?"ok":"warn"),
-    card("Discord Circuit",h.discordCircuit?.state||"UNKNOWN",h.discordCircuit?.state==="CLOSED"?"ok":"warn")
+    card("Discord Circuit",h.discordCircuit?.state||"UNKNOWN",h.discordCircuit?.state==="CLOSED"?"ok":"warn"),
+    card("Revenge Event",h.revengeEvent?.phase||"UNKNOWN",h.revengeEvent?.phase==="LIVE"?"ok":h.revengeEvent?.phase==="ENDED"?"warn":"warn")
   ].join("");
   document.getElementById("grid").innerHTML=html;
   document.getElementById("updated").textContent="Updated "+new Date().toLocaleTimeString();
@@ -6187,6 +6380,7 @@ app.get("/health", (_req, res) => {
     autoDiscoverySources: discoverySummary(),
     autoDiscoverySummary: autoDiscoveryLastSummary,
     lastUpdateTitle,
+    revengeEvent: getRevengeEventHealth(),
     spawnHistoryCount: spawnHistory.length,
     gameEventHistoryCount: gameEventHistory.length,
     memoryRssMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
@@ -6229,7 +6423,7 @@ app.get("/health", (_req, res) => {
     },
     lastSeenMessagesReady,
     customEggEmojisReady: eggCustomEmojiSetupState.ready,
-    customEggEmojiCount: eggCustomEmojiCache.size
+    customEggEmojiCount: eggCustomEmojiCache.size,
     cachedPetImages: [...petPngBufferCache.keys()].length,
     transparentPetImagesReady: eggImageCatalog
       .filter(isPetImageEligibleEntry)
@@ -6391,6 +6585,14 @@ client.once("clientReady", async () => {
   console.log("Source stale threshold:", SOURCE_STALE_AFTER_MS / 1000 + "s");
   console.log("Memory guard:", MEMORY_SOFT_LIMIT_MB + "MB soft / " + MEMORY_HARD_LIMIT_MB + "MB hard");
   console.log("Auto discovery:", AUTO_DISCOVERY_ENABLED ? "enabled" : "disabled");
+  console.log("Dr. Scramble’s Revenge tracker:", "enabled");
+
+  if (!revengeEventTrackerTimer) {
+    safeRun(checkRevengeEventTracker(), "Revenge event tracker startup");
+    revengeEventTrackerTimer = setInterval(() => {
+      safeRun(checkRevengeEventTracker(), "Revenge event tracker poll");
+    }, REVENGE_EVENT_POLL_MS);
+  }
 
   if (CHANNEL_ID) {
     try {
