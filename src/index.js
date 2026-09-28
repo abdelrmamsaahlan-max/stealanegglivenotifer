@@ -286,8 +286,14 @@ const INGEST_GLOBAL_PER_SECOND =
 const SERVER_FINDER_COOLDOWN_MS = 5_000;
 const SERVER_FINDER_REFRESH_COOLDOWN_MS = 2_500;
 const SERVER_FINDER_PAGE_SIZE = 10;
-const SERVER_FINDER_MAX_PAGES = 8;
-const SERVER_FINDER_MAX_RESULTS = 100;
+const SERVER_FINDER_MAX_PAGES = Math.min(
+  12,
+  Math.max(1, Number(process.env.SERVER_FINDER_MAX_PAGES || 8))
+);
+const SERVER_FINDER_MAX_RESULTS = Math.min(
+  100,
+  Math.max(1, Number(process.env.SERVER_FINDER_MAX_RESULTS || 100))
+);
 const SERVER_FINDER_SESSION_TTL_MS = 15 * 60_000;
 const serverFinderUserCooldowns = new Map();
 const serverFinderRefreshCooldowns = new Map();
