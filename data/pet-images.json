@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "format": "png",
   "purpose": "Curated pet-only image source database. Only original pet-icon candidates from the listed pet pages are accepted; egg, area, banner, hero, screenshot, JPG, JPEG, and WebP artwork is excluded.",
   "source": "https://stealanegg-wiki.com/",
@@ -225,6 +225,69 @@
     {
       "petName": "Yeti",
       "sourcePage": "https://stealanegg-wiki.com/wiki/yeti/",
+      "format": "png",
+      "imageKind": "original-pet-icon",
+      "aliases": []
+    },
+    {
+      "petName": "Prism Gecko",
+      "sourcePage": "https://www.stealegg.com/en/pets/prism-gecko/",
+      "format": "png",
+      "imageKind": "original-pet-icon",
+      "aliases": []
+    },
+    {
+      "petName": "Petal Beetle",
+      "sourcePage": "https://www.stealegg.com/en/pets/petal-beetle/",
+      "format": "png",
+      "imageKind": "original-pet-icon",
+      "aliases": []
+    },
+    {
+      "petName": "Enchanted Bluejay",
+      "sourcePage": "https://www.stealegg.com/en/pets/enchanted-bluejay/",
+      "format": "png",
+      "imageKind": "original-pet-icon",
+      "aliases": []
+    },
+    {
+      "petName": "Astral Jackalope",
+      "sourcePage": "https://www.stealegg.com/en/pets/astral-jackalope/",
+      "format": "png",
+      "imageKind": "original-pet-icon",
+      "aliases": []
+    },
+    {
+      "petName": "Spirit Panda",
+      "sourcePage": "https://www.stealegg.com/en/pets/spirit-panda/",
+      "format": "png",
+      "imageKind": "original-pet-icon",
+      "aliases": []
+    },
+    {
+      "petName": "Starry Fox",
+      "sourcePage": "https://www.stealegg.com/en/pets/starry-fox/",
+      "format": "png",
+      "imageKind": "original-pet-icon",
+      "aliases": []
+    },
+    {
+      "petName": "Celestial Sunlion",
+      "sourcePage": "https://www.stealegg.com/en/pets/celestial-sunlion/",
+      "format": "png",
+      "imageKind": "original-pet-icon",
+      "aliases": []
+    },
+    {
+      "petName": "Royal Skywhale",
+      "sourcePage": "https://www.stealegg.com/en/pets/royal-skywhale/",
+      "format": "png",
+      "imageKind": "original-pet-icon",
+      "aliases": []
+    },
+    {
+      "petName": "Jitterbug",
+      "sourcePage": "https://www.stealegg.com/en/pets/jitterbug/",
       "format": "png",
       "imageKind": "original-pet-icon",
       "aliases": []
