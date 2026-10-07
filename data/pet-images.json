@@ -291,6 +291,13 @@
       "format": "png",
       "imageKind": "original-pet-icon",
       "aliases": []
+    },
+    {
+      "petName": "Spirit World Guardian",
+      "sourcePage": "https://www.stealegg.com/en/pets/spirit-world-guardian/",
+      "format": "png",
+      "imageKind": "original-pet-icon",
+      "aliases": []
     }
   ]
 }
