@@ -3,14 +3,47 @@
   "purpose": "Game-only event and update discovery rules for Steal An Egg.",
   "sources": [
     "https://robloxstealanegg.wiki/",
-    "https://eggwatcher.com/guides/how-the-live-feed-works"
+    "https://eggwatcher.com/guides/how-the-live-feed-works",
+    "https://www.stealegg.com/en/updates/",
+    "https://eggipedia.com/enchanted-forest"
   ],
   "eventTypes": {
     "game_update": {
-      "keywords": ["update #", "new update", "game update", "update released", "update is live"]
+      "keywords": [
+        "update #",
+        "new update",
+        "game update",
+        "update released",
+        "update is live",
+        "update 7",
+        "enchanted forest",
+        "wisp",
+        "butterfly bloom",
+        "enchanted essence"
+      ]
     },
     "limited_event": {
-      "keywords": ["event", "limited event", "dr. scramble", "admin abuse", "light vs darkness", "angels vs demons"]
+      "keywords": [
+        "event",
+        "limited event",
+        "dr. scramble",
+        "admin abuse",
+        "light vs darkness",
+        "angels vs demons",
+        "butterfly bloom",
+        "wisp",
+        "enchanted tree"
+      ]
+    },
+    "enchanted_forest": {
+      "keywords": [
+        "enchanted forest",
+        "wisp",
+        "enchanted tree",
+        "butterfly bloom",
+        "enchanted essence",
+        "jitterbug"
+      ]
     }
   }
 }
