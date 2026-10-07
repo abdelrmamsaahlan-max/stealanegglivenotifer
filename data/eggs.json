@@ -475,11 +475,56 @@
       "active": true,
       "lastVerified": "2026-09-26",
       "source": "EggWatch-supported catalogue + egg-specific reference page"
+    },
+    {
+      "eggName": "Starry Fox Egg",
+      "displayName": "Starry Fox Egg",
+      "petName": "Starry Fox",
+      "rarity": "Secret",
+      "biome": "Enchanted Forest",
+      "aliases": [
+        "Secret Starry Fox Egg",
+        "Starry Fox"
+      ],
+      "sourcePage": "https://www.stealegg.com/en/eggs/starry-fox-egg/",
+      "active": true,
+      "lastVerified": "2026-10-07",
+      "source": "Steal An Egg Update 7 + current pet/egg catalogue"
+    },
+    {
+      "eggName": "Celestial Sunlion Egg",
+      "displayName": "Celestial Sunlion Egg",
+      "petName": "Celestial Sunlion",
+      "rarity": "Eternal",
+      "biome": "Enchanted Forest",
+      "aliases": [
+        "Eternal Celestial Sunlion Egg",
+        "Celestial Sunlion"
+      ],
+      "sourcePage": "https://www.stealegg.com/en/eggs/celestial-sunlion-egg/",
+      "active": true,
+      "lastVerified": "2026-10-07",
+      "source": "Steal An Egg Update 7 + current pet/egg catalogue"
+    },
+    {
+      "eggName": "Royal Skywhale Egg",
+      "displayName": "Royal Skywhale Egg",
+      "petName": "Royal Skywhale",
+      "rarity": "Divine",
+      "biome": "Enchanted Forest",
+      "aliases": [
+        "Divine Royal Skywhale Egg",
+        "Royal Skywhale"
+      ],
+      "sourcePage": "https://www.stealegg.com/en/eggs/royal-skywhale-egg/",
+      "active": true,
+      "lastVerified": "2026-10-07",
+      "source": "Steal An Egg Update 7 + current pet/egg catalogue"
     }
   ],
   "notes": [
-    "Only the 31 Secret/Eternal/Divine spawn entries currently listed by EggWatch's supported catalogue are included.",
     "Experiment #001 Egg is intentionally excluded because it is an Experiment Shop item, not a live spawn event.",
-    "Rift-only entries are excluded from EggWatch spawn detection until EggWatch adds them to its supported catalogue."
+    "Rift-only entries are excluded from EggWatch spawn detection until EggWatch adds them to its supported catalogue.",
+    "Update 7 (2026-10-03) adds Starry Fox (Secret), Celestial Sunlion (Eternal), and Royal Skywhale (Divine) from the Enchanted Forest."
   ]
 }
