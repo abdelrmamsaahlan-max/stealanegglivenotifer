@@ -532,6 +532,10 @@ export function extractDiscoveryEvents(html, source = "Auto Discovery") {
       re: /\bJitterbug\b[^\n]{0,260}/i
     },
     {
+      type: "secret_fusion",
+      re: /\bSpirit\s+World\s+Guardian\b[^\n]{0,320}/i
+    },
+    {
       type: "rift_event",
       re: /\bRifts?\b[^\n]{0,180}(?:every\s+30|Overlord|Boss\s+Tokens?)[^\n]{0,180}/i
     },
