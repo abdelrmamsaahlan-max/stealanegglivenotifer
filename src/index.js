@@ -542,29 +542,88 @@ const WEEKLY_RELIABILITY_REPORT_CHANNEL_ID =
 let alertsPaused =
   String(process.env.ALERTS_PAUSED || "false").toLowerCase() === "true";
 
+const BUILTIN_DISCOVERY_SOURCES = [
+  {
+    key: "stealegg-updates",
+    name: "Steal An Egg Updates",
+    url: "https://www.stealegg.com/en/updates/",
+    rank: 9,
+    parseUpdates: true,
+    parseEggs: false,
+    parseEvents: true,
+    followLinks: true
+  },
+  {
+    key: "stealegg-pets",
+    name: "Steal An Egg Pets",
+    url: "https://www.stealegg.com/en/pets/",
+    rank: 8,
+    parseUpdates: false,
+    parseEggs: true,
+    parseEvents: false,
+    followLinks: false
+  },
+  {
+    key: "eggipedia-enchanted-forest",
+    name: "Eggipedia Enchanted Forest",
+    url: "https://eggipedia.com/enchanted-forest",
+    rank: 7,
+    parseUpdates: true,
+    parseEggs: true,
+    parseEvents: true,
+    followLinks: true
+  }
+];
+
+function normalizeDiscoverySource(item, index = 0) {
+  if (!item || typeof item.url !== "string" || !/^https?:\/\//i.test(item.url)) {
+    return null;
+  }
+
+  return {
+    key: String(item.key || "source-" + (index + 1)),
+    name: String(item.name || "Source " + (index + 1)),
+    url: String(item.url).trim(),
+    rank: Math.max(0, Math.min(10, Number(item.rank ?? 5))),
+    parseUpdates: item.parseUpdates !== false,
+    parseEggs: item.parseEggs !== false,
+    parseEvents: item.parseEvents !== false,
+    followLinks: item.followLinks === true
+  };
+}
+
 function loadDiscoverySources() {
   const raw = String(process.env.DISCOVERY_SOURCES_JSON || "").trim();
-  if (!raw) return [];
+  const builtin = BUILTIN_DISCOVERY_SOURCES
+    .map((item, index) => normalizeDiscoverySource(item, index))
+    .filter(Boolean);
+
+  if (!raw) return builtin;
 
   try {
     const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
+    if (!Array.isArray(parsed)) return builtin;
 
-    return parsed
-      .filter(item => item && typeof item.url === "string" && /^https?:\/\//i.test(item.url))
-      .map((item, index) => ({
-        key: String(item.key || "source-" + (index + 1)),
-        name: String(item.name || "Source " + (index + 1)),
-        url: String(item.url).trim(),
-        rank: Math.max(0, Math.min(10, Number(item.rank ?? 5))),
-        parseUpdates: item.parseUpdates !== false,
-        parseEggs: item.parseEggs !== false,
-        parseEvents: item.parseEvents !== false,
-        followLinks: item.followLinks === true
-      }));
+    const merged = [
+      ...builtin,
+      ...parsed.map((item, index) => normalizeDiscoverySource(item, index)).filter(Boolean)
+    ];
+
+    const byUrl = new Map();
+    for (const item of merged) {
+      const current = byUrl.get(item.url);
+      if (!current || Number(item.rank || 0) < Number(current.rank || 0)) {
+        byUrl.set(item.url, item);
+      }
+      if (!current || item.rank >= current.rank) {
+        byUrl.set(item.url, item);
+      }
+    }
+
+    return [...byUrl.values()];
   } catch (error) {
     console.warn("Discovery source configuration is invalid:", error?.message || error);
-    return [];
+    return builtin;
   }
 }
 
@@ -3217,12 +3276,12 @@ async function resolveImageUrl(eggName, _providedUrl = null) {
 
   const petName = entry.petName;
 
-  if (PUBLIC_BASE_URL) {
+  // Materialize/verify the asset as PNG before returning the public image URL.
+  const pngBuffer = await getPetPngBuffer(petName).catch(() => null);
+
+  if (PUBLIC_BASE_URL && pngBuffer) {
     const pngUrl = publicPetImageUrl(petName);
     if (pngUrl) {
-      // Warm the cache in the background so Discord never has to wait on
-      // the first image request.
-      getPetPngBuffer(petName).catch(() => {});
       imageFallbackCache.set(normalizeFeedKey(eggName), { url: pngUrl, at: Date.now() });
       return pngUrl;
     }
