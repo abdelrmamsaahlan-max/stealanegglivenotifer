@@ -612,10 +612,7 @@ function loadDiscoverySources() {
     const byUrl = new Map();
     for (const item of merged) {
       const current = byUrl.get(item.url);
-      if (!current || Number(item.rank || 0) < Number(current.rank || 0)) {
-        byUrl.set(item.url, item);
-      }
-      if (!current || item.rank >= current.rank) {
+      if (!current || Number(item.rank || 0) >= Number(current.rank || 0)) {
         byUrl.set(item.url, item);
       }
     }
