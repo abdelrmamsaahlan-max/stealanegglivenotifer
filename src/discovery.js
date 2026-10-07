@@ -673,7 +673,7 @@ export function extractRelevantLinks(html, baseUrl, maxLinks = 4) {
 
       const lower = (url + " " + label).toLowerCase();
 
-      if (!/(update|event|scramble|rift|darkness|angel|demon|news|experiment)/i.test(lower)) {
+      if (!/(update|event|scramble|rift|darkness|angel|demon|news|experiment|enchanted|wisp|butterfly|jitterbug)/i.test(lower)) {
         continue;
       }
 
