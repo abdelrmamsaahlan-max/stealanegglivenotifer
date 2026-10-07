@@ -229,10 +229,22 @@ export function extractSupportedEggsFromDiscovery(html) {
       rarity = "Divine";
       continue;
     }
+
+    // Current STEAL EGG pet pages can render rare entries inline, e.g.
+    // "Secret Starry Fox Enchanted Forest$500M/s Prediction".
+    const inlineRare = line.match(
+      /^(Secret|Eternal|Divine)\s+(.+?)\s+(Jungle|Snow|Volcano|Abyss Ocean|Prehistoric|Cosmic|Cherry Blossom|Titan Temple|Angels and Demons|Enchanted Forest)\b/i
+    );
+
+    if (inlineRare) {
+      pushDiscoveredEgg(found, inlineRare[2], inlineRare[1], inlineRare[3]);
+      continue;
+    }
+
     if (!rarity) continue;
 
     const match = line.match(
-      /^(.+?)\s+(Jungle|Snow|Volcano|Abyss Ocean|Prehistoric|Cosmic|Cherry Blossom|Titan Temple|Angels and Demons|Area not listed)$/i
+      /^(.+?)\s+(Jungle|Snow|Volcano|Abyss Ocean|Prehistoric|Cosmic|Cherry Blossom|Titan Temple|Angels and Demons|Enchanted Forest|Area not listed)$/i
     );
 
     if (!match) continue;
