@@ -2847,7 +2847,7 @@ function registerPetImageDatabaseEntry(entry) {
   const existing = petImageDatabase.get(key);
   if (existing?.sourcePage) return;
 
-  const sourcePage = "https://stealanegg-wiki.com/wiki/" +
+  const sourcePage = "https://www.stealegg.com/en/pets/" +
     slugify(petName).replace(/-egg$/i, "") +
     "/";
 
@@ -3028,7 +3028,9 @@ function isTrustedPetImageUrl(value) {
     const trustedHost =
       host === "robloxstealanegg.wiki" ||
       host === "steal-an-egg-roblox.wiki" ||
-      host === "stealanegg-wiki.com";
+      host === "stealanegg-wiki.com" ||
+      host === "stealegg.com" ||
+      host === "www.stealegg.com";
 
     const blockedPath =
       /(?:\/eggs?(?:\/|$)|\/og\/|\/hero\/|\/banner\/|\/logo\/|\/favicon|sprite)/i.test(pathName);
