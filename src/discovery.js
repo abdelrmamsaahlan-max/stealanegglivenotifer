@@ -80,6 +80,7 @@ const DISCOVERY_AREAS = [
   "Cherry Blossom",
   "Titan Temple",
   "Angels and Demons",
+  "Enchanted Forest",
   "Area not listed"
 ];
 
@@ -433,7 +434,7 @@ export function extractUpdateSnapshot(html, source = "Auto Discovery") {
 
     title =
       candidates.find(line =>
-        /dr\.?\s*scramble|angels?.*demons?|rifts?|event|sammy|darkness|titan|cherry/i.test(line)
+        /dr\.?\s*scramble|angels?.*demons?|rifts?|event|sammy|darkness|titan|cherry|enchanted\s+forest|wisp|butterfly|jitterbug/i.test(line)
       ) ||
       candidates.find(line =>
         line.length >= 4 &&
@@ -445,7 +446,7 @@ export function extractUpdateSnapshot(html, source = "Auto Discovery") {
     const window = lines.slice(headerIndex, headerIndex + 20);
     const titleIndex = window.findIndex((line, offset) =>
       offset > 0 &&
-      /(?:update|scramble|angels|demons|rift|event|egg|sammy)/i.test(line)
+      /(?:update|scramble|angels|demons|rift|event|egg|sammy|enchanted|wisp|butterfly|jitterbug)/i.test(line)
     );
 
     if (titleIndex >= 0) {
@@ -509,6 +510,26 @@ export function extractDiscoveryEvents(html, source = "Auto Discovery") {
     {
       type: "limited_event",
       re: /\bAngels?\s*(?:vs|and)\s*Demons?\b[^\n]{0,220}/i
+    },
+    {
+      type: "enchanted_forest_update",
+      re: /\bEnchanted\s+Forest\b[^\n]{0,300}/i
+    },
+    {
+      type: "wisp_quest",
+      re: /\bWisp\b[^\n]{0,320}(?:20\s+Enchanted\s+Forest\s+eggs?|Enchanted\s+Tree|Grow\s+Your\s+Wisp|Return\s+the\s+Wisp)[^\n]{0,320}/i
+    },
+    {
+      type: "butterfly_bloom",
+      re: /\bButterfly\s+Bloom\b[^\n]{0,320}/i
+    },
+    {
+      type: "enchanted_essence",
+      re: /\bEnchanted\s+Essence\b[^\n]{0,320}/i
+    },
+    {
+      type: "secret_reward",
+      re: /\bJitterbug\b[^\n]{0,260}/i
     },
     {
       type: "rift_event",
