@@ -117,6 +117,46 @@ test("extracts high-value event signals", () => {
   assert.ok(events.some(item => /Rifts?/i.test(item.title)));
 });
 
+
+test("discovers Update 7 rare pets in Enchanted Forest", () => {
+  const html = `
+    <table>
+      <tr><th>Pet</th><th>Rarity</th><th>Biome</th></tr>
+      <tr><td>Starry Fox</td><td>Secret</td><td>Enchanted Forest</td></tr>
+      <tr><td>Celestial Sunlion</td><td>Eternal</td><td>Enchanted Forest</td></tr>
+      <tr><td>Royal Skywhale</td><td>Divine</td><td>Enchanted Forest</td></tr>
+    </table>
+  `;
+
+  const eggs = extractSupportedEggsFromDiscovery(html);
+
+  assert.deepEqual(
+    eggs.map(item => [item.rarity, item.eggName, item.area]),
+    [
+      ["Secret", "Starry Fox Egg", "Enchanted Forest"],
+      ["Eternal", "Celestial Sunlion Egg", "Enchanted Forest"],
+      ["Divine", "Royal Skywhale Egg", "Enchanted Forest"]
+    ]
+  );
+});
+
+test("discovers Update 7 event signals", () => {
+  const html = `
+    <p>Update 7: Enchanted Forest</p>
+    <p>Wisp quests unlock the Enchanted Tree.</p>
+    <p>Butterfly Bloom and Enchanted Essence are now live.</p>
+    <p>Jitterbug is a Secret puzzle reward.</p>
+  `;
+
+  const events = extractDiscoveryEvents(html, "Steal An Egg Update 7");
+
+  assert.ok(events.some(item => /Enchanted Forest/i.test(item.title)));
+  assert.ok(events.some(item => /Wisp/i.test(item.title)));
+  assert.ok(events.some(item => /Butterfly Bloom/i.test(item.title)));
+  assert.ok(events.some(item => /Enchanted Essence/i.test(item.title)));
+  assert.ok(events.some(item => /Jitterbug/i.test(item.title)));
+});
+
 test("only follows configured discovery hosts", () => {
   process.env.DISCOVERY_ALLOWED_HOSTS =
     "secondary.example,tertiary.example";
