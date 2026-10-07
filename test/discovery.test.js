@@ -118,6 +118,23 @@ test("extracts high-value event signals", () => {
 });
 
 
+test("parses inline Enchanted Forest listings from current pet pages", () => {
+  const html = `
+    <div>Secret Starry Fox Enchanted Forest$500M/s Prediction</div>
+    <div>Eternal Celestial Sunlion Enchanted Forest$2B/s Prediction</div>
+    <div>Divine Royal Skywhale Enchanted Forest$8B/s Prediction</div>
+  `;
+  const eggs = extractSupportedEggsFromDiscovery(html);
+  assert.deepEqual(
+    eggs.map(item => [item.rarity, item.eggName, item.area]),
+    [
+      ["Secret", "Starry Fox Egg", "Enchanted Forest"],
+      ["Eternal", "Celestial Sunlion Egg", "Enchanted Forest"],
+      ["Divine", "Royal Skywhale Egg", "Enchanted Forest"]
+    ]
+  );
+});
+
 test("discovers Update 7 rare pets in Enchanted Forest", () => {
   const html = `
     <table>
